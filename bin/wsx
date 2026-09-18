@@ -1,0 +1,1181 @@
+#!/usr/bin/env python3
+"""wsx -- personal workspace sync for git worktrees.
+
+Keeps personal, never-committed state (planning docs, agent rule files, tooling
+state) on a single `personal-workspace` branch, and gives every dev worktree a
+real *copy* of it -- not a symlink. Copies are synced back so edits made while
+working in a worktree are never lost, and are ignored + guarded so they can
+never be committed to a shared branch.
+
+Layout
+------
+    <source worktree>/.wsx.conf     manifest: one "<policy> <path>" per line
+    <dev worktree>/.git.../wsx/     per-worktree sync base + backups
+
+Policies
+--------
+    sync    three-way sync. Detects which side changed since the last sync and
+            applies it; if both changed, reports a conflict and clobbers
+            nothing. The default, and correct for text.
+    pull    one-way, source -> worktree. Local edits are overwritten on the
+            next pull and never pushed back. For read-only reference content.
+    lww     last writer wins by mtime, overwritten copy saved to the backup
+            dir. For binary/runtime state (SQLite, append-only logs) that
+            cannot be merged.
+    skip    excluded entirely. Use to carve a path out of a synced directory.
+
+Commands
+--------
+    wsx setup            prepare a worktree: copy state in, install ignore+guard
+    wsx pull             apply source -> worktree changes
+    wsx push             apply worktree -> source changes
+    wsx sync             both directions
+    wsx status           show pending changes and conflicts
+    wsx doctor           verify guards, ignores and hooks are active
+    wsx resolve PATH     settle a conflict with --mine or --theirs
+    wsx guard            block managed paths from being committed/pushed
+    wsx hook NAME        git-hook entry point (used by ~/.config/husky/init.sh)
+
+Add --dry-run to pull/push/sync to see what would happen.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+MANIFEST_NAME = ".wsx.conf"
+DEFAULT_SOURCE_BRANCH = "personal-workspace"
+CONFLICT_SUFFIX = ".wsx-remote"
+POLICIES = ("sync", "pull", "lww", "skip")
+IGNORED_BASENAMES = {".DS_Store", "Thumbs.db"}
+
+BOLD, DIM, RED, YELLOW, GREEN, RESET = (
+    ("\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[32m", "\033[0m")
+    if sys.stdout.isatty()
+    else ("", "", "", "", "", "")
+)
+
+
+class Problem(Exception):
+    """A user-facing error that should abort with a readable message."""
+
+
+# --------------------------------------------------------------------------
+# git helpers
+# --------------------------------------------------------------------------
+
+
+def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if check and result.returncode != 0:
+        raise Problem(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def git_ok(*args: str, cwd: Path | None = None) -> bool:
+    return (
+        subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True
+        ).returncode
+        == 0
+    )
+
+
+def list_worktrees(cwd: Path) -> list[tuple[Path, str]]:
+    """Return (path, branch) for every worktree; branch is '' when detached."""
+    out = git("worktree", "list", "--porcelain", cwd=cwd)
+    worktrees: list[tuple[Path, str]] = []
+    path: Path | None = None
+    branch = ""
+    for line in out.splitlines() + [""]:
+        if line.startswith("worktree "):
+            if path is not None:
+                worktrees.append((path, branch))
+            path, branch = Path(line[len("worktree ") :]), ""
+        elif line.startswith("branch "):
+            branch = line[len("branch ") :].removeprefix("refs/heads/")
+        elif not line and path is not None:
+            worktrees.append((path, branch))
+            path, branch = None, ""
+    return worktrees
+
+
+# --------------------------------------------------------------------------
+# context
+# --------------------------------------------------------------------------
+
+
+class Context:
+    def __init__(self, cwd: Path) -> None:
+        if not git_ok("rev-parse", "--git-dir", cwd=cwd):
+            raise Problem(f"not inside a git repository: {cwd}")
+
+        self.root = Path(git("rev-parse", "--show-toplevel", cwd=cwd))
+        self.git_dir = Path(git("rev-parse", "--absolute-git-dir", cwd=cwd))
+        common = git("rev-parse", "--git-common-dir", cwd=cwd)
+        self.common_dir = (self.root / common).resolve() if not Path(common).is_absolute() else Path(common)
+        self.branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd, check=False)
+
+        self.source_branch = (
+            git("config", "--get", "wsx.sourceBranch", cwd=cwd, check=False)
+            or DEFAULT_SOURCE_BRANCH
+        )
+
+        self.source: Path | None = None
+        for path, branch in list_worktrees(self.root):
+            if branch == self.source_branch:
+                self.source = path
+                break
+
+        self.state_dir = self.git_dir / "wsx"
+        self.base_file = self.state_dir / "base.json"
+
+    # -- manifest ---------------------------------------------------------
+
+    @property
+    def manifest_path(self) -> Path | None:
+        return self.source / MANIFEST_NAME if self.source else None
+
+    @property
+    def configured(self) -> bool:
+        path = self.manifest_path
+        return bool(path and path.is_file())
+
+    @property
+    def is_source(self) -> bool:
+        return self.source is not None and self.source.resolve() == self.root.resolve()
+
+    def require_configured(self) -> None:
+        if self.source is None:
+            raise Problem(
+                f"no worktree is checked out on '{self.source_branch}'.\n"
+                f"  Create one, or set a different branch with:\n"
+                f"    git config wsx.sourceBranch <branch>"
+            )
+        if not self.configured:
+            raise Problem(
+                f"no manifest at {self.manifest_path}.\n"
+                f"  Create it with one '<policy> <path>' entry per line "
+                f"(policies: {', '.join(POLICIES)})."
+            )
+
+    def require_dev_worktree(self) -> None:
+        self.require_configured()
+        if self.is_source:
+            raise Problem(
+                f"this IS the source worktree ({self.source_branch}) -- "
+                f"nothing to sync. Run wsx from a dev worktree."
+            )
+
+    def load_manifest(self) -> list[tuple[str, str]]:
+        """Return (policy, relpath) entries, most specific last."""
+        entries: list[tuple[str, str]] = []
+        path = self.manifest_path
+        assert path is not None
+        for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                raise Problem(f"{path}:{lineno}: expected '<policy> <path>', got: {line}")
+            policy, rel = parts[0], parts[1].strip().strip("/")
+            if policy not in POLICIES:
+                raise Problem(
+                    f"{path}:{lineno}: unknown policy '{policy}' "
+                    f"(expected one of: {', '.join(POLICIES)})"
+                )
+            if rel.startswith("/") or ".." in Path(rel).parts:
+                raise Problem(f"{path}:{lineno}: path must be relative and inside the repo: {rel}")
+            entries.append((policy, rel))
+        if not entries:
+            raise Problem(f"{path}: no entries")
+        return entries
+
+    # -- base snapshot ----------------------------------------------------
+
+    def load_base(self) -> dict[str, str]:
+        try:
+            data = json.loads(self.base_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+        entries = data.get("entries")
+        return entries if isinstance(entries, dict) else {}
+
+    def save_base(self, entries: dict[str, str]) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "source": str(self.source),
+            "updated": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "entries": dict(sorted(entries.items())),
+        }
+        tmp = self.base_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(self.base_file)
+
+
+# --------------------------------------------------------------------------
+# file plumbing
+# --------------------------------------------------------------------------
+
+
+def digest(path: Path) -> str | None:
+    """sha256 of a regular file; None if absent. Symlinks are not followed."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def walk(root: Path, rel: str) -> set[str]:
+    """Relative paths of regular files at or under root/rel."""
+    target = root / rel
+    if target.is_symlink():
+        return set()
+    if target.is_file():
+        return {rel}
+    if not target.is_dir():
+        return set()
+
+    found: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = [d for d in dirnames if d not in {".git", "node_modules"}]
+        for name in filenames:
+            if name in IGNORED_BASENAMES or name.endswith(CONFLICT_SUFFIX):
+                continue
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                continue
+            found.add(str(full.relative_to(root)))
+    return found
+
+
+def policy_for(rel: str, entries: list[tuple[str, str]]) -> str:
+    """Longest matching manifest entry wins, so a nested entry overrides."""
+    best_policy, best_len = "skip", -1
+    rel_parts = Path(rel).parts
+    for policy, entry in entries:
+        entry_parts = Path(entry).parts
+        if rel_parts[: len(entry_parts)] == entry_parts and len(entry_parts) > best_len:
+            best_policy, best_len = policy, len(entry_parts)
+    return best_policy
+
+
+def via_symlink(root: Path, rel: str) -> bool:
+    """True if root/rel is reached through a symlink at any level.
+
+    Files inside a symlinked directory resolve straight to the link target, so
+    a naive hash of both sides compares a file with itself and reports the two
+    worktrees as already converged. Migrating away from the old linking scheme
+    depends on spotting exactly that case.
+    """
+    current = root
+    for part in Path(rel).parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def materialise_parents(root: Path, rel: str) -> None:
+    """Replace any symlinked ancestor of root/rel with a real directory.
+
+    Without this, writing to `<worktree>/.planning/x.md` while `.planning` is
+    still a symlink would follow the link and write into the source worktree.
+    """
+    current = root
+    for part in Path(rel).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            current.unlink()
+        current.mkdir(exist_ok=True)
+
+
+def copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink():
+        dst.unlink()
+    tmp = dst.with_name(dst.name + ".wsx-tmp")
+    shutil.copy2(src, tmp)
+    tmp.replace(dst)
+
+
+def remove_file(path: Path) -> None:
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    parent = path.parent
+    while parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
+def backup(ctx: Context, label: str, rel: str, path: Path) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = ctx.state_dir / "backups" / stamp / label / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, dest)
+    return dest
+
+
+# --------------------------------------------------------------------------
+# planning
+# --------------------------------------------------------------------------
+
+
+class Action:
+    __slots__ = ("rel", "policy", "kind", "detail")
+
+    def __init__(self, rel: str, policy: str, kind: str, detail: str = "") -> None:
+        self.rel = rel
+        self.policy = policy
+        self.kind = kind  # pull | push | delete-local | delete-remote | conflict | converged
+        self.detail = detail
+
+
+def plan(ctx: Context) -> list[Action]:
+    entries = ctx.load_manifest()
+    base = ctx.load_base()
+    assert ctx.source is not None
+
+    candidates: set[str] = set()
+    for _, entry in entries:
+        candidates |= walk(ctx.source, entry)
+        candidates |= walk(ctx.root, entry)
+    candidates |= set(base)
+
+    actions: list[Action] = []
+    for rel in sorted(candidates):
+        policy = policy_for(rel, entries)
+        if policy == "skip":
+            continue
+
+        src_path, dst_path = ctx.source / rel, ctx.root / rel
+        source_hash, local_hash = digest(src_path), digest(dst_path)
+
+        # A leftover symlink from the old linking scheme reads as "absent", or
+        # worse, resolves to the source file and looks converged.
+        local_is_link = via_symlink(ctx.root, rel)
+
+        if source_hash == local_hash and not local_is_link:
+            actions.append(Action(rel, policy, "converged"))
+            continue
+
+        # Migration from the old symlink scheme: whatever the policy, the
+        # authoritative copy is the source and the link must become a file.
+        if local_is_link:
+            kind = "pull" if source_hash is not None else "delete-local"
+            actions.append(Action(rel, policy, kind, "replacing symlink"))
+            continue
+
+        if policy == "pull":
+            kind = "pull" if source_hash is not None else "delete-local"
+            actions.append(Action(rel, policy, kind, "mirror"))
+            continue
+
+        if policy == "lww":
+            if source_hash is None:
+                actions.append(Action(rel, policy, "delete-local", "gone upstream"))
+            elif local_hash is None:
+                actions.append(Action(rel, policy, "pull", "absent locally"))
+            else:
+                newer = "pull" if src_path.stat().st_mtime > dst_path.stat().st_mtime else "push"
+                actions.append(Action(rel, policy, newer, "newer mtime"))
+            continue
+
+        base_hash = base.get(rel)
+        if base_hash == local_hash:
+            kind = "pull" if source_hash is not None else "delete-local"
+            actions.append(Action(rel, policy, kind, "changed upstream"))
+        elif base_hash == source_hash:
+            kind = "push" if local_hash is not None else "delete-remote"
+            actions.append(Action(rel, policy, kind, "changed locally"))
+        else:
+            actions.append(Action(rel, policy, "conflict", "changed on both sides"))
+
+    return actions
+
+
+def apply(ctx: Context, actions: list[Action], directions: set[str], dry_run: bool) -> int:
+    assert ctx.source is not None
+    base = ctx.load_base()
+    conflicts = 0
+    applied = 0
+
+    for action in actions:
+        rel, kind = action.rel, action.kind
+        src_path, dst_path = ctx.source / rel, ctx.root / rel
+
+        if kind == "converged":
+            base[rel] = digest(dst_path) or ""
+            continue
+
+        if kind == "conflict":
+            conflicts += 1
+            marker = dst_path.with_name(dst_path.name + CONFLICT_SUFFIX)
+            print(f"  {RED}conflict{RESET}  {rel}")
+            if not dry_run and digest(src_path):
+                copy_file(src_path, marker)
+                print(f"            {DIM}source copy written to {marker.name}{RESET}")
+            continue
+
+        inbound = kind in ("pull", "delete-local")
+        if ("in" if inbound else "out") not in directions:
+            continue
+
+        applied += 1
+        verb = {
+            "pull": "pull",
+            "push": "push",
+            "delete-local": "delete",
+            "delete-remote": "delete",
+        }[kind]
+        where = "local" if inbound else "source"
+        note = f" {DIM}({action.policy}: {action.detail}){RESET}" if action.detail else ""
+        print(f"  {GREEN}{verb:<8}{RESET}  {rel}{note}")
+
+        if dry_run:
+            continue
+
+        if kind == "pull":
+            if action.policy == "lww" and digest(dst_path):
+                backup(ctx, "local", rel, dst_path)
+            materialise_parents(ctx.root, rel)
+            copy_file(src_path, dst_path)
+            base[rel] = digest(dst_path) or ""
+        elif kind == "push":
+            if action.policy == "lww" and digest(src_path):
+                backup(ctx, "source", rel, src_path)
+            copy_file(dst_path, src_path)
+            base[rel] = digest(src_path) or ""
+        elif kind == "delete-local":
+            remove_file(dst_path)
+            base.pop(rel, None)
+        elif kind == "delete-remote":
+            remove_file(src_path)
+            base.pop(rel, None)
+
+        marker = dst_path.with_name(dst_path.name + CONFLICT_SUFFIX)
+        if marker.exists():
+            marker.unlink()
+        _ = where
+
+    if not dry_run:
+        ctx.save_base(base)
+
+    if applied == 0 and conflicts == 0:
+        print(f"  {DIM}already up to date{RESET}")
+    return conflicts
+
+
+# --------------------------------------------------------------------------
+# ignore + guard wiring
+# --------------------------------------------------------------------------
+
+
+def global_ignore_file(ctx: Context) -> Path:
+    configured = git("config", "--get", "core.excludesFile", cwd=ctx.root, check=False)
+    if configured and "exclude.wsx" not in configured:
+        return Path(os.path.expanduser(configured))
+    home_config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(home_config) / "git" / "ignore"
+
+
+def worktree_id(ctx: Context) -> str:
+    return ctx.git_dir.name if ctx.git_dir.name != ".git" else "main"
+
+
+def exclude_file(ctx: Context) -> Path:
+    return ctx.common_dir / "info" / f"exclude.wsx-{worktree_id(ctx)}"
+
+
+def render_exclude(ctx: Context) -> str:
+    entries = ctx.load_manifest()
+    inherited = ""
+    source = global_ignore_file(ctx)
+    if source.is_file():
+        inherited = source.read_text(encoding="utf-8").rstrip("\n")
+
+    lines = [
+        "# Generated by wsx -- do not edit. Regenerate with 'wsx setup'.",
+        "#",
+        "# git supports exactly one core.excludesFile, and wsx points this",
+        f"# worktree's at this file, so the global ignore ({source}) is",
+        "# inlined below to avoid silently dropping it.",
+        "",
+        "# ---- inherited from the global ignore file ----",
+        inherited,
+        "",
+        "# ---- personal workspace paths (synced by wsx, never committed here) ----",
+    ]
+    for policy, rel in entries:
+        if policy == "skip":
+            continue
+        lines.append(f"/{rel}")
+    lines.append(f"*{CONFLICT_SUFFIX}")
+    return "\n".join(line for line in lines if line is not None) + "\n"
+
+
+def prune_orphan_excludes(ctx: Context) -> list[str]:
+    """Remove exclude files left behind by worktrees that no longer exist."""
+    live = {
+        (Path(git("rev-parse", "--absolute-git-dir", cwd=path)).name or "main")
+        if path.exists()
+        else ""
+        for path, _ in list_worktrees(ctx.root)
+    }
+    live = {name if name != ".git" else "main" for name in live}
+
+    removed: list[str] = []
+    info = ctx.common_dir / "info"
+    for candidate in info.glob("exclude.wsx-*"):
+        name = candidate.name[len("exclude.wsx-") :]
+        if name not in live:
+            candidate.unlink()
+            removed.append(candidate.name)
+    return removed
+
+
+def install_ignore(ctx: Context) -> None:
+    if git("config", "--get", "core.bare", cwd=ctx.root, check=False) == "true":
+        raise Problem("refusing to enable extensions.worktreeConfig on a bare repository")
+
+    git("config", "extensions.worktreeConfig", "true", cwd=ctx.root)
+    target = exclude_file(ctx)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_exclude(ctx), encoding="utf-8")
+    git("config", "--worktree", "core.excludesFile", str(target), cwd=ctx.root)
+
+    for orphan in prune_orphan_excludes(ctx):
+        print(f"  {DIM}pruned    {orphan} (worktree gone){RESET}")
+
+
+def ensure_installed(ctx: Context, announce: bool = False) -> bool:
+    """Install or refresh this worktree's ignore rules if they are absent/stale.
+
+    Called from every real command so a worktree repairs itself. `git worktree
+    add` cannot bootstrap this on its own: git's hooksPath early-exits when the
+    new worktree has no matching .husky/<hook> file, and .husky/ is tracked and
+    team-shared, so wsx must not add one. Self-healing closes that gap without
+    touching anything the team owns.
+    """
+    if ctx.is_source:
+        return False
+
+    target = exclude_file(ctx)
+    configured = git("config", "--get", "core.excludesFile", cwd=ctx.root, check=False)
+    try:
+        current = target.read_text(encoding="utf-8") if target.is_file() else None
+        if configured == str(target) and current == render_exclude(ctx):
+            return False
+    except OSError:
+        pass
+
+    install_ignore(ctx)
+    if announce:
+        print(f"  {DIM}installed ignore rules for this worktree{RESET}")
+    return True
+
+
+def managed_paths(ctx: Context) -> list[str]:
+    return [rel for policy, rel in ctx.load_manifest() if policy != "skip"]
+
+
+def is_managed(rel: str, entries: list[str]) -> bool:
+    rel_parts = Path(rel).parts
+    return any(rel_parts[: len(Path(e).parts)] == Path(e).parts for e in entries)
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+
+def cmd_setup(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    print(f"{BOLD}wsx setup{RESET}  {ctx.root}  {DIM}(source: {ctx.source}){RESET}")
+
+    print(f"\n{BOLD}Copying personal state in{RESET}")
+    conflicts = apply(ctx, plan(ctx), {"in"}, args.dry_run)
+
+    if not args.dry_run:
+        print(f"\n{BOLD}Installing ignore rules{RESET}")
+        install_ignore(ctx)
+        print(f"  {GREEN}ok{RESET}        {exclude_file(ctx)}")
+
+    print(f"\n{BOLD}Checking commit guard{RESET}")
+    for _, line in guard_report(ctx):
+        print(f"  {line}")
+
+    return 1 if conflicts else 0
+
+
+def cmd_pull(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    print(f"{BOLD}wsx pull{RESET}  {DIM}source -> {ctx.root.name}{RESET}")
+    if not args.dry_run:
+        ensure_installed(ctx, announce=True)
+    return 1 if apply(ctx, plan(ctx), {"in"}, args.dry_run) else 0
+
+
+def cmd_push(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    print(f"{BOLD}wsx push{RESET}  {DIM}{ctx.root.name} -> source{RESET}")
+    if not args.dry_run:
+        ensure_installed(ctx, announce=True)
+    return 1 if apply(ctx, plan(ctx), {"out"}, args.dry_run) else 0
+
+
+def cmd_sync(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    print(f"{BOLD}wsx sync{RESET}  {DIM}{ctx.root.name} <-> source{RESET}")
+    if not args.dry_run:
+        ensure_installed(ctx, announce=True)
+    return 1 if apply(ctx, plan(ctx), {"in", "out"}, args.dry_run) else 0
+
+
+def cmd_status(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    actions = plan(ctx)
+    pending = [a for a in actions if a.kind != "converged"]
+    conflicts = [a for a in pending if a.kind == "conflict"]
+
+    print(f"{BOLD}wsx status{RESET}  {ctx.root}")
+    print(f"  source       {ctx.source}")
+    print(f"  branch       {ctx.branch}")
+    print(f"  tracked      {len(actions)} file(s)")
+
+    if not pending:
+        print(f"  {GREEN}in sync{RESET}")
+        return 0
+
+    print(f"\n{BOLD}Pending{RESET}")
+    for action in pending:
+        colour = RED if action.kind == "conflict" else YELLOW
+        note = f" {DIM}({action.detail}){RESET}" if action.detail else ""
+        print(f"  {colour}{action.kind:<14}{RESET}{action.rel}{note}")
+
+    if conflicts:
+        print(
+            f"\n  Resolve with {BOLD}wsx resolve <path> --mine{RESET} "
+            f"(keep this worktree's copy) or {BOLD}--theirs{RESET} (take the source copy)."
+        )
+    return 1 if conflicts else 0
+
+
+def cmd_resolve(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_dev_worktree()
+    assert ctx.source is not None
+
+    rel = str(Path(os.path.relpath(Path(args.path).resolve(), ctx.root)))
+    if rel.startswith(".."):
+        raise Problem(f"{args.path} is outside this worktree")
+    if not is_managed(rel, managed_paths(ctx)):
+        raise Problem(f"{rel} is not a wsx-managed path")
+
+    src_path, dst_path = ctx.source / rel, ctx.root / rel
+    base = ctx.load_base()
+
+    if args.mine:
+        if digest(dst_path) is None:
+            raise Problem(f"{rel} does not exist in this worktree")
+        backup(ctx, "source", rel, src_path) if digest(src_path) else None
+        copy_file(dst_path, src_path)
+        base[rel] = digest(src_path) or ""
+        print(f"  {GREEN}kept local{RESET}   {rel} {DIM}-> source{RESET}")
+    else:
+        if digest(src_path) is None:
+            raise Problem(f"{rel} does not exist in the source worktree")
+        backup(ctx, "local", rel, dst_path) if digest(dst_path) else None
+        copy_file(src_path, dst_path)
+        base[rel] = digest(dst_path) or ""
+        print(f"  {GREEN}took source{RESET}  {rel} {DIM}-> local{RESET}")
+
+    marker = dst_path.with_name(dst_path.name + CONFLICT_SUFFIX)
+    if marker.exists():
+        marker.unlink()
+    ctx.save_base(base)
+    return 0
+
+
+def guard_report(ctx: Context) -> list[tuple[bool, str]]:
+    """(ok, message) for each commit-guard prerequisite."""
+    report: list[tuple[bool, str]] = []
+    hook_shim = ctx.root / ".husky" / "_" / "pre-commit"
+    init = Path(os.path.expanduser("~/.config/husky/init.sh"))
+
+    if hook_shim.is_file():
+        report.append((True, f"{GREEN}ok{RESET}        husky shims present (.husky/_/)"))
+    else:
+        report.append(
+            (
+                False,
+                f"{RED}INACTIVE{RESET}  .husky/_/ is missing -- the commit guard will NOT run.\n"
+                f"            Run 'npm install' at the worktree root to regenerate it.",
+            )
+        )
+
+    init_ok = False
+    if init.is_file():
+        init_ok = bool(re.search(r"wsx[\"']?\s+hook", init.read_text(encoding="utf-8")))
+    if init_ok:
+        report.append((True, f"{GREEN}ok{RESET}        ~/.config/husky/init.sh calls wsx"))
+    else:
+        report.append(
+            (False, f"{RED}MISSING{RESET}   ~/.config/husky/init.sh does not call 'wsx hook'")
+        )
+    return report
+
+
+def cmd_doctor(ctx: Context, args: argparse.Namespace) -> int:
+    print(f"{BOLD}wsx doctor{RESET}  {ctx.root}")
+    problems = 0
+
+    if not ctx.configured:
+        print(f"  {DIM}not configured for wsx (no {MANIFEST_NAME} on {ctx.source_branch}){RESET}")
+        return 0
+    print(f"  {GREEN}ok{RESET}        manifest {ctx.manifest_path}")
+
+    if ctx.is_source:
+        print(f"  {DIM}this is the source worktree -- nothing else to check{RESET}")
+        return 0
+
+    configured = git("config", "--get", "core.excludesFile", cwd=ctx.root, check=False)
+    expected = exclude_file(ctx)
+    if configured != str(expected):
+        problems += 1
+        print(f"  {RED}MISSING{RESET}   core.excludesFile is not pointing at {expected}")
+    elif not expected.is_file():
+        problems += 1
+        print(f"  {RED}MISSING{RESET}   {expected} does not exist")
+    elif expected.read_text(encoding="utf-8") != render_exclude(ctx):
+        problems += 1
+        print(f"  {YELLOW}STALE{RESET}     {expected} is out of date -- run 'wsx setup'")
+    else:
+        print(f"  {GREEN}ok{RESET}        ignore rules installed and current")
+
+    for ok, line in guard_report(ctx):
+        if not ok:
+            problems += 1
+        print(f"  {line}")
+
+    leftovers = [rel for rel in managed_paths(ctx) if (ctx.root / rel).is_symlink()]
+    if leftovers:
+        problems += 1
+        print(f"  {YELLOW}SYMLINK{RESET}   still linked, not copied: {', '.join(leftovers)}")
+    else:
+        print(f"  {GREEN}ok{RESET}        no leftover symlinks")
+
+    staged = guard_paths(ctx, staged_files(ctx))
+    if staged:
+        problems += 1
+        print(f"  {RED}STAGED{RESET}    managed paths are staged: {', '.join(staged)}")
+
+    conflicts = [a.rel for a in plan(ctx) if a.kind == "conflict"]
+    if conflicts:
+        problems += 1
+        print(f"  {RED}CONFLICT{RESET}  unresolved: {', '.join(conflicts)}")
+
+    print(f"\n  {RED if problems else GREEN}{problems} problem(s){RESET}")
+    return 1 if problems else 0
+
+
+def base_ref(ctx: Context) -> str:
+    configured = git("config", "--get", "wsx.baseRef", cwd=ctx.root, check=False)
+    if configured:
+        return configured
+    for candidate in ("origin/devtest", "origin/develop", "origin/main", "origin/master"):
+        if git_ok("rev-parse", "--verify", "--quiet", candidate, cwd=ctx.root):
+            return candidate
+    raise Problem(
+        "cannot determine a base ref -- set one with: git config wsx.baseRef <ref>"
+    )
+
+
+def arm_husky(path: Path) -> str:
+    """Regenerate .husky/_ so the commit guard is active in a new worktree.
+
+    The shim directory is gitignored and rebuilt by the root `prepare` script,
+    so a freshly created worktree has no hooks at all until dependencies are
+    installed.
+
+    npm rewrites package-lock.json as a side effect, which would leave a brand
+    new worktree dirty before any work has been done. The lock file is restored
+    afterwards: arming hooks must not look like a pending change.
+    """
+    if not (path / "package.json").is_file():
+        return "skipped (no package.json)"
+    if (path / ".husky" / "_" / "pre-commit").is_file():
+        return "already armed"
+
+    lock = path / "package-lock.json"
+    before = lock.read_bytes() if lock.is_file() else None
+
+    result = subprocess.run(
+        ["npm", "install", "--silent", "--no-audit", "--no-fund"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+    )
+
+    note = ""
+    if before is not None and lock.is_file() and lock.read_bytes() != before:
+        lock.write_bytes(before)
+        note = ", lock file restored"
+
+    if (path / ".husky" / "_" / "pre-commit").is_file():
+        return f"armed via npm install{note}"
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return f"FAILED -- run 'npm install' manually ({detail[-1] if detail else 'unknown'})"
+
+
+def cmd_new(ctx: Context, args: argparse.Namespace) -> int:
+    """Create a dev worktree that is correct the moment it exists."""
+    ctx.require_configured()
+
+    branch = args.branch
+    base = args.base or base_ref(ctx)
+    if args.path:
+        path = Path(args.path).expanduser().resolve()
+    else:
+        slug = branch.replace("/", "-")
+        path = (ctx.root.parent / f"{ctx.root.name}-{slug}").resolve()
+
+    if path.exists():
+        raise Problem(f"{path} already exists")
+    if git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=ctx.root):
+        raise Problem(f"branch '{branch}' already exists -- pick another name")
+
+    print(f"{BOLD}wsx new{RESET}  {branch}  {DIM}from {base}{RESET}")
+
+    if args.fetch:
+        print(f"  {DIM}fetching...{RESET}")
+        remote = base.split("/", 1)[0] if "/" in base else "origin"
+        if not git_ok("fetch", remote, cwd=ctx.root):
+            print(f"  {YELLOW}warning{RESET}   fetch failed -- using the local ref")
+
+    git("worktree", "add", str(path), "-b", branch, base, cwd=ctx.root)
+    print(f"  {GREEN}created{RESET}   {path}")
+
+    status = arm_husky(path)
+    marker = GREEN if "FAILED" not in status else RED
+    print(f"  {marker}husky{RESET}     {status}")
+
+    child = Context(path)
+    print(f"\n{BOLD}Copying personal state in{RESET}")
+    conflicts = apply(child, plan(child), {"in"}, dry_run=False)
+    ensure_installed(child)
+    print(f"  {GREEN}ok{RESET}        ignore rules installed")
+
+    print(f"\n  {BOLD}cd {path}{RESET}")
+    return 1 if conflicts else 0
+
+
+def resolve_worktree(ctx: Context, raw: str | None) -> Path:
+    if raw is None:
+        return ctx.root
+    candidate = Path(raw).expanduser().resolve()
+    if candidate.exists():
+        return candidate
+    for path, branch in list_worktrees(ctx.root):
+        if branch == raw or path.name == raw:
+            return path
+    raise Problem(f"no worktree matching '{raw}'")
+
+
+def cmd_rm(ctx: Context, args: argparse.Namespace) -> int:
+    """Push personal state back, then remove the worktree.
+
+    A worktree's copies are the only place its edits live until they are pushed,
+    so removing one without pushing silently destroys them. This makes the safe
+    order the default.
+    """
+    ctx.require_configured()
+    target = resolve_worktree(ctx, args.path)
+
+    if ctx.source is not None and target == ctx.source.resolve():
+        raise Problem("refusing to remove the source worktree")
+    if target == Path(ctx.common_dir).parent.resolve():
+        raise Problem("refusing to remove the main worktree")
+
+    child = Context(target)
+    print(f"{BOLD}wsx rm{RESET}  {target}")
+
+    print(f"\n{BOLD}Saving personal state{RESET}")
+    actions = plan(child)
+    conflicts = [a for a in actions if a.kind == "conflict"]
+    if conflicts and not args.force:
+        for action in conflicts:
+            print(f"  {RED}conflict{RESET}  {action.rel}")
+        raise Problem(
+            f"{len(conflicts)} unresolved conflict(s) -- resolve them, or re-run with "
+            f"--force to discard this worktree's side"
+        )
+    apply(child, actions, {"out"}, dry_run=False)
+
+    dirty = git("status", "--porcelain", cwd=target, check=False)
+    if dirty and not args.force:
+        print(f"\n{RED}uncommitted tracked changes:{RESET}")
+        for line in dirty.splitlines()[:10]:
+            print(f"  {line}")
+        raise Problem("commit or stash them, or re-run with --force")
+
+    remove = ["worktree", "remove", str(target)]
+    if args.force:
+        remove.append("--force")
+    git(*remove, cwd=ctx.root)
+    print(f"\n  {GREEN}removed{RESET}   {target}")
+
+    for orphan in prune_orphan_excludes(ctx):
+        print(f"  {DIM}pruned    {orphan}{RESET}")
+    return 0
+
+
+def cmd_list(ctx: Context, args: argparse.Namespace) -> int:
+    ctx.require_configured()
+    print(f"{BOLD}wsx list{RESET}  {DIM}source: {ctx.source}{RESET}\n")
+
+    for path, branch in list_worktrees(ctx.root):
+        label = branch or "(detached)"
+        if ctx.source is not None and path.resolve() == ctx.source.resolve():
+            print(f"  {DIM}source  {RESET}{label:<28}{DIM}{path}{RESET}")
+            continue
+        try:
+            child = Context(path)
+            actions = plan(child)
+            conflicts = sum(1 for a in actions if a.kind == "conflict")
+            pending = sum(1 for a in actions if a.kind not in ("converged", "conflict"))
+            if conflicts:
+                state, colour = f"{conflicts} conflict(s)", RED
+            elif pending:
+                state, colour = f"{pending} pending", YELLOW
+            else:
+                state, colour = "in sync", GREEN
+        except Problem as exc:
+            state, colour = str(exc)[:40], RED
+        print(f"  {colour}{state:<16}{RESET}{label:<28}{DIM}{path}{RESET}")
+    return 0
+
+
+def staged_files(ctx: Context) -> list[str]:
+    out = git("diff", "--cached", "--name-only", cwd=ctx.root, check=False)
+    return [line for line in out.splitlines() if line]
+
+
+def guard_paths(ctx: Context, paths: list[str]) -> list[str]:
+    if not ctx.configured or ctx.branch == ctx.source_branch:
+        return []
+    entries = managed_paths(ctx)
+    return [p for p in paths if is_managed(p, entries)]
+
+
+def cmd_guard(ctx: Context, args: argparse.Namespace) -> int:
+    if not ctx.configured:
+        return 0
+
+    if args.range:
+        out = git("diff", "--name-only", args.range, cwd=ctx.root, check=False)
+        paths, label = [p for p in out.splitlines() if p], f"in {args.range}"
+    else:
+        paths, label = staged_files(ctx), "staged"
+
+    offenders = guard_paths(ctx, paths)
+    if not offenders:
+        return 0
+
+    print(
+        f"{RED}wsx: blocked{RESET} -- personal workspace paths {label} on branch "
+        f"'{ctx.branch}':",
+        file=sys.stderr,
+    )
+    for path in offenders:
+        print(f"    {path}", file=sys.stderr)
+    print(
+        f"  Only the '{ctx.source_branch}' branch may commit these.\n"
+        f"  Unstage them with: git restore --staged {' '.join(offenders[:4])}\n"
+        f"  They are synced to the source worktree by 'wsx push' -- nothing is lost.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_hook(ctx: Context, args: argparse.Namespace) -> int:
+    """Entry point for git hooks. Never reads stdin, never fails the hook for
+    reasons other than the guard -- a sync problem must not block a commit."""
+    if not ctx.configured or ctx.is_source:
+        return 0
+
+    name = args.name
+
+    # Repair a worktree that was created without `wsx setup`/`wsx new`. Doing
+    # this before the guard matters: without ignore rules the managed paths
+    # show up as untracked, and `git add -A` would sweep them into the index.
+    try:
+        if ensure_installed(ctx):
+            print(f"wsx: installed ignore rules for {ctx.root.name}")
+    except Problem as exc:
+        print(f"{YELLOW}wsx: could not install ignore rules ({exc}){RESET}", file=sys.stderr)
+
+    if name == "pre-commit":
+        guard = argparse.Namespace(range=None)
+        if cmd_guard(ctx, guard):
+            return 1
+        return quiet_sync(ctx, {"out"}, "pre-commit")
+
+    if name == "pre-push":
+        upstream = git("rev-parse", "--abbrev-ref", "@{upstream}", cwd=ctx.root, check=False)
+        if upstream:
+            guard = argparse.Namespace(range=f"{upstream}..HEAD")
+            if cmd_guard(ctx, guard):
+                return 1
+        return quiet_sync(ctx, {"out"}, "pre-push")
+
+    if name in ("post-merge", "post-checkout", "post-rewrite", "session-start"):
+        # An agent session can absorb a one-off `npm install`; a commit cannot.
+        # This is the only place a worktree created with a bare
+        # `git worktree add` gets its commit guard armed automatically.
+        if name == "session-start" and not (ctx.root / ".husky" / "_" / "pre-commit").is_file():
+            status = arm_husky(ctx.root)
+            if status not in ("already armed", "skipped (no package.json)"):
+                print(f"wsx: commit guard {status}")
+        return quiet_sync(ctx, {"in"}, name)
+
+    if name == "session-end":
+        return quiet_sync(ctx, {"out"}, name)
+
+    return 0
+
+
+def quiet_sync(ctx: Context, directions: set[str], label: str) -> int:
+    """Best-effort sync from inside a hook. Reports, never blocks."""
+    try:
+        actions = plan(ctx)
+        pending = [a for a in actions if a.kind not in ("converged", "conflict")]
+        conflicts = [a for a in actions if a.kind == "conflict"]
+        relevant = [
+            a for a in pending
+            if ("in" if a.kind in ("pull", "delete-local") else "out") in directions
+        ]
+        if relevant:
+            print(f"{label}: wsx syncing {len(relevant)} personal file(s)")
+            apply(ctx, actions, directions, dry_run=False)
+        elif conflicts:
+            apply(ctx, actions, directions, dry_run=False)
+        if conflicts:
+            print(
+                f"{YELLOW}{label}: wsx has {len(conflicts)} unresolved conflict(s) "
+                f"-- run 'wsx status'{RESET}",
+                file=sys.stderr,
+            )
+    except Problem as exc:
+        print(f"{YELLOW}{label}: wsx skipped ({exc}){RESET}", file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="wsx",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add(name: str, func, help_text: str, dry: bool = False):
+        cmd = sub.add_parser(name, help=help_text)
+        cmd.set_defaults(func=func)
+        if dry:
+            cmd.add_argument(
+                "-n", "--dry-run", action="store_true", help="show changes without applying them"
+            )
+        return cmd
+
+    add("setup", cmd_setup, "prepare a worktree: copy state in, install ignore + guard", dry=True)
+    add("pull", cmd_pull, "apply source -> worktree changes", dry=True)
+    add("push", cmd_push, "apply worktree -> source changes", dry=True)
+    add("sync", cmd_sync, "apply changes in both directions", dry=True)
+    add("status", cmd_status, "show pending changes and conflicts")
+    add("list", cmd_list, "show every worktree and its sync state")
+    add("doctor", cmd_doctor, "verify guards, ignores and hooks are active")
+
+    new = add("new", cmd_new, "create a fully set-up dev worktree")
+    new.add_argument("branch", help="branch to create, e.g. feature/CA-1234-thing")
+    new.add_argument("path", nargs="?", help="worktree path (default: sibling directory)")
+    new.add_argument("--base", help="base ref (default: wsx.baseRef, else origin/devtest)")
+    new.add_argument(
+        "--no-fetch",
+        dest="fetch",
+        action="store_false",
+        help="skip fetching the base ref first",
+    )
+
+    rm = add("rm", cmd_rm, "push personal state back, then remove a worktree")
+    rm.add_argument("path", nargs="?", help="worktree path, branch or name (default: cwd)")
+    rm.add_argument(
+        "--force",
+        action="store_true",
+        help="remove despite conflicts or uncommitted tracked changes",
+    )
+
+    resolve = add("resolve", cmd_resolve, "settle a conflict")
+    resolve.add_argument("path")
+    side = resolve.add_mutually_exclusive_group(required=True)
+    side.add_argument("--mine", action="store_true", help="keep this worktree's copy")
+    side.add_argument("--theirs", action="store_true", help="take the source worktree's copy")
+
+    guard = add("guard", cmd_guard, "block managed paths from being committed")
+    guard.add_argument("--range", help="commit range to check instead of the index")
+
+    hook = add("hook", cmd_hook, "git-hook entry point")
+    hook.add_argument("name")
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    hook_mode = args.command == "hook"
+    try:
+        return args.func(Context(Path.cwd()), args)
+    except Problem as exc:
+        if hook_mode:
+            # A misconfigured or unavailable workspace must never block a commit.
+            print(f"{YELLOW}wsx: {exc}{RESET}", file=sys.stderr)
+            return 0
+        print(f"{RED}wsx: {exc}{RESET}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:  # noqa: BLE001 - hooks must fail open
+        if hook_mode:
+            print(f"{YELLOW}wsx: unexpected error, skipping ({exc}){RESET}", file=sys.stderr)
+            return 0
+        raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "\"$HOME/.config/agents/render-agent-rules\" >/dev/null 2>&1; [ -x \"$HOME/.local/bin/wsx\" ] && \"$HOME/.local/bin/wsx\" hook session-start >/dev/null 2>&1; printf '%s' '{}'",
+        "timeoutSec": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "[ -x \"$HOME/.local/bin/wsx\" ] && \"$HOME/.local/bin/wsx\" hook session-end >/dev/null 2>&1; printf '%s' '{}'",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

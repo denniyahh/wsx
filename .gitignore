@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local scratch
+*.bak
+*.orig
