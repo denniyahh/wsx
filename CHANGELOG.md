@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A commit in one worktree no longer deletes the other worktrees' ignore rules
+  ([#1](https://github.com/denniyahh/wsx/issues/1)). Git exports `GIT_DIR` to
+  hooks, so the `git rev-parse` wsx ran per worktree while pruning orphaned
+  exclude files reported the hook's own git dir for all of them, and every other
+  worktree looked gone. Worktree ids are now read from each `.git` directly.
+
 ### Added
 
 - Commit guard for repos without husky. When the worktree has no

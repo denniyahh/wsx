@@ -176,6 +176,24 @@ git config core.hooksPath .hooks-elsewhere
 check "hooksPath repos report inactive" "1" "$(wsx doctor 2>&1 | grep -c INACTIVE)"
 git config --unset core.hooksPath
 
+echo "== 13. hook in one worktree keeps other worktrees' ignore rules (#1) =="
+cd "$SANDBOX/repo"
+wsx setup >/dev/null 2>&1
+MAIN_EX="$(git config --worktree --get core.excludesFile)"
+cd "$DEV"
+DEV_EX="$(git config --worktree --get core.excludesFile)"
+rm -f "$DEV_EX"
+echo "linked" >>src/app.txt && git add src/app.txt
+git commit -qm "commit from linked worktree" >/dev/null 2>&1
+check "commit from linked worktree succeeded" "commit from linked worktree" "$(git log -1 --format=%s)"
+check "main worktree exclude survives linked commit" "yes" "$([[ -f "$MAIN_EX" ]] && echo yes || echo no)"
+cd "$SANDBOX/repo"
+rm -f "$MAIN_EX"
+echo "main" >>src/app.txt && git add src/app.txt
+git commit -qm "commit from main worktree" >/dev/null 2>&1
+check "linked worktree exclude survives main commit" "yes" "$([[ -f "$DEV_EX" ]] && echo yes || echo no)"
+check "main worktree still ignores managed paths" "" "$(git status --porcelain -- .planning AGENTS.md)"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
