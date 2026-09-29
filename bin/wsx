@@ -536,15 +536,32 @@ def render_exclude(ctx: Context) -> str:
     return "\n".join(line for line in lines if line is not None) + "\n"
 
 
+def worktree_id_for(path: Path) -> str:
+    """The id `worktree_id()` would report from inside `path`, without running git.
+
+    Spawning `git rev-parse` per worktree is unsafe from a hook: git exports
+    GIT_DIR there, which makes every call report the hook's own git dir
+    regardless of cwd -- so every other worktree looked gone and had its
+    exclude file pruned (issue #1). Reading `.git` directly has no such leak.
+    """
+    dotgit = path / ".git"
+    if dotgit.is_dir():
+        return "main"
+    if dotgit.is_file():
+        try:
+            line = dotgit.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        if line.startswith("gitdir:"):
+            return Path(line[len("gitdir:") :].strip()).name
+    return ""
+
+
 def prune_orphan_excludes(ctx: Context) -> list[str]:
     """Remove exclude files left behind by worktrees that no longer exist."""
-    live = {
-        (Path(git("rev-parse", "--absolute-git-dir", cwd=path)).name or "main")
-        if path.exists()
-        else ""
-        for path, _ in list_worktrees(ctx.root)
-    }
-    live = {name if name != ".git" else "main" for name in live}
+    live = {worktree_id_for(path) for path, _ in list_worktrees(ctx.root) if path.exists()}
+    live.add(worktree_id(ctx))
+    live.discard("")
 
     removed: list[str] = []
     info = ctx.common_dir / "info"
