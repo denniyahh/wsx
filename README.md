@@ -161,6 +161,18 @@ wsx: blocked -- personal workspace paths staged on branch 'feature/ABC-123':
 Everything except the guard **fails open** — a sync problem reports and moves
 on, and can never block a commit.
 
+How the guard is wired depends on the repo:
+
+- **husky repos** (a `package.json` at the root): husky sources
+  `~/.config/husky/init.sh`, which calls `wsx hook <name>`. `wsx new` runs
+  `npm install` to regenerate `.husky/_/`.
+- **everything else** (Python, Go, …): `wsx setup`/`wsx new` write small shims
+  for `pre-commit`, `pre-push` and `post-merge` into the shared `.git/hooks`.
+  They are untracked and live in the common git dir, so one install covers
+  every worktree. Each carries a `# wsx-managed git hook shim` marker; a hook
+  without it is never overwritten. If `core.hooksPath` is set, wsx leaves hooks
+  to that manager — call `wsx hook <name>` from it.
+
 ---
 
 ## Commands
@@ -224,8 +236,9 @@ required.
 
 - git ≥ 2.31 (for `extensions.worktreeConfig` with `git config --worktree`)
 - Python ≥ 3.9, standard library only
-- Optional: [husky](https://typicode.github.io/husky/) for git hooks, fish for
-  shell integration, npm if `wsx new` should arm husky for you
+- Optional: [husky](https://typicode.github.io/husky/) for git hooks in npm
+  repos (other repos get plain `.git/hooks` shims), fish for shell integration,
+  npm if `wsx new` should arm husky for you
 
 ## Testing
 
