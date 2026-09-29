@@ -11,7 +11,8 @@ tests still pass.
 2. **Fail open everywhere except the guard.** A sync problem must never block a
    commit. The *only* non-zero exit from `wsx hook` is the guard refusing
    managed paths.
-3. **Never consume stdin in hook paths.** `~/.config/husky/init.sh` is
+3. **Never consume stdin in hook paths.** `~/.config/husky/init.sh` (and the
+   `.git/hooks` shims wsx writes for non-husky repos) is
    *sourced*, sharing stdin with the hook that follows it, and `pre-push` reads
    its refs from stdin. Anything that swallows it silently breaks pushes.
 4. **Touch nothing the team owns.** No writes to tracked files — `.gitignore`,

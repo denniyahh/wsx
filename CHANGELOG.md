@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Commit guard for repos without husky. When the worktree has no
+  `package.json`, `wsx setup` and `wsx new` install marked shims for
+  `pre-commit`, `pre-push` and `post-merge` into the shared `.git/hooks`, and
+  agent session start re-arms them if missing. `wsx doctor` recognises them
+  instead of reporting the guard as inactive. Unmarked (foreign) hooks are never
+  overwritten, and repos with `core.hooksPath` set are left to that hook manager.
+
 ## [0.1.0] — 2026-09-18
 
 First extraction into a standalone repository. Developed in place against a

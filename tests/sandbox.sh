@@ -155,6 +155,27 @@ SRC_RC=0
 wsx push >/dev/null 2>&1 || SRC_RC=$?
 check "wsx refuses to run against the source" "2" "$SRC_RC"
 
+echo "== 12. plain git hooks (no husky) =="
+cd "$DEV"
+HOOKS="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
+check "setup installed pre-commit shim" "1" "$(grep -c 'wsx-managed git hook shim' "$HOOKS/pre-commit" 2>/dev/null)"
+check "shim is executable" "yes" "$([[ -x "$HOOKS/pre-push" ]] && echo yes || echo no)"
+check "doctor sees the guard" "0" "$(wsx doctor 2>&1 | grep -c INACTIVE)"
+git add -f .planning/PLAN.md
+COMMIT_RC=0
+git commit -qm "should be blocked" >/dev/null 2>&1 || COMMIT_RC=$?
+check "real commit of managed path is blocked" "1" "$COMMIT_RC"
+git restore --staged .planning/PLAN.md
+echo "custom" >"$HOOKS/post-merge"
+rm -f "$HOOKS/pre-commit"
+wsx setup >/dev/null 2>&1
+check "foreign hook left untouched" "custom" "$(cat "$HOOKS/post-merge")"
+check "missing shim re-armed" "1" "$(grep -c 'wsx-managed git hook shim' "$HOOKS/pre-commit" 2>/dev/null)"
+rm -f "$HOOKS/post-merge"
+git config core.hooksPath .hooks-elsewhere
+check "hooksPath repos report inactive" "1" "$(wsx doctor 2>&1 | grep -c INACTIVE)"
+git config --unset core.hooksPath
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
