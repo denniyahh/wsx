@@ -1001,7 +1001,10 @@ def cmd_new(ctx: Context, args: argparse.Namespace) -> int:
         if not git_ok("fetch", remote, cwd=ctx.root):
             print(f"  {YELLOW}warning{RESET}   fetch failed -- using the local ref")
 
-    git("worktree", "add", str(path), "-b", branch, base, cwd=ctx.root)
+    # --no-track: branching from origin/<integration> would otherwise make that
+    # branch the new branch's upstream, so tools that delete "the upstream"
+    # when removing the feature branch delete the integration branch instead.
+    git("worktree", "add", "--no-track", str(path), "-b", branch, base, cwd=ctx.root)
     print(f"  {GREEN}created{RESET}   {path}")
 
     kind, status = arm_guard(path)
