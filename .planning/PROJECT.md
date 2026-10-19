@@ -109,6 +109,8 @@ deletes data it should not have is the one unacceptable failure.
 | Reftable repos refused in milestone 1, resolved before the public release | gix 0.89 can't open them; none of the author's 27 repos use reftable | — Pending |
 | Pre-push guard checks every commit in the range | The oracle's tip-to-tip diff lets an added-then-removed file through | — Pending |
 | Parity oracle is `origin/develop`, not the 0.1.0 tag | develop holds merged fixes and the plain git hook guard | — Pending |
+| Agents push at the end of every turn, for all four runtimes | Codex (3 s max) and Antigravity (no session-end event) need it; one behaviour everywhere is simpler to reason about and test | — Pending |
+| Roadmap built as horizontal layers | Parity-gated rewrite: each layer is verified against the oracle before the next starts | — Pending |
 
 ## Evolution
 
