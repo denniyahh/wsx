@@ -1,0 +1,14 @@
+# How workspace/denniyahh differs from develop. Read by
+# scripts/workspace/cut-pr-branch.sh, which never replays an `only` path.
+# Ported from devflow (Workflow B). The divergence check hook is not ported yet.
+#
+# `only <path>`: exists only on this branch (a directory covers everything in it).
+# `modified <path>`: a develop file this branch deliberately changes.
+# .planning/, graphify-out/, agent-tool paths and this file are built in
+# and need no line.
+
+# Workflow B tooling (sync, phase worktrees, clean PR branches)
+only scripts/workspace
+
+# Ignores .worktrees/ and graphify/research caches
+modified .gitignore

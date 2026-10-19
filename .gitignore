@@ -15,3 +15,9 @@ Thumbs.db
 # Local scratch
 *.bak
 *.orig
+
+# Personal workspace (workspace/* branches only; see .workspace-divergence)
+.worktrees/
+graphify-out/
+.planning/graphs/
+.planning/research/.cache/
