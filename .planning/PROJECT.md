@@ -111,6 +111,8 @@ deletes data it should not have is the one unacceptable failure.
 | Parity oracle is `origin/develop`, not the 0.1.0 tag | develop holds merged fixes and the plain git hook guard | — Pending |
 | Agents push at the end of every turn, for all four runtimes | Codex (3 s max) and Antigravity (no session-end event) need it; one behaviour everywhere is simpler to reason about and test | — Pending |
 | Roadmap built as horizontal layers | Parity-gated rewrite: each layer is verified against the oracle before the next starts | — Pending |
+| wsx adopts the workspace-branch model (devflow Workflow B) as its product; copy-sync is dropped and 0.1.0 frozen | Every repo the owner uses runs the workspace-branch model (devflow, gsd-core, gsd-pi, wsx); copy-sync is incompatible with GSD committing planning docs, and carries most of the data-loss risk. Owner decision 2026-10-19 | — Pending |
+| Milestone 1 is re-scoped around workspace-branch mode, with `scripts/workspace/` (and devflow's hooks) as the oracle | Build what is used; the shell ports play the role Python 0.1.0 played | — Pending |
 
 ## Evolution
 

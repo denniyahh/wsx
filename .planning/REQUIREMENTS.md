@@ -1,5 +1,7 @@
 # Requirements: wsx
 
+> **SUPERSEDED 2026-10-19.** Copy-sync is dropped and milestone 1 is re-scoped around the workspace-branch model (PROJECT.md Key Decisions). These copy-sync requirements are kept for reference until the rewrite replaces them; do not build a roadmap from them.
+
 **Defined:** 2026-10-18
 **Core Value:** wsx must never lose or silently clobber a user's personal files. Every sync decision is either correct, reported as a conflict, or backed up.
 
