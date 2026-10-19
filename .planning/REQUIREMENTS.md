@@ -73,7 +73,7 @@ is a fixed defect or a decision listed here, and has a harness scenario.
 ### Git (adapter)
 
 - [ ] **GIT-01**: wsx resolves the right worktree, git-dir and common-dir even when the hook environment exports `GIT_DIR`/`GIT_INDEX_FILE`. Parity with the oracle's issue #1 fix, extended to every git call made from a hook
-- [ ] **GIT-02**: Child processes wsx starts get a scrubbed git environment and a null stdin
+- [ ] **GIT-02**: Child processes wsx starts get a scrubbed git environment (the variables `git rev-parse --local-env-vars` lists) and a null stdin
 - [ ] **GIT-03**: A reftable repo is refused with a clear message, never a crash or partial run (a `regression:` scenario)
 - [ ] **GIT-04**: A repo owned by another user (reduced trust) is refused, as git does, never processed with repo config silently ignored
 - [ ] **GIT-05**: A user's custom global `core.excludesFile` is kept in the generated per-worktree ignore file
@@ -81,13 +81,13 @@ is a fixed defect or a decision listed here, and has a harness scenario.
 
 ### Guard and hooks
 
-- [ ] **GUARD-01**: The commit guard blocks staged managed paths that contain non-ASCII or special characters (fixes quoted paths slipping through)
-- [ ] **GUARD-02**: The pre-push guard checks every commit in the range it computes from git state, so a managed file added and later removed is still caught (a deliberate difference from the oracle). `git push origin <other-branch>` remains a documented gap until milestone 2's HOOK-02
+- [ ] **GUARD-01**: The commit guard blocks staged managed paths that contain non-ASCII or special characters (fixes quoted paths slipping through). Staged names are read NUL-separated and repo-relative, so `diff.relative` cannot hide a path either
+- [ ] **GUARD-02**: The pre-push guard checks every commit in the range it computes from git state, using every commit's touched paths, so a managed file added and later removed, or renamed into a managed path, is still caught (a deliberate difference from the oracle). `git push origin <other-branch>` remains a documented gap until milestone 2's HOOK-02
 - [ ] **GUARD-03**: The pre-push guard also runs on a branch's first push (no upstream), and the commit guard works on a repo's first commit (unborn HEAD)
 - [ ] **GUARD-04**: The guard fails closed only once wsx has confirmed the repo is wsx-configured. An internal error after that point blocks the commit or push with a clear message. Unconfigured repos and repos wsx refuses (reftable, another owner) exit 0, so the machine-wide hook never blocks unrelated repos. `WSX_SKIP=1` still bypasses
 - [ ] **GUARD-05**: Sync hooks never fail the git operation. Unknown hook names, panics, broken pipes and Ctrl-C all exit 0 in hook mode
 - [ ] **GUARD-06**: Agent session hooks (Claude Code, Copilot) sync the worktree named in the stdin JSON `cwd`, not the process cwd. Only those hooks read stdin, and only when it isn't a terminal, with a size bound. Git hook paths never read stdin
-- [ ] **GUARD-07**: Plain `.git/hooks` guard shims for repos without husky work at parity: same marker, never overwrite a foreign hook, leave `core.hooksPath` repos alone, re-arm on session start
+- [ ] **GUARD-07**: Plain `.git/hooks` guard shims for repos without husky work at parity: same marker, never overwrite a foreign hook, leave `core.hooksPath` repos alone, re-arm on session start. `doctor` checks the shim is executable, not just present, and when `core.hooksPath` is set says so and shows how to chain `wsx hook <name>` from that manager
 
 ### Lifecycle
 
