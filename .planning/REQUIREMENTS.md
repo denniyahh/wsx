@@ -122,7 +122,7 @@ Milestone 2: public baseline release. Tracked, not in the current roadmap.
 
 - **AGNT-01**: Codex CLI session integration
 - **AGNT-02**: Antigravity session integration (Antigravity CLI, which replaced Gemini CLI for unpaid users on 2026-06-18)
-- **AGNT-03**: Every agent integration (Claude Code, Copilot, Codex, Antigravity) pushes at the end of each turn; session-end push stays as a best-effort extra. Consistent across runtimes (owner decision 2026-10-19). Depends on the M1 stat cache and lock (SAFE-01, SAFE-07)
+- **AGNT-03**: Every agent integration (Claude Code, Copilot, Codex, Antigravity) pushes at the end of each turn; session-end push stays as a best-effort extra. Consistent across runtimes (owner decision 2026-10-19). Depends on the M1 stat cache and lock (SAFE-01, SAFE-07). Acceptance must cover: parallel agents finishing turns at once (lock losers skip and retry next turn, nothing lost), and a mid-task edit reaching the source before the task ends (other worktrees see it only on their next pull)
 - **AGNT-04**: Confirm whether Claude Code's worktree auto-removal keeps unpushed gitignored files
 
 ### Maintenance
