@@ -43,9 +43,9 @@ cut that silently drops code, is the unacceptable failure.
 
 ### Active
 
-<!-- Milestone 1: Rust parity + hardened against the shell oracle. See REQUIREMENTS.md (49). -->
+<!-- Milestone 1: a Rust replacement that beats the shell oracle. See REQUIREMENTS.md (71). -->
 
-- [ ] Rust implementation of workspace sync, worktrees, PR cut, divergence check and guards, at parity with the shell oracle except deliberate fixes
+- [ ] Rust implementation of workspace sync, worktrees, PR cut, divergence check and guards, never worse than the shell oracle on safety, and better wherever it can be (improve-over-prior-art mandate)
 - [ ] Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls
 - [ ] One resolved personal-path list shared by guard, cut, check and status; configurable integration branch, workspace branch, base and push remotes, worktree directory
 - [ ] Hooks installed as git config-based hooks (git ≥ 2.54), coexisting with `core.hooksPath`, husky and global hooks; pre-push reads the real pushed refs
@@ -91,7 +91,7 @@ cut that silently drops code, is the unacceptable failure.
 | Python 0.1.0 is the test oracle, then gets deleted | A black-box harness run against both binaries proves parity; known defects are the only allowed divergence | Superseded 2026-10-19: oracle is the shell scripts |
 | Use gix for git access | Pure-Rust, no subprocess parsing; fall back to the `git` binary only where gix has gaps | Revised 2026-10-19: git binary writes, gix reads |
 | Migrate once: compatible manifest/config, versioned `base.json` | Keeps existing worktrees working while freeing internal state for the stat cache | Superseded 2026-10-19: copy-sync dropped; `wsx migrate` |
-| Milestone 1 = Rust parity + hardened, no public release | Hardening before features; distribution and baseline features come in milestone 2 | — Pending |
+| Milestone 1 = Rust parity + hardened, no public release | Hardening before features; distribution and baseline features come in milestone 2 | Revised 2026-10-20: parity only on safety outcomes; improve elsewhere |
 | Linux only for milestone 1 | The author's platform; macOS/Windows file-locking and symlink semantics add scope | — Pending |
 | Guard fails closed on internal error, but only once the repo is confirmed wsx-configured | A guard that silently passes leaks personal files. The hook is machine-wide, so unrelated or refused repos must never be blocked | — Pending |
 | Back up every destructive write, keep the newest 10 per path, store under the common git dir | Core Value. Backups must survive `wsx rm` | Superseded 2026-10-19: copy-sync dropped |
@@ -110,6 +110,8 @@ cut that silently drops code, is the unacceptable failure.
 | Hooks as git config-based hooks (≥ 2.54) | Run alongside `core.hooksPath` and global hooks, and get the real pushed refs (tested 2026-10-19) | — Pending |
 | No GSD-generated `.claude/CLAUDE.md` | A preview was 286 lines describing the dropped copy-sync design; devflow removed project `.claude/` configs too. Root CLAUDE.md is rewritten for Rust in phase 1. Owner decision 2026-10-19 | — Pending |
 | wsx manages the repo; devflow manages agents and GSD; no overlap; wsx is standalone | Owner intent 2026-10-19. wsx has no GSD/agent knowledge (IF-02); devflow drives wsx via `--json` (IF-01); phase concepts, agent integrations, ship/versioning stay in devflow | — Pending |
+| Improve over prior art; never inherit worse behaviour to match devflow or 0.1.0 | Owner mandate 2026-10-20. The oracle is a floor on safety outcomes, not a spec. First applications: cut in a temporary worktree, sync from any worktree, refuse replaying `modified` paths | — Pending |
+| `wsx land` and `wsx adopt` in milestone 1 | Without `land`, a standalone user can't finish the new → cut → land → rm loop; without `adopt`, hand-made branches hit an unexplained refusal. Owner agreed 2026-10-20 | — Pending |
 
 ## Evolution
 

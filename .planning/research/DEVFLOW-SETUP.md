@@ -150,12 +150,22 @@ roadmap, as "adopt wsx" work, not on wsx's.
 | devflow | Overlap | Retire by |
 |---|---|---|
 | `devflow start` creates `feature/phase-NN` worktrees itself (`worktree.rs`, base from `devflow.toml` `base_branch`) | worktree creation | calling `wsx new <branch>` |
-| Ship merges the phase branch into the base branch (`git.rs` `merge --no-ff`) | merge-back | calling `wsx land` (wsx v2 WTREE-06) |
+| Ship merges the phase branch into the base branch (`git.rs` `merge --no-ff`) | merge-back | calling `wsx land` (wsx M1 WTREE-06) |
 | `devflow cleanup` (and backlog 999.43, recovery refs deleted by ancestry) | worktree/branch cleanup | calling `wsx rm` |
 | Backlog 999.110 (`devflow init`/`doctor` for the `.planning`-tracking base branch) and `devflow.toml` `base_branch` | the same fact as `wsx.sourceBranch` | reading it from `wsx status --json` |
 | Backlog 999.28 (`--base` for `devflow start`) | worktree base | `wsx new`'s base resolution |
 | Backlog 999.146 (`cut-pr-branch.sh` name bug) | PR cut | fixed in wsx PRCUT-01; retire the script at cutover |
 | `scripts/hooks` personal-path policy, `check-workspace-divergence.sh`, `cut-pr-branch.sh`, `sync-workspace.sh`, `phase-worktree.sh` | the repo tooling itself | REL-01 cutover |
+
+**Adoption order (2026-10-20).** devflow's worktree and merge code is tested, and replacing it is a
+regression risk, not free cleanup. The order is fixed:
+1. wsx milestone 1 ships.
+2. The wsx repo cuts over to it (REL-01).
+3. devflow's repo tooling cuts over (scripts and hooks, REL-01).
+4. Only then does devflow's Rust code start calling wsx, one row of the table above at a time,
+   each behind devflow's existing tests.
+
+Steps 3 and 4 are never done in parallel.
 
 Staying in devflow: agent sessions, gates, Ship approval, version and tag computation, STATE.md
 and plan lints, the off-worktree guard, GSD config checks, `release --check` signing probes.
