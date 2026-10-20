@@ -143,6 +143,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [ ] **REL-01**: `install.sh` installs the Rust binary. In the wsx and devflow repos, wsx replaces the shell scripts and the devflow hook's personal-path policy, with `.wsx.conf` migrated (MIG-01) at that point and not before
 - [ ] **REL-02**: The vendored shell oracle (`tests/oracle/`) stays until the harness passes on Rust with every recorded expectation intact, then is deleted. Python 0.1.0 `bin/wsx` is deleted from `develop`, with a `v0.1.0` tag kept
 - [ ] **REL-03**: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` and `cargo deny check` pass. `cargo mutants` on the path matcher, commit classifier (scope and personal-path) and guard range logic leaves zero surviving mutants, apart from any listed as equivalent with a justification
+- [ ] **REL-04**: CI runs test, clippy and fmt on every PR to `develop` and `main`. Once it has run, those check names are added as required checks (up to date before merge) to the `develop-merge-or-squash` and `main-squash-only` rulesets created 2026-10-19
 
 ## v2 Requirements (milestone 2: public baseline)
 
@@ -175,9 +176,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 56 total
+- v1 requirements: 57 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 56
+- Unmapped: 57
 
 ---
 *Last updated: 2026-10-19 after re-scoping and the workspace-mode adversarial review*

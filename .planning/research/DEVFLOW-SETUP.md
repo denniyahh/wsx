@@ -176,7 +176,7 @@ requirement it confirms or changes.
 | `use_worktrees: false`, `feature/phase-{phase}`, `commit_docs` | ✓ | |
 | Repo hooks, gitleaks chaining, commit-msg | ✗ | D9. The global gitleaks hook still runs because wsx sets no local `hooksPath` |
 | check.sh / clippy.toml / toolchain pin / deny.toml / CI | ✗ | D1–D5, phase 1 |
-| Rulesets / merge settings | ✗ | D5, owner-run |
+| Rulesets / merge settings | ✓ (2026-10-19) | `develop` and `main` (PR required, no deletion, no force-push), `workspace/*` (no deletion, no force-push), devflow's merge settings. Required checks: REL-04. **devflow's own live rulesets lack the deletion and force-push rules its checklist claims** |
 | Container parity | ✗ | D6, deferred |
 | Tracked `.gitconfig` | ✗ | D10, phase 1 |
 | Release key policy | ✗ | D11, milestone 2 |
