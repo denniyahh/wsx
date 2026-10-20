@@ -138,10 +138,19 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - an unfetched base ref
   - undeclared divergence
 
+### Development setup (adopted from devflow, owner decision 2026-10-19)
+
+- [ ] **DEV-01**: `scripts/check.sh {all,fmt,clippy,test,deps}` is the single gate entry point that CI, hooks and humans call. A missing tool is a hard failure
+- [ ] **DEV-02**: `rust-toolchain.toml` pins an exact rustc (1.99.0, the host's version) with clippy and rustfmt
+- [ ] **DEV-03**: Root `CLAUDE.md` is rewritten for Rust (still minimal and public-safe), including devflow's repo traps: `nextest --no-tests=fail -E 'test(=path)'` one test per command; `rg -c` prints nothing on zero matches; zsh has no `PIPESTATUS`; prefer a named Rust test over a shell pipeline
+- [ ] **DEV-04**: `CONTRIBUTING.md` is rewritten for Rust, with devflow's AI change acceptance bar (a regression test that fails first, a boundary assertion, proof it failed for the intended reason, full gates, independent review) and its four rejected test shapes
+- [ ] **DEV-05**: A tracked `.gitconfig`, pulled in with `git config --local include.path ../.gitconfig`, sets SSH signing for commits and tags and the git-flow branch names. It contains nothing personal
+- [ ] **DEV-06**: Container parity. `.devcontainer/devcontainer.json` pins an exact image tag. `scripts/check-in-container.sh` runs `check.sh` in that image and is worktree-aware (it bind-mounts the common git dir) with per-checkout cargo volumes. CI jobs run in the same image, and an image-tag parity check fails CI if the two drift. Requires a Docker daemon (rootless Docker 29.9 on the host). devflow's CPU-pinned sequential job is not ported
+
 ### Supply chain (global policy, 2026-10-19)
 
 - [ ] **SUP-01**: `cargo deny check` (advisories, licenses, bans, sources) runs on every push and PR and on a weekly schedule. It is advisory, not a required check. The weekly job takes effect once merged to `main`, the default branch. No second scanner (one ecosystem; osv-scanner would read the same advisory data)
-- [ ] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
+- [ ] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions and the devcontainer image weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
 - [ ] **SUP-03**: The repo runs its own secret scan: a tracked setup script registers a config-based pre-commit hook running `gitleaks git --pre-commit --staged --redact`, alongside any global hook. Server-side push protection (already on) is the backstop for `--no-verify`
 - [ ] **SUP-04**: `Cargo.lock` is committed. CI actions are pinned to commit SHAs. Scanner versions are pinned in one install script. A missing scanner is a hard failure, never a skip
 - [ ] **SUP-05**: Each scanner is proven to bite before it counts as enabled: a planted fake secret is refused by the hook, and a known-vulnerable or disallowed crate in a scratch copy fails `cargo deny`. Both controls are cleaned up afterwards
@@ -184,9 +193,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 62 total
+- v1 requirements: 68 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 62
+- Unmapped: 68
 
 ---
 *Last updated: 2026-10-19 after re-scoping and the workspace-mode adversarial review*
