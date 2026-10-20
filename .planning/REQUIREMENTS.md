@@ -138,6 +138,14 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - an unfetched base ref
   - undeclared divergence
 
+### Supply chain (global policy, 2026-10-19)
+
+- [ ] **SUP-01**: `cargo deny check` (advisories, licenses, bans, sources) runs on every push and PR and on a weekly schedule. It is advisory, not a required check. The weekly job takes effect once merged to `main`, the default branch. No second scanner (one ecosystem; osv-scanner would read the same advisory data)
+- [ ] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
+- [ ] **SUP-03**: The repo runs its own secret scan: a tracked setup script registers a config-based pre-commit hook running `gitleaks git --pre-commit --staged --redact`, alongside any global hook. Server-side push protection (already on) is the backstop for `--no-verify`
+- [ ] **SUP-04**: `Cargo.lock` is committed. CI actions are pinned to commit SHAs. Scanner versions are pinned in one install script. A missing scanner is a hard failure, never a skip
+- [ ] **SUP-05**: Each scanner is proven to bite before it counts as enabled: a planted fake secret is refused by the hook, and a known-vulnerable or disallowed crate in a scratch copy fails `cargo deny`. Both controls are cleaned up afterwards
+
 ### Cutover and gates
 
 - [ ] **REL-01**: `install.sh` installs the Rust binary. In the wsx and devflow repos, wsx replaces the shell scripts and the devflow hook's personal-path policy, with `.wsx.conf` migrated (MIG-01) at that point and not before
@@ -176,9 +184,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 57 total
+- v1 requirements: 62 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 57
+- Unmapped: 62
 
 ---
 *Last updated: 2026-10-19 after re-scoping and the workspace-mode adversarial review*
