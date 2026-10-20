@@ -26,7 +26,7 @@ does all of that.
 |---|---|---|
 | merge integration → workspace, cherry-pick replay, `worktree add -b`, commit, fetch | **git binary** | hooks, signing, conflict state, credentials |
 | guard range walks, path classification, divergence diff, merge-base, ahead/behind | **gix** | read-only, fast, no subprocess parsing |
-| predict cut-PR conflicts before touching anything | **gix** `merge_commits` in memory | new safety check the shell oracle lacks |
+| ~~predict cut-PR conflicts before touching anything~~ | ~~gix `merge_commits` in memory~~ | Dropped 2026-10-20: gix can't run merge drivers, so it would refuse cuts git completes. The cut replays with git in a temporary worktree instead (PRCUT-03) |
 
 This stays within the existing constraint (the git binary is allowed where gix lacks the
 operation), but in this mode the git binary does most of the writing, not a few edge cases.

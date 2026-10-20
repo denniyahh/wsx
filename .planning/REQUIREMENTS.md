@@ -47,7 +47,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 - [ ] **HARN-01**: The same scenario suite runs against the shell oracle and the Rust binary, selected per scenario. The oracle (devflow's `sync-workspace.sh`, `phase-worktree.sh`, `cut-pr-branch.sh`, `check-workspace-divergence.sh`, and the personal-path policy from `scripts/hooks/pre-push`) is vendored under `tests/oracle/` on `develop` at a recorded devflow commit, MIT-attributed. Every path it hard-codes is adapted by one documented patch, and each script has a self-test scenario proving it runs unmodified against a fixture
 - [ ] **HARN-02**: Every scenario is hermetic: HOME, XDG, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` and hooks are isolated, signing is pinned locally, and the host's global hooks never fire. `LLVM_*` passes through so coverage sees the spawned binary
-- [ ] **HARN-03**: Every scenario asserts explicit expected outcomes, never only "same as the oracle": exit code, ref names, commits compared as subject + author + author date + tree (SHAs aren't reproducible under signing), and files on disk. Signature presence is asserted separately. The oracle's outcome is recorded in the scenario, so the evidence survives the oracle's removal. Two classes of deliberate difference:
+- [ ] **HARN-03**: Every scenario asserts explicit expected outcomes, never only "same as the oracle": exit code, ref names, commits compared as full message (body and trailers included) + author + author date + committer name/email + tree (SHAs aren't reproducible under signing), and files on disk. Signature presence is asserted separately. The oracle's outcome is recorded in the scenario, so the evidence survives the oracle's removal. Two classes of deliberate difference:
   - `fixed:` scenarios (oracle defects and improvements) pass on Rust and fail on the oracle
   - `regression:` scenarios are deliberate refusals
 - [ ] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
@@ -73,8 +73,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Workspace sync
 
-- [ ] **WSYNC-01**: `wsx sync` merges `<base-remote>/<integration>` into the workspace branch with a real merge, never a rebase. It runs from any worktree of the repo: the merge happens in the worktree that has the workspace branch checked out. If that worktree is dirty, or the workspace branch isn't checked out anywhere, it refuses and names the fix. This is an improvement: the oracle only runs from a checkout of the workspace branch
-- [ ] **WSYNC-02**: Already up to date is a no-op with exit 0. A conflicted merge is left in git's normal conflict state with a message naming the files, and wsx never resolves it
+- [ ] **WSYNC-01**: `wsx sync` merges `<base-remote>/<integration>` into the workspace branch with a real merge, never a rebase. It runs from any worktree of the repo: the merge happens in the worktree that has the workspace branch checked out, with a fixed message and `--no-edit`. If that worktree is dirty, or the workspace branch isn't checked out anywhere, it refuses and names the fix. Run from another worktree, a conflicted merge is aborted there, so no checkout is left mid-merge, and the conflicting files and the command to run in the workspace worktree are reported. This is an improvement: the oracle only runs from a checkout of the workspace branch
+- [ ] **WSYNC-02**: Already up to date is a no-op with exit 0. Run from the workspace worktree itself, a conflicted merge is left in git's normal conflict state with a message naming the files. wsx never resolves it
 - [ ] **WSYNC-03**: A local integration branch not checked out in any worktree is fast-forwarded to its remote. One checked out somewhere is left alone, but reported as stale, with its worktree path (the oracle skips it silently)
 - [ ] **WSYNC-04**: wsx records the integration commit it last merged. If the integration branch was rewritten (the new tip doesn't descend from the recorded one), `wsx sync` refuses and explains, rather than merging a second lineage that later cuts would replay
 
@@ -89,8 +89,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
   Then it removes the worktree and branch. `--force` overrides and prints what's discarded
 - [ ] **WTREE-05**: `wsx new` and `wsx cut` record what they create under `refs/wsx/`: branch origin, cut source tip, PR branch, replay mapping. Guard, `rm` and `status` identify branches by these records, never by name patterns
-- [ ] **WTREE-06**: `wsx land <branch>` merges a finished branch back into the workspace branch with `--no-ff`, after proving the branch descends from the workspace branch. It runs where the workspace branch is checked out (as WSYNC-01), refuses a dirty tree there, and leaves git's conflict state on conflict. This closes the new → cut → land → rm loop without an orchestrator; devflow's Ship would call it instead of merging itself (moved from v2, 2026-10-20)
-- [ ] **WTREE-08**: `wsx adopt <branch>` records an existing branch made by hand (e.g. `git worktree add`) as if `wsx new` had made it, after checking it descends from the workspace branch. When the pre-commit guard (GUARD-04) refuses personal paths on an unrecorded branch that descends from the workspace branch, its message names `wsx adopt <branch>`
+- [ ] **WTREE-06**: `wsx land <branch>` merges a finished branch back into the workspace branch with `--no-ff`, a fixed message and `--no-edit`. It first proves the branch was made from the workspace branch: it contains a commit that is on the workspace branch and not on `<base-remote>/<integration>`. Requiring the current workspace tip would wrongly refuse every branch made before the last sync. It runs where the workspace branch is checked out and handles dirty trees and conflicts as WSYNC-01/02 do. This closes the new → cut → land → rm loop without an orchestrator; devflow's Ship would call it instead of merging itself (moved from v2, 2026-10-20)
+- [ ] **WTREE-08**: `wsx adopt <branch>` records an existing branch made by hand (e.g. `git worktree add`) as if `wsx new` had made it, after the same made-from-workspace check as WTREE-06, so `rm` and `status` treat it like one `wsx new` made
 
 ### PR cut
 
@@ -99,12 +99,16 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - Otherwise it replays the branch's commits since its fork from the workspace branch.
   - The PR branch name is given, or defaults to `<source-branch>-pr`. wsx never strips name parts heuristically (fixes devflow backlog 999.146, where `workspace/<handle>-…` lost its first hyphenated word). Pinned by a scenario.
   - Merge commits: a merge whose merged-in side is the integration or workspace branch is skipped, because its content is already on the base. If such a merge carries its own resolution changes in non-personal paths, the cut refuses and names it. Any other merge commit refuses.
-- [ ] **PRCUT-02**: Personal paths (CONF-02) are removed from every replayed commit. Commits that touch only personal paths are dropped. A replayed commit that touches a `modified` path refuses the cut, naming the commit and the path: wsx can't separate a shared edit from the workspace-only edit in the same file. `--allow-incomplete` drops that path's change and reports it. This is an improvement: the oracle replays such changes unchecked. A rename or copy from a personal path into a non-personal path refuses the cut, because the content would leak under a clean name. Replayed commits keep the original author, date and message, and are committed through `git` (so signed per the user's config, as the oracle's `git commit -C` already does)
-- [ ] **PRCUT-03**: Before writing anything, wsx replays each selected commit in memory (gix), with personal paths stripped, onto the evolving base tree, and refuses on any predicted conflict, naming the commit and paths. The replay itself runs in a temporary detached worktree under the common git dir. All failures, predicted or not (including git errors, panics and Ctrl-C), leave the target ref at its pre-cut value, and the temporary worktree is removed, or pruned by the next wsx run. A scenario injects a failure mid-replay. This is a deliberate difference: the oracle can leave a partial branch
+- [ ] **PRCUT-02**: Personal paths (CONF-02) are removed from every replayed commit. Commits that touch only personal paths are dropped. Changes to `modified` paths are replayed like any other change: the cherry-pick applies only that commit's own delta, so a feature edit to a file the workspace also changed carries over, and an overlap is a real conflict (PRCUT-03). The cut report (and `--json`) lists every replayed change to a `modified` path for review, because wsx can't tell a shared edit from a personal one inside the same file. This is an improvement: the oracle replays them without saying so. A rename or copy from a personal path into a non-personal path refuses the cut, because the content would leak under a clean name. Replayed commits keep the original author, date and message, and are committed through `git` (so signed per the user's config, as the oracle's `git commit -C` already does). Replay commits use `--no-verify`, as the oracle does: the original commits already ran the hooks, and rerunning pre-commit and commit-msg hooks on each replayed commit repeats slow checks and can rewrite messages. The boundary for replayed content is the PRCUT-04 audit and the pre-push guard (GUARD-01)
+- [ ] **PRCUT-03**: The replay runs with `git cherry-pick` in a temporary detached worktree under the common git dir, so the user's merge drivers and rerere apply, and the PR branch ref is written only after every commit has replayed. A conflict refuses the cut, naming the commit and paths. A scenario with a custom merge driver that resolves a conflict must succeed. No gix in-memory prediction: it can't run merge drivers, so it would refuse cuts git completes. All failures (including git errors, panics and Ctrl-C) leave the target ref at its pre-cut value, and the temporary worktree is removed, or pruned by the next wsx run. A scenario injects a failure mid-replay. This is a deliberate difference: the oracle can leave a partial branch
 - [ ] **PRCUT-04**: After replay, an audit over every commit in the PR range must find zero personal paths, or the cut fails. The audit uses `-z`/raw-byte names, so quoted non-ASCII names can't slip through
-- [ ] **PRCUT-05**: Fidelity fails by default. The PR branch's diff against the base must equal the source branch's diff against the base, excluding personal and `modified` paths. Any path missing or different fails the cut, naming the unreplayed commits that touched it; unscoped code commits are the usual cause. `--allow-incomplete "<reason>"` overrides and prints the reason with the gap. A scenario with one scoped and one unscoped code commit must refuse. This is a deliberate difference: the oracle only warns
-- [ ] **PRCUT-06**: `wsx cut` never pushes, and never touches the user's checkout: branch, index and uncommitted changes stay as they were (PRCUT-03), so a dirty tree is allowed and reported as not included. This is an improvement: the oracle checks the PR branch out in the user's tree and refuses a dirty one
-- [ ] **PRCUT-07**: Cut errors are never swallowed. A failed cherry-pick that isn't a predicted conflict aborts with git's error shown (fixes the oracle's `cherry-pick … || true`)
+- [ ] **PRCUT-05**: Fidelity fails by default, and is checked on commits, not whole-branch diffs (with `--scope`, the source branch also carries other work, so its diff against the base never matches). Two checks:
+  - Every commit the source branch made since its fork from the workspace branch that touches a non-personal path is replayed. One left out (usually a commit with the wrong scope) fails the cut, naming it. `--allow-incomplete "<reason>"` overrides and prints the reason with the gap.
+  - The PR branch changes no path that no replayed commit touched (the oracle's check, kept).
+
+  A scenario with one scoped and one unscoped code commit on the source branch must refuse, and a `--scope` cut from a branch that also carries other landed work must pass. This is a deliberate difference: the oracle only warns about left-out commits
+- [ ] **PRCUT-06**: `wsx cut` never pushes, and never touches the user's checkout: branch, index and uncommitted changes stay as they were (PRCUT-03). It still refuses when the source branch's worktree has uncommitted tracked changes, since those would be silently missing from the PR; `--allow-dirty` overrides and lists them. This is an improvement: the oracle checks the PR branch out in the user's tree
+- [ ] **PRCUT-07**: Cut errors are never swallowed. A failed cherry-pick aborts with git's error shown (fixes the oracle's `cherry-pick … || true`)
 - [ ] **PRCUT-08**: If the target PR branch already exists, the cut refuses, unless it's the recorded result of a previous cut of this source with no commits added since. `--force` prints the commits it would discard and keeps them under `refs/wsx/backup/` (fixes the oracle's unconditional `git branch -f`)
 - [ ] **PRCUT-09**: `wsx cut` runs the divergence check first and refuses if it fails, so an undeclared new path can't be replayed into a PR
 
@@ -112,7 +116,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 - [ ] **DIV-01**: `wsx check` fails when the workspace branch differs from `<base-remote>/<integration>` in any way it hasn't declared. An added path must be under a built-in or `only` entry; a modified or deleted shared file must be declared `modified`
 - [ ] **DIV-02**: A stale or redundant declaration fails too: an `only` path the integration branch now carries, a `modified` path that no longer differs, or a declaration already covered by a built-in
-- [ ] **DIV-03**: Every tracked hook and top-level script is checked for committed mode `100755` (or `120000`, a symlink to a tracked executable). The committed mode is what counts, not the working tree's
+- [ ] **DIV-03**: When the repo's `core.hooksPath` points at a tracked directory, every tracked file in it must be committed with mode `100755` (or `120000`, a symlink to a tracked executable). The committed mode is what counts, not the working tree's. Other scripts aren't checked: the oracle's `scripts/*.sh` rule is a devflow convention that would fail other repos' sourced libraries
 - [ ] **DIV-04**: The check runs against the local ref with no network, and says how stale that ref is relative to its last fetch
 
 ### Guards
@@ -125,6 +129,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [ ] **GUARD-02**: Path names are read NUL-separated, repo-relative and as raw bytes, so quoting and `diff.relative` can't hide a path (fixes the oracle's quoted-name bypass)
 - [ ] **GUARD-03**: The guard fails closed once the repo is configured (CONF-07). An unreadable range (e.g. an unfetched remote object) or an internal error refuses the push, with the reason and the fix. Unconfigured repos exit 0. `WSX_SKIP=1` is the named bypass, and `--no-verify` is documented as disabling every guard at once
 - [ ] **GUARD-04**: The pre-commit guard refuses personal paths staged on the integration branch, on `main`, and on PR branches cut by wsx. It allows them on the workspace branch and on branches recorded as created by `wsx new` (WTREE-05), where tools commit planning as they work. PR branches are identified by their cut record, not their name. The push guard (GUARD-01) is the boundary for everything else
+- [ ] **GUARD-05**: The pre-commit guard refuses any commit made directly on the integration branch or on the remote's default branch, while the change is still staged, and names `git switch -c <branch>` as the fix (devflow's pre-commit does this; moved from v2, 2026-10-20). `wsx.protectedBranches` replaces the list, and an empty value turns it off for repos that commit to `main` directly
 
 ### Hook installation
 
@@ -188,7 +193,6 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 ## v2 Requirements (milestone 2: public baseline)
 
 - **HOOK-04**: Hook fallback for git < 2.54 (chaining from a `core.hooksPath` hook to the displaced one)
-- **GUARD-05**: Refuse commits on PR-protected branches at commit time (devflow pre-commit)
 - **HYG-01**: Conventional-commit `commit-msg` hook installed by `install-hooks` (devflow's validator, generalised)
 - **GEN-01**: Reftable support (gix or a git-binary read fallback)
 - **DIST-01**: Versioned release binaries and an install documented for strangers
@@ -221,9 +225,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 71 total
+- v1 requirements: 72 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 71
+- Unmapped: 72
 
 ---
-*Last updated: 2026-10-20 after the improve-over-prior-art pass*
+*Last updated: 2026-10-20 after the prior-art external review*
