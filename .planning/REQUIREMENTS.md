@@ -90,7 +90,6 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   Then it removes the worktree and branch. `--force` overrides and prints what's discarded
 - [ ] **WTREE-05**: `wsx new` and `wsx cut` record what they create under `refs/wsx/`: branch origin, cut source tip, PR branch, replay mapping. Guard, `rm` and `status` identify branches by these records, never by name patterns
 - [ ] **WTREE-06**: `wsx land <branch>` merges a finished branch back into the workspace branch with `--no-ff`, a fixed message and `--no-edit`. It first proves the branch was made from the workspace branch: it contains a commit that is on the workspace branch and not on `<base-remote>/<integration>`. Requiring the current workspace tip would wrongly refuse every branch made before the last sync. It runs where the workspace branch is checked out and handles dirty trees and conflicts as WSYNC-01/02 do. This closes the new → cut → land → rm loop without an orchestrator; devflow's Ship would call it instead of merging itself (moved from v2, 2026-10-20)
-- [ ] **WTREE-08**: `wsx adopt <branch>` records an existing branch made by hand (e.g. `git worktree add`) as if `wsx new` had made it, after the same made-from-workspace check as WTREE-06, so `rm` and `status` treat it like one `wsx new` made
 
 ### PR cut
 
@@ -153,7 +152,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
   It shows a dry run first. With `--apply` it writes and commits the result on the workspace branch and removes the old file. Legacy grammars are parsed **only** inside `migrate`. A repo with no manifest (gsd-core, gsd-pi) uses `wsx init`. It lists every difference from the integration branch and requires each path to be classified explicitly (`--only`, `--modified`, or an edited proposal file). Opt-in presets (`--preset agents` for agent-tool dirs, `--preset gsd` for `.planning`/`.gsd*`) classify the common ones as `only`; they are data in wsx, not behaviour. Any unclassified path aborts with no change. `init`/`migrate` write `wsx.sourceBranch` and `wsx.baseRef`
 - [ ] **MIG-02**: In a 0.1.0 copy-sync repo, `migrate --apply` removes copy-sync's leftovers: per-worktree `core.excludesFile` and `extensions.worktreeConfig` when wsx set them, the `exclude.wsx-*` files, and `<git-dir>/wsx/`. A leftover personal-file copy in a dev worktree is deleted only if its exact content exists in a commit on the workspace branch. Anything else is reported and kept
-- [ ] **MIG-03**: Each of the owner's repos (devflow, wsx, gsd-core, gsd-pi, and the 0.1.0 projects, location to be given by the owner) has a recorded expected result, and `wsx migrate --verify`/`wsx init --dry-run` against its real state produces it before anything is applied
+- [ ] **MIG-03**: Each of the owner's repos (devflow, wsx, gsd-core, gsd-pi, and the 0.1.0 projects on the owner's work PC; none were found on this machine on 2026-10-20) has a recorded expected result, and `wsx migrate --verify`/`wsx init --dry-run` against its real state produces it before anything is applied
 - [ ] **MIG-04**: `migrate --apply` refuses while that repo's shell tooling (`scripts/workspace/`, devflow's hooks) still reads `.workspace-divergence`, unless `--keep-legacy`. That keeps the old file alongside until REL-01 retires the tooling, so the cut never loses its `only` list and the divergence check never silently skips
 
 ### Status and doctor
@@ -216,7 +215,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | GSD/agent config checks in `doctor` | devflow's domain |
 | Agent session integrations (Claude Code, Copilot, Codex, Antigravity) | devflow's domain; the workspace model has no copies to push |
 | Ship approval, versioning and tags | devflow's domain (gate-driven). Revisit only if wsx gains release management |
-| Changing devflow's code to call wsx (`devflow start` → `wsx new`, Ship → `wsx land`) | devflow's own roadmap; wsx supplies IF-01 |
+| Changing devflow's code to call wsx (`devflow start` → `wsx new`, Ship → `wsx land`) | devflow's own roadmap (backlog 999.162, gated on wsx M1); wsx supplies IF-01 |
 | Gemini CLI adapter | Antigravity replaces it |
 
 ## Traceability
@@ -225,9 +224,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 72 total
+- v1 requirements: 71 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 72
+- Unmapped: 71
 
 ---
 *Last updated: 2026-10-20 after the prior-art external review*

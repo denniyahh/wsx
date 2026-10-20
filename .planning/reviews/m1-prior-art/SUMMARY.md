@@ -5,7 +5,7 @@
 **Lens:** owner mandate: improve on devflow and 0.1.0; never keep worse behaviour to match them.
 **Lanes:** agy (gemini-3.8-flash-high): 9 confirmed + 1 suspected. codex (gpt-5.6-terra, high, read-only): 5 confirmed + 1 suspected. Both exit 0; none dropped. Static review only: no fixtures were run by the lanes.
 
-## Accepted and folded in (now 72)
+## Accepted and folded in (72, then 71 after `adopt` was dropped)
 
 | Finding | Lanes | Change |
 |---|---|---|
@@ -24,7 +24,7 @@
 
 - **codex S1, exclude refs known at the push remote for new-ref ranges:** that reintroduces the bypass reproduced in `m1-ws-adversarial` (remote workspace refs would mask a workspace-derived branch). GUARD-01's base-remote bound stays.
 - **agy S1, read the manifest from the working tree on the workspace branch:** the divergence check compares committed branches, so the committed manifest is the consistent input, and GUARD-04 already allows personal paths on the workspace branch.
-- **agy C5, GUARD-04 blocks unrecorded branches:** GUARD-04 never refused them (it refuses only integration, `main` and cut PR branches); the contradiction was WTREE-08's text, now fixed. Whether to keep `wsx adopt` at all is open with the owner.
+- **agy C5, GUARD-04 blocks unrecorded branches:** GUARD-04 never refused them (it refuses only integration, `main` and cut PR branches); the contradiction was WTREE-08's text, now fixed. `wsx adopt` was then dropped (owner, 2026-10-20).
 
 ## Disputed, decided by host
 

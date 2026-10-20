@@ -145,7 +145,8 @@ requirement it confirms or changes.
 ### Overlap to retire on devflow's side (found 2026-10-19)
 
 devflow product code and open backlog items that fall in wsx's domain. They belong on devflow's
-roadmap, as "adopt wsx" work, not on wsx's.
+roadmap, as "adopt wsx" work, not on wsx's. Owner approved 2026-10-20; recorded as devflow backlog
+999.162 (devflow commit `c055762`).
 
 | devflow | Overlap | Retire by |
 |---|---|---|
