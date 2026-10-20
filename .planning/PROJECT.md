@@ -4,25 +4,36 @@
 
 wsx manages a developer's **personal workspace branch** in a git repo: the integration branch
 (`develop`, `next`, `main`) plus tracked personal files (planning docs, agent config, tooling).
-Feature and phase work happens in worktrees branched from that workspace branch, so tools like
-GSD can commit planning alongside code. wsx cuts clean PR branches that carry only the code,
-and guards every push so personal files never reach a shared branch. It formalises the
-"Workflow B" setup the author runs by hand in devflow, gsd-core, gsd-pi and wsx itself. It's
-being built as an open-source CLI for developers who run AI coding agents across many worktrees.
+Feature work happens in worktrees branched from that workspace branch, so personal files and
+any planning committed alongside code stay with the work. wsx cuts clean PR branches that carry
+only the code, and guards every push so personal files never reach a shared branch. It
+formalises the "Workflow B" setup the author runs by hand in devflow, gsd-core, gsd-pi and wsx
+itself, and it is useful in any dev repo, with or without AI agents.
+
+**wsx and devflow are complementary, with no overlap.** wsx manages and maintains the repo:
+- the workspace branch and manifest
+- syncing with the integration branch
+- worktrees and branches
+- PR cuts, divergence checks, guards and hooks
+
+devflow manages AI agents and GSD: phases, ROADMAP/STATE, GSD config, agent sessions, gates, ship
+approval and versioning. devflow drives wsx through its JSON interface for repo operations
+instead of reimplementing them. wsx knows nothing about GSD, devflow or agent runtimes
+(REQUIREMENTS.md: Boundary, IF-01, IF-02).
 
 wsx 0.1.0 (Python, a copy-sync model) is frozen. See Key Decisions.
 
 ## Core Value
 
 wsx must never let a personal file reach a shared branch or PR, and must never lose work while
-moving it between the workspace branch, phase worktrees and PR branches. A leaked file, or a
+moving it between the workspace branch, feature worktrees and PR branches. A leaked file, or a
 cut that silently drops code, is the unacceptable failure.
 
 ## Requirements
 
 ### Validated
 
-<!-- Proven in daily use as shell scripts (devflow Workflow B), now the oracle. -->
+<!-- Proven in daily use as shell scripts (devflow Workflow B), now the oracle. Their GSD-specific parts (ROADMAP lookup, phase auto-detection) stay with devflow. -->
 
 - ✓ Workspace branch synced from the integration branch by merge (`sync-workspace.sh`): existing (devflow)
 - ✓ Phase worktrees in `.worktrees/phase-N`, branched from the workspace branch, phase validated against ROADMAP.md, idempotent (`phase-worktree.sh`): existing (devflow)
@@ -36,10 +47,11 @@ cut that silently drops code, is the unacceptable failure.
 
 - [ ] Rust implementation of workspace sync, worktrees, PR cut, divergence check and guards, at parity with the shell oracle except deliberate fixes
 - [ ] Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls
-- [ ] One resolved personal-path list shared by guard, cut, check and status; configurable integration branch, workspace branch, base and push remotes, phase template
+- [ ] One resolved personal-path list shared by guard, cut, check and status; configurable integration branch, workspace branch, base and push remotes, worktree directory
 - [ ] Hooks installed as git config-based hooks (git ≥ 2.54), coexisting with `core.hooksPath`, husky and global hooks; pre-push reads the real pushed refs
 - [ ] Oracle defects fixed: quoted-name bypass, pattern-limited push guard, hard-coded `origin`, swallowed cherry-pick errors, partial PR branch on conflict
 - [ ] `wsx migrate`: new `.wsx.conf` from 0.1.0 `.wsx.conf` or `.workspace-divergence`; 0.1.0 copy-sync leftovers removed only when proven committed
+- [ ] `--json` output and stable exit codes for every command, so devflow can drive wsx; wsx reads no GSD, devflow or agent files
 - [ ] Cutover in wsx and devflow; shell oracle and Python 0.1.0 deleted (`v0.1.0` tag kept)
 
 ### Out of Scope
@@ -47,7 +59,8 @@ cut that silently drops code, is the unacceptable failure.
 - Copy-sync (0.1.0's model): dropped 2026-10-19
 - Legacy manifest grammars outside `wsx migrate`
 - Public release, packaging, distribution, hook fallback for git < 2.54: milestone 2
-- Agent session integrations (Claude Code, Copilot, Codex, Antigravity): milestone 2, re-derived for the workspace model
+- Agent session integrations, phases/ROADMAP, GSD config checks, the off-worktree guard, ship approval and versioning: devflow's domain, not wsx's
+- Changing devflow's code to call wsx (`devflow start` → `wsx new`, Ship → `wsx land`): devflow's own roadmap
 - Protected-branch commit refusal, off-worktree guard: milestone 2
 - macOS and Windows: Linux only for now
 - Interactive prompts; resolving conflicts for the user
@@ -58,7 +71,7 @@ cut that silently drops code, is the unacceptable failure.
 - **Origin:** the workspace-branch workflow was built by hand in devflow (`~/Github/devflow`, CONTRIBUTING "Workflow B"), and is documented in `research/DEVFLOW-SETUP.md`. The same model runs informally in gsd-core and gsd-pi, which have no manifest and already carry undeclared divergence.
 - **Oracle:** `scripts/workspace/*.sh` on `workspace/denniyahh` (ported 2026-10-19), plus devflow's divergence check and pre-push policy, to be vendored. Targeted research is in `research/WORKSPACE-MODE.md`.
 - **Prior work kept for reference:** the copy-sync research (`research/STACK|FEATURES|ARCHITECTURE|PITFALLS|SUMMARY.md`), the codebase map of 0.1.0, and the copy-sync adversarial review. The git-adapter, hook-environment and harness findings still apply.
-- **Audience (eventual):** developers running AI coding agents in many worktrees at once.
+- **Audience (eventual):** developers who keep personal files (notes, planning, editor and agent config) in a repo and work in many worktrees, with or without AI agents. devflow is one consumer.
 
 ## Constraints
 
@@ -89,13 +102,14 @@ cut that silently drops code, is the unacceptable failure.
 | Reftable repos refused in milestone 1, resolved before the public release | gix 0.89 can't open them; none of the author's 27 repos use reftable | — Pending |
 | Pre-push guard checks every commit in the range | The oracle's tip-to-tip diff lets an added-then-removed file through | — Pending |
 | Parity oracle is `origin/develop`, not the 0.1.0 tag | develop holds merged fixes and the plain git hook guard | Superseded 2026-10-19: oracle is the shell scripts |
-| Agents push at the end of every turn, for all four runtimes | Codex (3 s max) and Antigravity (no session-end event) need it; one behaviour everywhere is simpler to reason about and test | Revisit at milestone 2: no copies to push in the workspace model |
+| Agents push at the end of every turn, for all four runtimes | Codex (3 s max) and Antigravity (no session-end event) need it; one behaviour everywhere is simpler to reason about and test | Moved out of wsx 2026-10-19: agent sessions are devflow's domain |
 | Roadmap built as horizontal layers | Parity-gated rewrite: each layer is verified against the oracle before the next starts | — Pending |
 | wsx adopts the workspace-branch model (devflow Workflow B) as its product; copy-sync is dropped and 0.1.0 frozen | Every repo the owner uses runs the workspace-branch model (devflow, gsd-core, gsd-pi, wsx); copy-sync is incompatible with GSD committing planning docs, and carries most of the data-loss risk. Owner decision 2026-10-19 | — Pending |
 | Milestone 1 is re-scoped around workspace-branch mode, with `scripts/workspace/` (and devflow's hooks) as the oracle | Build what is used; the shell ports play the role Python 0.1.0 played | — Pending |
 | New `.wsx.conf` grammar (`only`/`modified`); legacy formats only inside `wsx migrate` | Little legacy support, easy upgrades. Owner decision 2026-10-19 | — Pending |
 | Hooks as git config-based hooks (≥ 2.54) | Run alongside `core.hooksPath` and global hooks, and get the real pushed refs (tested 2026-10-19) | — Pending |
 | No GSD-generated `.claude/CLAUDE.md` | A preview was 286 lines describing the dropped copy-sync design; devflow removed project `.claude/` configs too. Root CLAUDE.md is rewritten for Rust in phase 1. Owner decision 2026-10-19 | — Pending |
+| wsx manages the repo; devflow manages agents and GSD; no overlap; wsx is standalone | Owner intent 2026-10-19. wsx has no GSD/agent knowledge (IF-02); devflow drives wsx via `--json` (IF-01); phase concepts, agent integrations, ship/versioning stay in devflow | — Pending |
 
 ## Evolution
 

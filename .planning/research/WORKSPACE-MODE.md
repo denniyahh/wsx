@@ -82,5 +82,6 @@ don't replace it.
   workspaces already carry undeclared changes to shared files, exactly what a divergence check
   exists to surface. The built-in list (agent dirs, `.planning`, `scratch`?) has to be
   extendable per repo.
-- **Phase naming:** devflow and GSD config use `feature/phase-{N}`; the template must come from
-  config. GSD's `git.phase_branch_template` is the natural source when present.
+- **Phase naming is not wsx's concern** (boundary decision, 2026-10-19). devflow and GSD use
+  `feature/phase-{N}`; devflow passes the branch name to `wsx new` and the scope to `wsx cut`.
+  wsx reads no GSD config.

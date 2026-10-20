@@ -3,7 +3,20 @@
 **Defined:** 2026-10-19 (re-scope). The superseded copy-sync requirements are in git history at
 commit `e5bfbcf` (`.planning/REQUIREMENTS.md`).
 **Core Value:** wsx must never let a personal file reach a shared branch or PR, and must never
-lose work while moving it between the workspace branch, phase worktrees and PR branches.
+lose work while moving it between the workspace branch, feature worktrees and PR branches.
+
+**Boundary with devflow (owner intent, 2026-10-19).** wsx manages and maintains the **repo**:
+- the workspace branch and its manifest
+- syncing it with the integration branch
+- worktrees and branches
+- PR cuts, divergence checks, guards and hooks
+
+devflow manages **AI agents and GSD**: phases, ROADMAP/STATE, GSD config, agent sessions, gates,
+ship approval and versioning. Three rules follow:
+1. wsx has no knowledge of GSD, devflow or any agent runtime, and is fully useful in a repo that
+   has none of them.
+2. devflow uses wsx for repo operations (through IF-01) rather than reimplementing them.
+3. Neither tool implements a capability the other owns.
 
 **The model.** Each repo has an **integration branch** (e.g. `develop`, `next`, `main`) and one
 personal **workspace branch** (e.g. `workspace/<handle>`), which is the integration branch plus
@@ -12,7 +25,8 @@ tracked personal files: planning, agent config, tooling. Work happens in worktre
 code commits and stripping personal paths. Guards stop personal paths from being pushed anywhere
 except the workspace branch.
 
-**Milestone 1 = Rust parity + hardened**, against the shell oracle:
+**Milestone 1 = Rust parity + hardened**, against the shell oracle, minus its devflow/GSD-specific parts
+(the ROADMAP lookup in `phase-worktree.sh`, phase auto-detection in `cut-pr-branch.sh`):
 - `scripts/workspace/{sync-workspace,phase-worktree,cut-pr-branch}.sh`
 - devflow's `check-workspace-divergence.sh`
 - the personal-path policy in devflow's `scripts/hooks/pre-push`
@@ -34,21 +48,22 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [ ] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
 - [ ] **HARN-05**: Every guard scenario has a known-positive control that must still be refused, and a clean control that must pass. A guard only ever observed refusing, or only ever observed passing, fails review
 - [ ] **HARN-06**: The scenario set covers, each with a control:
-  - merge commits (integration merged into a phase branch, a conflict resolved by adding a personal file)
+  - merge commits (integration merged into a feature branch, a conflict resolved by adding a personal file)
   - squash-merged PRs
   - a fork layout (base `upstream`, push `origin`, no `origin/<integration>`)
-  - renumbered phases
+  - scoped and unscoped commits in one cut
+  - a repo with no GSD, devflow or agent files at all (IF-02)
   - non-ASCII, newline and non-UTF-8 path names
   - an existing PR branch with extra commits
 
 ### Configuration and manifest
 
 - [ ] **CONF-01**: `.wsx.conf` on the workspace branch declares `only <path>` (workspace-only) and `modified <path>` (a shared file deliberately changed). Paths are raw bytes, written C-quoted the way git quotes them when they contain special bytes (newline, quote, backslash, non-ASCII), so any git path round-trips (proptest: newline, non-UTF-8, spaces, prefix boundaries). A path matches itself and anything under it, never a mere name prefix (`.planning` ≠ `.planningX`). Unknown line kinds are an error naming the line
-- [ ] **CONF-02**: Built-in personal paths (agent-tool dirs, `.planning`, `.worktrees`, `.wsx.conf`, …) are defined once in wsx as defaults. The manifest extends them with `only`, and `shared <path>` removes a built-in for this repo: wsx's tracked root `CLAUDE.md` is shared, devflow's is personal, and both are recorded scenarios. The guard, the cut, the divergence check and `status` all read that single resolved list (fixes the oracle's three diverging lists)
+- [ ] **CONF-02**: The only built-in personal paths are wsx's own: `.wsx.conf` and the worktree directory. Every other personal path (agent dirs, `.planning`, `scratch`, …) is declared in the manifest; `wsx init` presets can write the common ones (MIG-01). The guard, the cut, the divergence check and `status` all read that single resolved list (fixes the oracle's three diverging, agent-specific lists). A repo-specific file like root `CLAUDE.md` is personal only if declared: devflow declares it, wsx doesn't
 - [ ] **CONF-03**: The integration branch is resolved from `wsx.baseRef`, falling back to a chain that prefers `develop`, then `next`, then the remote default branch. It's never taken blindly from `origin/HEAD`
 - [ ] **CONF-04**: The base remote (where the integration branch lives) and the push remote (where PR branches go) are configured separately, so fork layouts work (gsd-core: `upstream/next` base, `origin` push). Both default to `origin`
 - [ ] **CONF-05**: The workspace branch is resolved from `wsx.sourceBranch`, which `wsx init`/`wsx migrate` write. With no config, wsx falls back to the only local `workspace/*` or `personal/*` branch, ignoring branches recorded as made by `wsx new`. Zero or several candidates is an error that lists them (gsd-core has `personal/workspace` and `personal/workspace-backup`)
-- [ ] **CONF-06**: The phase branch template comes from `wsx.phaseBranchTemplate`, falling back to GSD's `git.phase_branch_template` and then `feature/phase-{phase}`. Worktrees live at `.worktrees/<name>`
+- [ ] **CONF-06**: Branch names are chosen by the caller: a human, or an orchestrator such as devflow. wsx reads no phase concept or branch template from any other tool. Worktrees live under `wsx.worktreeDir` (default `.worktrees/`), named after the branch
 - [ ] **CONF-07**: The authoritative manifest is `<workspace-branch tip>:.wsx.conf`, read from the object database, never the working tree. Guard, cut, check and status use it from any checkout, including clean PR branches that don't carry it. A repo is "configured" when local git config has `wsx.sourceBranch`. Once configured, a missing or invalid manifest object fails closed
 
 ### Workspace sync
@@ -60,21 +75,20 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Worktrees
 
-- [ ] **WTREE-01**: `wsx new --phase N` checks for a `### Phase N:` heading in the workspace branch tip's `.planning/ROADMAP.md` (not the current checkout's), syncs the workspace (unless `--no-sync`, or when the main checkout isn't on the workspace branch, which it reports), and creates the phase branch and worktree **from the workspace branch**
+- [ ] **WTREE-01**: `wsx new <branch>` syncs the workspace (unless `--no-sync`, or when the main checkout isn't on the workspace branch, which it reports) and creates the branch and its worktree **from the workspace branch**. It never reads ROADMAP.md or any other planning file; validating that a phase exists is the caller's job (devflow)
 - [ ] **WTREE-02**: Before creating anything, `wsx new` asserts the workspace branch tracks at least one personal path, and refuses otherwise
-- [ ] **WTREE-03**: Re-running `wsx new` for an existing worktree reports its path and exits 0. It fast-forwards only when the branch has no commits of its own, and never fails because the phase has started. An existing branch with no worktree is attached. `wsx update <name>` brings a started branch up to date by merging the workspace branch into it (a real merge; refuses on conflict and leaves git's conflict state)
-- [ ] **WTREE-04**: `wsx new <name>` (non-phase) creates `workspace/<name>`-style feature worktrees the same way
-- [ ] **WTREE-05**: `wsx rm <name>`:
-- [ ] **WTREE-06**: `wsx new` and `wsx cut` record what they create under `refs/wsx/`: branch origin, cut source tip, PR branch, replay mapping. Guard, `rm` and `status` identify branches by these records, never by name patterns
-  - refuses a dirty worktree
-  - refuses unless every non-personal change on the branch has landed on the integration branch, matched by patch-id or content so squash merges count (`--force` overrides and prints what's discarded)
-  - brings the branch's personal-path changes into the workspace branch as one archive commit with no code
-  - then removes the worktree and branch
+- [ ] **WTREE-03**: Re-running `wsx new` for an existing worktree reports its path and exits 0. It fast-forwards only when the branch has no commits of its own, and never fails because work has started. An existing branch with no worktree is attached. `wsx update <name>` brings a started branch up to date by merging the workspace branch into it (a real merge; refuses on conflict and leaves git's conflict state)
+- [ ] **WTREE-04**: `wsx rm <branch>` refuses a dirty worktree. It also refuses unless both:
+  - the branch is merged into the workspace branch (so its personal records are kept; merging is done by the user or the orchestrator, e.g. devflow's Ship)
+  - every non-personal change has landed on the integration branch, matched by patch-id or content so squash merges count
+
+  Then it removes the worktree and branch. `--force` overrides and prints what's discarded. wsx doesn't do the merge itself in milestone 1
+- [ ] **WTREE-05**: `wsx new` and `wsx cut` record what they create under `refs/wsx/`: branch origin, cut source tip, PR branch, replay mapping. Guard, `rm` and `status` identify branches by these records, never by name patterns
 
 ### PR cut
 
 - [ ] **PRCUT-01**: `wsx cut` creates `<pr-branch>` from the freshly fetched `<base-remote>/<integration>` and replays commits onto it.
-  - In phase mode (`--phase N`, or automatic on a phase branch) it replays only commits whose conventional-commit scope names phase N, wherever they were committed.
+  - With `--scope <s>` it replays only commits whose conventional-commit scope is `s` or `s-NN`, wherever they were committed. devflow passes the phase number; wsx has no phase concept and never infers a scope from the branch name.
   - Otherwise it replays the branch's commits since its fork from the workspace branch.
   - Merge commits: a merge whose merged-in side is the integration or workspace branch is skipped, because its content is already on the base. If such a merge carries its own resolution changes in non-personal paths, the cut refuses and names it. Any other merge commit refuses.
 - [ ] **PRCUT-02**: Personal paths (CONF-02) are removed from every replayed commit. Commits that touch only personal paths are dropped. `modified` paths are workspace-only edits and are never replayed. A rename or copy from a personal path into a non-personal path refuses the cut, because the content would leak under a clean name. Replayed commits keep the original author, date and message, and are committed through `git` (so signed per the user's config, as the oracle's `git commit -C` already does)
@@ -99,10 +113,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - **(a)** the pushed tip's tree contains no personal path
   - **(b)** every commit in the range touches no personal path. Merge commits are diffed against their first parent, and renames count in both directions. The range is bounded by the remote ref's old value and `<base-remote>/<integration>`, never by remote workspace refs
 
-  Scenarios: a new phase branch with no commits of its own (tip carries `.planning`) must refuse; a merge whose conflict resolution adds `.planning/STATE.md` must refuse; the fork layout must work. Both oracle bypasses are reproduced in `reviews/m1-ws-adversarial/SUMMARY.md`. This is a deliberate difference: the oracle checks a fixed list of branch patterns, hard-codes `origin`, and misses both cases
+  Scenarios: a new feature branch with no commits of its own (tip carries `.planning`) must refuse; a merge whose conflict resolution adds `.planning/STATE.md` must refuse; the fork layout must work. Both oracle bypasses are reproduced in `reviews/m1-ws-adversarial/SUMMARY.md`. This is a deliberate difference: the oracle checks a fixed list of branch patterns, hard-codes `origin`, and misses both cases
 - [ ] **GUARD-02**: Path names are read NUL-separated, repo-relative and as raw bytes, so quoting and `diff.relative` can't hide a path (fixes the oracle's quoted-name bypass)
 - [ ] **GUARD-03**: The guard fails closed once the repo is configured (CONF-07). An unreadable range (e.g. an unfetched remote object) or an internal error refuses the push, with the reason and the fix. Unconfigured repos exit 0. `WSX_SKIP=1` is the named bypass, and `--no-verify` is documented as disabling every guard at once
-- [ ] **GUARD-04**: The pre-commit guard refuses personal paths staged on the integration branch, on `main`, and on PR branches cut by wsx. It allows them on the workspace branch and on branches recorded as created by `wsx new` (WTREE-06), where GSD commits planning as it works. PR branches are identified by their cut record, not their name. The push guard (GUARD-01) is the boundary for everything else
+- [ ] **GUARD-04**: The pre-commit guard refuses personal paths staged on the integration branch, on `main`, and on PR branches cut by wsx. It allows them on the workspace branch and on branches recorded as created by `wsx new` (WTREE-05), where tools commit planning as they work. PR branches are identified by their cut record, not their name. The push guard (GUARD-01) is the boundary for everything else
 
 ### Hook installation
 
@@ -121,22 +135,23 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 - [ ] **MIG-01**: `wsx migrate` converts an existing manifest to the new `.wsx.conf`:
   - 0.1.0 `.wsx.conf` `sync`/`pull`/`lww` entries become `only`
-  - devflow `.workspace-divergence` lines carry over
+  - devflow `.workspace-divergence` lines carry over, and devflow's built-in list is written out as explicit `only` lines, since wsx has no agent built-ins (CONF-02)
   - `skip` lines are reported with a suggested `.gitignore` line, never guessed
 
-  It shows a dry run first. With `--apply` it writes and commits the result on the workspace branch and removes the old file. Legacy grammars are parsed **only** inside `migrate`. A repo with no manifest (gsd-core, gsd-pi) uses `wsx init`. It lists every difference from the integration branch, classifies built-ins automatically, and requires every other path to be classified explicitly (`--only`, `--modified`, or an edited proposal file). Any unclassified path aborts with no change. `init`/`migrate` write `wsx.sourceBranch` and `wsx.baseRef`
+  It shows a dry run first. With `--apply` it writes and commits the result on the workspace branch and removes the old file. Legacy grammars are parsed **only** inside `migrate`. A repo with no manifest (gsd-core, gsd-pi) uses `wsx init`. It lists every difference from the integration branch and requires each path to be classified explicitly (`--only`, `--modified`, or an edited proposal file). Opt-in presets (`--preset agents` for agent-tool dirs, `--preset gsd` for `.planning`/`.gsd*`) classify the common ones as `only`; they are data in wsx, not behaviour. Any unclassified path aborts with no change. `init`/`migrate` write `wsx.sourceBranch` and `wsx.baseRef`
 - [ ] **MIG-02**: In a 0.1.0 copy-sync repo, `migrate --apply` removes copy-sync's leftovers: per-worktree `core.excludesFile` and `extensions.worktreeConfig` when wsx set them, the `exclude.wsx-*` files, and `<git-dir>/wsx/`. A leftover personal-file copy in a dev worktree is deleted only if its exact content exists in a commit on the workspace branch. Anything else is reported and kept
 - [ ] **MIG-03**: Each of the owner's repos (devflow, wsx, gsd-core, gsd-pi, and the 0.1.0 projects, location to be given by the owner) has a recorded expected result, and `wsx migrate --verify`/`wsx init --dry-run` against its real state produces it before anything is applied
 - [ ] **MIG-04**: `migrate --apply` refuses while that repo's shell tooling (`scripts/workspace/`, devflow's hooks) still reads `.workspace-divergence`, unless `--keep-legacy`. That keeps the old file alongside until REL-01 retires the tooling, so the cut never loses its `only` list and the divergence check never silently skips
 
 ### Status and doctor
 
-- [ ] **STAT-01**: `wsx status` shows the resolved integration, workspace, base remote and push remote; the workspace branch's ahead/behind against the integration branch; the divergence result; and each worktree with its branch, phase and whether it has been cut
-- [ ] **STAT-02**: `wsx doctor` reports:
-  - missing or non-executable hooks, and git < 2.54
-  - GSD config that contradicts the model (`commit_docs` off, `use_worktrees` on, a phase template that doesn't match CONF-06)
-  - an unfetched base ref
-  - undeclared divergence
+- [ ] **STAT-01**: `wsx status` shows the resolved integration, workspace, base remote and push remote; the workspace branch's ahead/behind against the integration branch; the divergence result; and each worktree with its branch and whether it has been cut and landed
+- [ ] **STAT-02**: `wsx doctor` reports repo-level problems only: missing or non-executable hooks, git < 2.54, an unfetched base ref, undeclared divergence. Checking GSD or agent config is devflow's job
+
+### Interface and boundary
+
+- [ ] **IF-01**: Every command has `--json` output with a versioned, documented schema, plus documented, stable exit codes, so an orchestrator (devflow) can drive wsx without parsing prose. A contract test pins the schema
+- [ ] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings. A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
 
 ### Development setup (adopted from devflow, owner decision 2026-10-19)
 
@@ -166,8 +181,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 - **HOOK-04**: Hook fallback for git < 2.54 (chaining from a `core.hooksPath` hook to the displaced one)
 - **GUARD-05**: Refuse commits on PR-protected branches at commit time (devflow pre-commit)
-- **GUARD-06**: Off-worktree guard: refuse source committed outside the active phase's worktree (devflow `lint-phase-worktree.sh`)
-- **AGNT-01..04**: Agent session integrations for Claude Code, Copilot, Codex and Antigravity. Whether they still need a per-turn action under the workspace model has to be re-derived: there are no copies to push, so the 2026-10-19 per-turn push decision may not apply
+- **HYG-01**: Conventional-commit `commit-msg` hook installed by `install-hooks` (devflow's validator, generalised)
+- **WTREE-06**: `wsx land <branch>`: merge a finished feature branch back into the workspace branch (`--no-ff`, ancestry proven), so the loop closes without an orchestrator. devflow's Ship would call it instead of merging itself
 - **GEN-01**: Reftable support (gix or a git-binary read fallback)
 - **DIST-01**: Versioned release binaries and an install documented for strangers
 - **SIGN-01**: Release-key policy for tags and `main`, by fingerprint (devflow pre-push)
@@ -180,11 +195,17 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |---------|--------|
 | Copy-sync (0.1.0's model) | Dropped 2026-10-19; 0.1.0 is frozen and migrated away from (MIG-01, MIG-02) |
 | Legacy manifest grammars outside `wsx migrate` | Owner decision 2026-10-19 |
-| A narrow mirror of agent config across live worktrees | Revisit only if mid-phase config drift is felt |
+| A narrow mirror of agent config across live worktrees | Revisit only if mid-task config drift across worktrees is felt |
 | Resolving merge or cherry-pick conflicts for the user | wsx reports, git and the user resolve |
 | macOS / Windows | Linux only for now |
 | Interactive prompts | wsx runs inside git hooks |
-| GSD plan-text lints (bashism scanner) | devflow/GSD-specific, not workspace management |
+| GSD plan-text lints (bashism scanner), STATE.md drift warning | devflow's domain |
+| Phases: ROADMAP validation, phase naming, scope inference from phase branches | devflow's domain. devflow passes a branch name to `wsx new` and a scope to `wsx cut` |
+| Off-worktree guard (phase source committed outside the phase worktree) | devflow's domain: it needs the active phase from STATE.md |
+| GSD/agent config checks in `doctor` | devflow's domain |
+| Agent session integrations (Claude Code, Copilot, Codex, Antigravity) | devflow's domain; the workspace model has no copies to push |
+| Ship approval, versioning and tags | devflow's domain (gate-driven). Revisit only if wsx gains release management |
+| Changing devflow's code to call wsx (`devflow start` → `wsx new`, Ship → `wsx land`) | devflow's own roadmap; wsx supplies IF-01 |
 | Gemini CLI adapter | Antigravity replaces it |
 
 ## Traceability
@@ -193,9 +214,9 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 68 total
+- v1 requirements: 69 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 68
+- Unmapped: 69
 
 ---
-*Last updated: 2026-10-19 after re-scoping and the workspace-mode adversarial review*
+*Last updated: 2026-10-19 after the wsx/devflow boundary review*

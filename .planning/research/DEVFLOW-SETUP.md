@@ -115,6 +115,16 @@ rulesets) is **not version-controlled anywhere**. The checklist names this the f
 
 ## 3. Lessons for the wsx product
 
+> **Boundary update, 2026-10-19.** The owner set the split: wsx manages the repo, devflow manages
+> AI agents and GSD, with no overlap, and wsx is useful on its own. This supersedes P7's "wsx must
+> support the GSD workflow" (wsx supports the workspace-branch model generically, GSD works on top
+> of it) and P11's `wsx phase-worktree` (it is generic `wsx new <branch>`; devflow owns phases).
+> Agent integrations, the off-worktree guard, GSD config checks, STATE.md hooks, plan lints, ship
+> approval and versioning are devflow's. Also found: devflow's own product already creates phase
+> worktrees (`devflow start`, from `devflow.toml` `base_branch`) and merges them back at Ship. That
+> is the overlap to remove on devflow's side, by having devflow call `wsx new` / `wsx land`.
+
+
 These are what devflow learned the hard way that bear directly on wsx's behaviour. "Req" is the
 requirement it confirms or changes.
 
