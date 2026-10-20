@@ -160,11 +160,12 @@ roadmap, as "adopt wsx" work, not on wsx's. Owner approved 2026-10-20; recorded 
 
 **Adoption order (2026-10-20).** devflow's worktree and merge code is tested, and replacing it is a
 regression risk, not free cleanup. The order is fixed:
-1. wsx milestone 1 ships.
+1. wsx milestone 1's implementation passes its harness.
 2. The wsx repo cuts over to it (REL-01).
-3. devflow's repo tooling cuts over (scripts and hooks, REL-01).
-4. Only then does devflow's Rust code start calling wsx, one row of the table above at a time,
-   each behind devflow's existing tests.
+3. devflow's repo tooling cuts over (scripts and hooks, REL-01). This is wsx's work, and the last
+   step of wsx milestone 1.
+4. Only after that does devflow's Rust code start calling wsx, one row of the table above at a time,
+   each behind devflow's existing tests. This is devflow backlog 999.162.
 
 Steps 3 and 4 are never done in parallel.
 
