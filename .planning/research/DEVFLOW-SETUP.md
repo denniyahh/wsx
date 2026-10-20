@@ -154,12 +154,11 @@ requirement it confirms or changes.
 ### GSD config differences (wsx vs devflow, as of today)
 | Key | devflow | wsx | Note |
 |---|---|---|---|
-| `git.develop` / `git.main` / `git.feature_prefix` | develop / main / feature/ | absent | Align (my remit) |
-| `git.auto_branch`, `git.auto_cleanup` | true | absent | Owner choice |
+| `git.auto_branch`, `git.auto_cleanup`, `git.develop`, `git.feature_prefix` | set | absent | Not read by GSD 1.16 (devflow's own CLI reads them); not copied |
 | `git.milestone_branch_template` | absent | `gsd/{milestone}-{slug}` | Written by GSD's project bootstrap (not in `~/.gsd/defaults.json`); align (remove) |
 | `mode` | absent | `yolo` | Copied from `~/.gsd/defaults.json` at bootstrap (verified); check it's intended |
 | `workflow.tdd_mode` | true | true | Same |
-| `workflow.granularity` | fine | absent (standard) | Owner choice |
+| `granularity` | fine (top-level and a redundant `workflow.` copy) | fine (top-level, the documented key) | Already aligned. Corrected 2026-10-19: the first comparison read only the `workflow.` copy |
 | `workflow.windows_enforce` | true | absent | Owner choice (broken-windows ship gate) |
 | `review.default_reviewers` | codex, opencode, antigravity | absent | Owner choice |
 | `mempalace.*` | enabled, wing devflow | absent | Owner choice; its MCP server is disconnected this session |

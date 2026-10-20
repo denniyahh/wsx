@@ -52,7 +52,8 @@
     "inline_plan_threshold": 1,
     "use_worktrees": false,
     "tdd_mode": true,
-    "ui_review": true
+    "ui_review": true,
+    "windows_enforce": true
   },
   "ship": {
     "pr_body_sections": []
@@ -68,7 +69,7 @@
     "source_grounding": true,
     "source_grounding_authority": "grep"
   },
-  "mode": "yolo",
+  "mode": "interactive",
   "granularity": "fine",
   "subagent_timeout": 900000,
   "features": {
@@ -101,5 +102,27 @@
     "enabled": true,
     "auto_update": true
   },
-  "runtime": "claude"
+  "runtime": "claude",
+  "review": {
+    "default_reviewers": [
+      "codex",
+      "opencode",
+      "antigravity"
+    ]
+  },
+  "mempalace": {
+    "enabled": true,
+    "capture_artifacts": true,
+    "wing": "wsx",
+    "memory_mode": "augment",
+    "mirror_kg": true,
+    "recall_on_plan": true,
+    "diary_journal": true,
+    "cross_project_tunnels": true
+  },
+  "model_overrides": {
+    "gsd-doc-classifier": "haiku",
+    "gsd-intel-updater": "haiku",
+    "gsd-mempalace-curator": "haiku"
+  }
 }
