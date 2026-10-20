@@ -95,6 +95,7 @@ cut that silently drops code, is the unacceptable failure.
 | Milestone 1 is re-scoped around workspace-branch mode, with `scripts/workspace/` (and devflow's hooks) as the oracle | Build what is used; the shell ports play the role Python 0.1.0 played | — Pending |
 | New `.wsx.conf` grammar (`only`/`modified`); legacy formats only inside `wsx migrate` | Little legacy support, easy upgrades. Owner decision 2026-10-19 | — Pending |
 | Hooks as git config-based hooks (≥ 2.54) | Run alongside `core.hooksPath` and global hooks, and get the real pushed refs (tested 2026-10-19) | — Pending |
+| No GSD-generated `.claude/CLAUDE.md` | A preview was 286 lines describing the dropped copy-sync design; devflow removed project `.claude/` configs too. Root CLAUDE.md is rewritten for Rust in phase 1. Owner decision 2026-10-19 | — Pending |
 
 ## Evolution
 
