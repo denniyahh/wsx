@@ -142,6 +142,24 @@ requirement it confirms or changes.
 | P10 | Refuse commits on PR-protected branches at commit time, not push time | out of wsx scope | none | Note for "other developer repo needs" (milestone 3 exploration) |
 | P11 | The divergence manifest, cut-PR, phase-worktree and sync-workspace scripts are the customizations the owner wants wsx to absorb eventually | ported as shell to `scripts/workspace/` | none yet | Milestone 3 candidates: `wsx pr-cut`, `wsx divergence check`, `wsx phase-worktree`. Keep the shell ports as the oracle, the same pattern as milestone 1 |
 
+### Overlap to retire on devflow's side (found 2026-10-19)
+
+devflow product code and open backlog items that fall in wsx's domain. They belong on devflow's
+roadmap, as "adopt wsx" work, not on wsx's.
+
+| devflow | Overlap | Retire by |
+|---|---|---|
+| `devflow start` creates `feature/phase-NN` worktrees itself (`worktree.rs`, base from `devflow.toml` `base_branch`) | worktree creation | calling `wsx new <branch>` |
+| Ship merges the phase branch into the base branch (`git.rs` `merge --no-ff`) | merge-back | calling `wsx land` (wsx v2 WTREE-06) |
+| `devflow cleanup` (and backlog 999.43, recovery refs deleted by ancestry) | worktree/branch cleanup | calling `wsx rm` |
+| Backlog 999.110 (`devflow init`/`doctor` for the `.planning`-tracking base branch) and `devflow.toml` `base_branch` | the same fact as `wsx.sourceBranch` | reading it from `wsx status --json` |
+| Backlog 999.28 (`--base` for `devflow start`) | worktree base | `wsx new`'s base resolution |
+| Backlog 999.146 (`cut-pr-branch.sh` name bug) | PR cut | fixed in wsx PRCUT-01; retire the script at cutover |
+| `scripts/hooks` personal-path policy, `check-workspace-divergence.sh`, `cut-pr-branch.sh`, `sync-workspace.sh`, `phase-worktree.sh` | the repo tooling itself | REL-01 cutover |
+
+Staying in devflow: agent sessions, gates, Ship approval, version and tag computation, STATE.md
+and plan lints, the off-worktree guard, GSD config checks, `release --check` signing probes.
+
 ## 4. Lessons for how wsx is built (roadmap inputs)
 
 | # | devflow practice | wsx now | Recommendation | When |
