@@ -1,168 +1,159 @@
 # Requirements: wsx
 
-> **SUPERSEDED 2026-10-19.** Copy-sync is dropped and milestone 1 is re-scoped around the workspace-branch model (PROJECT.md Key Decisions). These copy-sync requirements are kept for reference until the rewrite replaces them; do not build a roadmap from them.
+**Defined:** 2026-10-19 (re-scope). The superseded copy-sync requirements are in git history at
+commit `e5bfbcf` (`.planning/REQUIREMENTS.md`).
+**Core Value:** wsx must never let a personal file reach a shared branch or PR, and must never
+lose work while moving it between the workspace branch, phase worktrees and PR branches.
 
-**Defined:** 2026-10-18
-**Core Value:** wsx must never lose or silently clobber a user's personal files. Every sync decision is either correct, reported as a conflict, or backed up.
+**The model.** Each repo has an **integration branch** (e.g. `develop`, `next`, `main`) and one
+personal **workspace branch** (e.g. `workspace/<handle>`), which is the integration branch plus
+tracked personal files: planning, agent config, tooling. Work happens in worktrees branched
+**from the workspace branch**. Clean PR branches are cut from the integration branch by replaying
+code commits and stripping personal paths. Guards stop personal paths from being pushed anywhere
+except the workspace branch.
 
-Milestone 1 = Rust parity + hardened. "Parity" means exit codes, filesystem effects, base-state
-effects and status classification match the Python oracle. Exact stdout wording does not count.
-The oracle is `bin/wsx` at `origin/develop` (`d693c9e`, 0.1.0 plus the issue #1 fix, plain
-`.git/hooks` guard shims and `--no-track`), not the 0.1.0 tag on `main`. Every intended difference
-is a fixed defect or a decision listed here, and has a harness scenario.
+**Milestone 1 = Rust parity + hardened**, against the shell oracle:
+- `scripts/workspace/{sync-workspace,phase-worktree,cut-pr-branch}.sh`
+- devflow's `check-workspace-divergence.sh`
+- the personal-path policy in devflow's `scripts/hooks/pre-push`
+
+"Parity" means the same exit codes, refs, commits and trees. Exact wording does not count. Every
+intended difference is a fixed oracle defect or a decision listed here, and has a harness
+scenario. Research: `research/WORKSPACE-MODE.md`, `research/DEVFLOW-SETUP.md`. The earlier
+STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ## v1 Requirements
 
 ### Harness (black-box parity suite)
 
-- [ ] **HARN-01**: The same scenario suite runs unchanged against the Python oracle and the Rust binary, selected by `WSX_BIN`
-- [ ] **HARN-02**: Every scenario is hermetic. Its HOME, XDG dirs, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` and hooks are isolated from the host, and the host's global hooks never fire. `LLVM_*` profiling variables are passed through so coverage still sees the spawned binary
-- [ ] **HARN-03**: Hook scenarios exercise the binary under test, installed at the sandbox `$HOME/.local/bin/wsx` that the hook scripts call
-- [ ] **HARN-04**: Every scenario asserts explicit expected outcomes (exit code, filesystem and base-state effects), never only "same as the oracle". The expected oracle outcome is recorded in the scenario, so the evidence survives cutover. Two classes of deliberate difference:
-  - `fixed:` scenarios pass on Rust and fail on the oracle before cutover
-  - `regression:` scenarios (deliberate refusals, e.g. reftable) succeed on the oracle and are refused by Rust
-- [ ] **HARN-05**: The suite runs from `cargo test`/nextest, so coverage and mutation testing see it
-- [ ] **HARN-06**: Permission-based scenarios refuse to run as root, so they can't pass trivially
+- [ ] **HARN-01**: The same scenario suite runs against the shell oracle and the Rust binary, selected per scenario. The oracle scripts are vendored under `scripts/workspace/` at a recorded devflow commit
+- [ ] **HARN-02**: Every scenario is hermetic: HOME, XDG, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` and hooks are isolated, signing is pinned locally, and the host's global hooks never fire. `LLVM_*` passes through so coverage sees the spawned binary
+- [ ] **HARN-03**: Every scenario asserts explicit expected outcomes (exit code, refs, commit list, trees, files on disk), never only "same as the oracle". The oracle's outcome is recorded in the scenario, so the evidence survives the oracle's removal. Two classes of deliberate difference:
+  - `fixed:` scenarios pass on Rust and fail on the oracle
+  - `regression:` scenarios are deliberate refusals
+- [ ] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
+- [ ] **HARN-05**: Every guard scenario has a known-positive control that must still be refused, and a clean control that must pass. A guard only ever observed refusing, or only ever observed passing, fails review
 
-### Core (types, manifest, base snapshot)
+### Configuration and manifest
 
-- [ ] **CORE-01**: Every `.wsx.conf` valid for the oracle parses to the same entries and policies. A differential proptest checks this against the Python parser before cutover, with its cases kept as fixtures after
-- [ ] **CORE-02**: Managed paths are handled as raw bytes, so non-UTF-8 filenames sync correctly
-- [ ] **CORE-03**: A v1 `base.json` is upgraded automatically on first run. Surrogate-escaped keys (`\udcXX`) are decoded back to their raw bytes without going through a strict JSON string decoder. The original is kept as `base.v1.json.bak` before the first v2 write. No spurious conflicts or transfers result
-- [ ] **CORE-04**: `base.json` v2 stores one agreed hash per path and a separate stat record for each side. Path keys are encoded reversibly: valid UTF-8 as-is, any other byte escaped. The file is written temp + fsync + rename. The oracle and Rust never share one state file in tests
-- [ ] **CORE-05**: A corrupt, unreadable or unknown-version `base.json` is never treated as empty and never overwritten. Commands stop with an error naming the file. Hook mode skips, exits 0, and records the reason where `status` and `doctor` show it
-- [ ] **CORE-06**: Discovery and policy resolution match the oracle:
-  - `.git`, `node_modules`, `.DS_Store`, `Thumbs.db` and `*.wsx-remote` are skipped on both sides
-  - an uncovered path defaults to `skip`
-  - the longest manifest match wins
+- [ ] **CONF-01**: `.wsx.conf` on the workspace branch declares `only <path>` (workspace-only) and `modified <path>` (a shared file deliberately changed). Paths are raw bytes. A path matches itself and anything under it, never a mere name prefix (`.planning` ≠ `.planningX`). Unknown line kinds are an error naming the line
+- [ ] **CONF-02**: Built-in personal paths (agent-tool dirs, `.planning`, `.worktrees`, `.wsx.conf`, …) are defined once in wsx, and the manifest extends them. The guard, the cut, the divergence check and `status` all read that single resolved list (fixes the oracle's three diverging lists)
+- [ ] **CONF-03**: The integration branch is resolved from `wsx.baseRef`, falling back to a chain that prefers `develop`, then `next`, then the remote default branch. It's never taken blindly from `origin/HEAD`
+- [ ] **CONF-04**: The base remote (where the integration branch lives) and the push remote (where PR branches go) are configured separately, so fork layouts work (gsd-core: `upstream/next` base, `origin` push). Both default to `origin`
+- [ ] **CONF-05**: The workspace branch is resolved from `wsx.sourceBranch`, falling back to the only local `workspace/*` or `personal/*` branch. Zero or several candidates is an error that lists them
+- [ ] **CONF-06**: The phase branch template comes from `wsx.phaseBranchTemplate`, falling back to GSD's `git.phase_branch_template` and then `feature/phase-{phase}`. Worktrees live at `.worktrees/<name>`
 
-### Sync (planner semantics)
+### Workspace sync
 
-- [ ] **SYNC-01**: All sync decisions come from a pure planner (no filesystem, git, clock or env access). `--dry-run` reports exactly the planned actions. The only difference a real run can show is a compare-and-swap abort (SAFE-02), which is reported
-- [ ] **SYNC-02**: An unreadable local or source file or directory is never planned as a deletion. It is reported, and its subtree is left untouched (fixes the unreadable-file and unreadable-directory data loss)
-- [ ] **SYNC-03**: Under `lww`, a pull never deletes a local file that was never synced. It is pushed instead (fixes lww local-only deletion)
-- [ ] **SYNC-04**: When a file is deleted on both sides, its base entry is removed, so recreating the file later is not reported as a conflict
-- [ ] **SYNC-05**: Under `lww`, identical mtimes with different content are reported as a conflict (`<file>.wsx-remote`), not resolved silently
-- [ ] **SYNC-06**: The snapshot includes, for the target worktree, which paths git tracks (in the index or in HEAD). A managed path that is tracked, or has a tracked descendant, is blocked and reported in `sync`, `status` and `doctor`. wsx never writes a tracked file
-- [ ] **SYNC-07**: A symlink at or above a managed path, on either the local or the source side, blocks that path. wsx performs no copy, unlink, parent cleanup, base update or marker write, and reports it. The only exception is the legacy layout migration defined in SYNC-08. Tests cover source-side, local-side and ancestor links
-- [ ] **SYNC-08**: Legacy migration is defined as a local path reached through a symlink that resolves into the source worktree. It migrates at parity, and an interruption mid-migration never leads to source deletions on the next run
-- [ ] **SYNC-09**: Leftover wsx temp files are never synced as user files
-- [ ] **SYNC-10**: `wsx resolve --mine/--theirs` gives the same results as the oracle, and `--theirs` never writes through a symlinked parent
-- [ ] **SYNC-11**: wsx records the conflict markers it writes. A pre-existing `<file>.wsx-remote` that wsx didn't create for that conflict is reported as a marker collision, and is never overwritten or deleted
-- [ ] **SYNC-12**: Every copy preserves the source's mtime and permission bits, as the oracle's `shutil.copy2` does. `lww` and the stat cache depend on it
+- [ ] **WSYNC-01**: `wsx sync` merges `<base-remote>/<integration>` into the workspace branch with a real merge, never a rebase, and only from the workspace branch. Detached HEAD, another branch, or a dirty tree are refused
+- [ ] **WSYNC-02**: Already up to date is a no-op with exit 0. A conflicted merge is left in git's normal conflict state with a message naming the files, and wsx never resolves it
+- [ ] **WSYNC-03**: A local integration branch not checked out in any worktree is fast-forwarded to its remote. One checked out somewhere is left alone (parity)
 
-### Safety (filesystem execution)
+### Worktrees
 
-- [ ] **SAFE-01**: Only one wsx run per repo applies changes at a time, across all worktrees. A hook run waits at most 2 s for the lock (one named constant, tested just under and just over it), then skips, exits 0, and records the skip where `status` and `doctor` show it
-- [ ] **SAFE-02**: Before overwriting or deleting a file, the executor checks that it still matches the hash the plan expected. On a mismatch it aborts that one action: no write, no base change, no marker. It reports the abort and continues with the rest
-- [ ] **SAFE-03**: The planner attaches a backup instruction to every destructive action:
-  - overwrite on pull or push, under any policy
-  - `delete-local` and `delete-remote`
-  - `resolve`
-  - marker replacement
+- [ ] **WTREE-01**: `wsx new --phase N` checks for a `### Phase N:` heading in ROADMAP.md, syncs the workspace (unless `--no-sync`, or when the main checkout isn't on the workspace branch, which it reports), and creates the phase branch and worktree **from the workspace branch**
+- [ ] **WTREE-02**: Before creating anything, `wsx new` asserts the workspace branch tracks at least one personal path, and refuses otherwise
+- [ ] **WTREE-03**: Re-running `wsx new` for an existing worktree fast-forwards it to the workspace branch, or refuses if that isn't a fast-forward. It never rewrites phase history. An existing branch with no worktree is attached
+- [ ] **WTREE-04**: `wsx new <name>` (non-phase) creates `workspace/<name>`-style feature worktrees the same way
+- [ ] **WTREE-05**: `wsx rm <name>` merges the worktree's planning records back into the workspace branch, then removes the worktree and branch. It refuses if the branch has commits that are neither merged into the workspace branch nor cut to a PR branch, unless `--force`
 
-  The executor backs up before acting. Each action kind is tested on its own. Backup names never collide, even within one second
-- [ ] **SAFE-04**: The mass-deletion brake counts the planned `delete-local` and `delete-remote` actions before anything is applied. When the count is above the threshold (default 10, git config `wsx.maxDeletions`):
-  - `sync`/`push`/`pull` apply nothing and exit non-zero unless `--force` (new on those commands)
-  - hook mode applies the non-delete actions, skips every delete, exits 0, and records the trip where `status` and `doctor` show it
+### PR cut
 
-  Tests cover threshold − 1, threshold, threshold + 1, and `--force`
-- [ ] **SAFE-05**: After each backup, older backups of the same path are pruned automatically, keeping the newest 10. No separate maintenance command is needed
-- [ ] **SAFE-06**: A crash or kill at any point during apply leaves no data lost, and the next run converges correctly. File data is written and fsynced before the base is updated. Fault-injection tests check this
-- [ ] **SAFE-07**: Unchanged files are not re-hashed on every hook. A stat cache skips hashing, but never authorises a destructive action on its own
-- [ ] **SAFE-08**: Backups are stored under the common git dir (`<common-dir>/wsx/backups/<worktree-id>/`), so they survive `wsx rm` removing the worktree's own git dir. A test removes a worktree and recovers its final-push backup
+- [ ] **PRCUT-01**: `wsx cut` creates `<pr-branch>` from the freshly fetched `<base-remote>/<integration>` and replays commits onto it.
+  - In phase mode (`--phase N`, or automatic on a phase branch) it replays only commits whose conventional-commit scope names phase N, wherever they were committed.
+  - Otherwise it replays the branch's commits since its fork from the workspace branch.
+- [ ] **PRCUT-02**: Personal paths (CONF-02) are removed from every replayed commit. Commits that touch only personal paths are dropped. Replayed commits keep the original author, date and message, and are signed per the user's git config
+- [ ] **PRCUT-03**: Before writing anything, wsx predicts code conflicts in memory (gix merge). On a real conflict in a non-personal path, it aborts with the commit and paths named, and leaves the repo on the original branch with the original tree and no half-made PR branch. This is a deliberate difference: the oracle can leave a partial branch
+- [ ] **PRCUT-04**: After replay, an audit over every commit in the PR range must find zero personal paths, or the cut fails. The audit uses `-z`/raw-byte names, so quoted non-ASCII names can't slip through
+- [ ] **PRCUT-05**: A fidelity report fails if the PR branch changes a path no replayed commit touched, and warns for each path whose content differs from the source branch
+- [ ] **PRCUT-06**: `wsx cut` never pushes. It returns to the original branch on success, failure, panic and Ctrl-C. A dirty working tree is refused up front
+- [ ] **PRCUT-07**: Cut errors are never swallowed. A failed cherry-pick that isn't a predicted conflict aborts with git's error shown (fixes the oracle's `cherry-pick … || true`)
 
-### Git (adapter)
+### Divergence check
 
-- [ ] **GIT-01**: wsx resolves the right worktree, git-dir and common-dir even when the hook environment exports `GIT_DIR`/`GIT_INDEX_FILE`. Parity with the oracle's issue #1 fix, extended to every git call made from a hook
-- [ ] **GIT-02**: Child processes wsx starts get a scrubbed git environment (the variables `git rev-parse --local-env-vars` lists) and a null stdin
-- [ ] **GIT-03**: A reftable repo is refused with a clear message, never a crash or partial run (a `regression:` scenario)
-- [ ] **GIT-04**: A repo owned by another user (reduced trust) is refused, as git does, never processed with repo config silently ignored
-- [ ] **GIT-05**: A user's custom global `core.excludesFile` is kept in the generated per-worktree ignore file
-- [ ] **GIT-06**: Worktree ids are collision-free. A linked worktree named `main` doesn't share an exclude file with the main checkout. Pruning recognises the legacy `exclude.wsx-<id>` names and never removes the live main checkout's file
+- [ ] **DIV-01**: `wsx check` fails when the workspace branch differs from `<base-remote>/<integration>` in any way it hasn't declared. An added path must be under a built-in or `only` entry; a modified or deleted shared file must be declared `modified`
+- [ ] **DIV-02**: A stale declaration fails too: an `only` path the integration branch now carries, or a `modified` path that no longer differs
+- [ ] **DIV-03**: Every tracked hook and top-level script is checked for committed mode `100755`. The committed mode is what counts, not the working tree's
+- [ ] **DIV-04**: The check runs against the local ref with no network, and says how stale that ref is relative to its last fetch
 
-### Guard and hooks
+### Guards
 
-- [ ] **GUARD-01**: The commit guard blocks staged managed paths that contain non-ASCII or special characters (fixes quoted paths slipping through). Staged names are read NUL-separated and repo-relative, so `diff.relative` cannot hide a path either
-- [ ] **GUARD-02**: The pre-push guard checks every commit in the range it computes from git state, using every commit's touched paths, so a managed file added and later removed, or renamed into a managed path, is still caught (a deliberate difference from the oracle). `git push origin <other-branch>` remains a documented gap until milestone 2's HOOK-02
-- [ ] **GUARD-03**: The pre-push guard also runs on a branch's first push (no upstream), and the commit guard works on a repo's first commit (unborn HEAD)
-- [ ] **GUARD-04**: The guard fails closed only once wsx has confirmed the repo is wsx-configured. An internal error after that point blocks the commit or push with a clear message. Unconfigured repos and repos wsx refuses (reftable, another owner) exit 0, so the machine-wide hook never blocks unrelated repos. `WSX_SKIP=1` still bypasses
-- [ ] **GUARD-05**: Sync hooks never fail the git operation. Unknown hook names, panics, broken pipes and Ctrl-C all exit 0 in hook mode
-- [ ] **GUARD-06**: Agent session hooks (Claude Code, Copilot) sync the worktree named in the stdin JSON `cwd`, not the process cwd. Only those hooks read stdin, and only when it isn't a terminal, with a size bound. Git hook paths never read stdin
-- [ ] **GUARD-07**: Plain `.git/hooks` guard shims for repos without husky work at parity: same marker, never overwrite a foreign hook, leave `core.hooksPath` repos alone, re-arm on session start. `doctor` checks the shim is executable, not just present, and when `core.hooksPath` is set says so and shows how to chain `wsx hook <name>` from that manager
+- [ ] **GUARD-01**: The pre-push guard reads the real pushed refs from stdin (config-based hooks give every hook the full list). For each updated ref other than the workspace branch, it checks every commit's touched paths in the range: add, modify, delete and rename into a personal path. A new ref is bounded by `--not --remotes=<push-remote>`. This is a deliberate difference: the oracle checks only a fixed list of branch-name patterns and hard-codes `origin`
+- [ ] **GUARD-02**: Path names are read NUL-separated, repo-relative and as raw bytes, so quoting and `diff.relative` can't hide a path (fixes the oracle's quoted-name bypass)
+- [ ] **GUARD-03**: The guard fails closed once the repo is confirmed wsx-configured. An unreadable range (e.g. an unfetched remote object) or an internal error refuses the push, with the reason and the fix. Unconfigured repos exit 0. `WSX_SKIP=1` is the named bypass, and `--no-verify` is documented as disabling every guard at once
+- [ ] **GUARD-04**: The pre-commit guard refuses personal paths staged on the integration branch, on `main`, and on PR branches cut by wsx. It allows them on the workspace branch and on branches created from it by `wsx new`, where GSD commits planning as it works. The push guard (GUARD-01) is the boundary for everything else
 
-### Lifecycle
+### Hook installation
 
-- [ ] **LIFE-01**: `wsx new` creates the worktree and branch from the base ref with `--no-track` and the same `post-checkout` behaviour as the oracle, then arms the guard (husky or git hook shims) and runs setup
-- [ ] **LIFE-02**: `wsx rm` pushes personal state back before removing, refuses on conflicts unless `--force`, and identifies the main worktree correctly, including with `--separate-git-dir` and symlinked paths
-- [ ] **LIFE-03**: `wsx list` and `wsx doctor` report the same states as the oracle, plus:
-  - skipped, symlink, tracked-path and marker-collision reports
-  - deletion-brake trips and skipped hook runs
-  - an unreadable base
-  - a husky repo whose `.husky/pre-push` is missing, so the push guard can't run
-- [ ] **LIFE-04**: wsx never holds its lock while running a subprocess that can fire git hooks (e.g. `git worktree add`, `npm install`). It re-acquires the lock and re-plans before applying anything afterwards
-- [ ] **LIFE-05**: `wsx new` derives the fetch remote correctly for local base refs such as `feature/x`
+- [ ] **HOOK-01**: `wsx install-hooks` registers wsx's pre-commit and pre-push hooks as repo-level config hooks (`hook.wsx-*.command` / `.event`, git ≥ 2.54). It writes no tracked file, overwrites no hook file, and runs alongside husky, `core.hooksPath` and global hooks (verified in `research/WORKSPACE-MODE.md` R2). Re-running is idempotent. `--uninstall` removes exactly what it added
+- [ ] **HOOK-02**: Hook commands are plain program invocations that tolerate git's appended arguments. A scenario installs them and drives a real `git commit` and `git push` with a global `core.hooksPath` hook present, asserting both hooks ran and that a refusal is attributed to wsx's own message
+- [ ] **HOOK-03**: On git < 2.54, `install-hooks` refuses with the version found and the minimum needed. It never half-installs
 
-### Cutover
+### Git adapter
 
-- [ ] **CUT-01**: `install.sh` installs the Rust binary in place of the Python script, and the existing husky, plain git hook, Claude, Copilot and fish integrations keep working
-- [ ] **CUT-02**: The author's existing worktrees keep working after swapping the binary, verified on real state
-- [ ] **CUT-03**: Python `bin/wsx` is deleted, and the harness keeps passing on Rust alone with every recorded expectation intact
-- [ ] **CUT-04**: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` and `cargo deny check` pass. `cargo mutants` on the planner module leaves zero surviving mutants, apart from any listed as equivalent, each with a justification
+- [ ] **GIT-01**: History-changing operations (merge, cherry-pick, branch and worktree creation, commit, fetch) go through the `git` binary, so the user's hooks, signing, merge drivers and credentials apply. Read-only analysis uses gix
+- [ ] **GIT-02**: Child git processes get the repo-local variables `git rev-parse --local-env-vars` lists removed when they target another worktree, plus a null stdin. wsx resolves its own worktree and common dir correctly when a hook exports `GIT_DIR`/`GIT_INDEX_FILE`
+- [ ] **GIT-03**: A reftable repo is refused with a clear message (gix 0.89 can't open it; a `regression:` scenario)
+- [ ] **GIT-04**: A repo owned by another user is refused, as git does
 
-## v2 Requirements
+### Migration
 
-Milestone 2: public baseline release. Tracked, not in the current roadmap.
+- [ ] **MIG-01**: `wsx migrate` converts an existing manifest to the new `.wsx.conf`:
+  - 0.1.0 `.wsx.conf` `sync`/`pull`/`lww` entries become `only`
+  - devflow `.workspace-divergence` lines carry over
+  - `skip` lines are reported with a suggested `.gitignore` line, never guessed
 
-### Hooks without husky
+  It shows a dry run first. With `--apply` it writes and commits the result on the workspace branch and removes the old file. Legacy grammars are parsed **only** inside `migrate`
+- [ ] **MIG-02**: In a 0.1.0 copy-sync repo, `migrate --apply` removes copy-sync's leftovers: per-worktree `core.excludesFile` and `extensions.worktreeConfig` when wsx set them, the `exclude.wsx-*` files, and `<git-dir>/wsx/`. A leftover personal-file copy in a dev worktree is deleted only if its exact content exists in a commit on the workspace branch. Anything else is reported and kept
+- [ ] **MIG-03**: Migration of the owner's real repos is verified on real state: devflow, gsd-core, gsd-pi, and the 0.1.0 projects (location to be given by the owner)
 
-- **HOOK-01**: Config-based hooks on git ≥ 2.54 (per-worktree, alongside `core.hooksPath`), extending the plain `.git/hooks` shims
-- **HOOK-02**: Pre-push uses the real pushed refs
-- **HOOK-03**: A worktree created by any tool (not only `wsx new`) is set up through a repo-level `post-checkout` hook
+### Status and doctor
 
-### Agent integrations
+- [ ] **STAT-01**: `wsx status` shows the resolved integration, workspace, base remote and push remote; the workspace branch's ahead/behind against the integration branch; the divergence result; and each worktree with its branch, phase and whether it has been cut
+- [ ] **STAT-02**: `wsx doctor` reports:
+  - missing or non-executable hooks, and git < 2.54
+  - GSD config that contradicts the model (`commit_docs` off, `use_worktrees` on, a phase template that doesn't match CONF-06)
+  - an unfetched base ref
+  - undeclared divergence
 
-- **AGNT-01**: Codex CLI session integration
-- **AGNT-02**: Antigravity session integration (Antigravity CLI, which replaced Gemini CLI for unpaid users on 2026-06-18)
-- **AGNT-03**: Every agent integration (Claude Code, Copilot, Codex, Antigravity) pushes at the end of each turn; session-end push stays as a best-effort extra. Consistent across runtimes (owner decision 2026-10-19). Depends on the M1 stat cache and lock (SAFE-01, SAFE-07). Acceptance must cover: parallel agents finishing turns at once (lock losers skip and retry next turn, nothing lost), and a mid-task edit reaching the source before the task ends (other worktrees see it only on their next pull)
-- **AGNT-04**: Confirm whether Claude Code's worktree auto-removal keeps unpushed gitignored files
+### Cutover and gates
 
-### Maintenance
+- [ ] **REL-01**: `install.sh` installs the Rust binary. In the wsx and devflow repos, wsx replaces the shell scripts and the devflow hook's personal-path policy, with `.wsx.conf` migrated (MIG-01) at that point and not before
+- [ ] **REL-02**: The vendored shell oracle stays until the harness passes on Rust with every recorded expectation intact, then is deleted. Python 0.1.0 `bin/wsx` is deleted from `develop`, with a `v0.1.0` tag kept
+- [ ] **REL-03**: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` and `cargo deny check` pass. `cargo mutants` on the path matcher, commit classifier (scope and personal-path) and guard range logic leaves zero surviving mutants, apart from any listed as equivalent with a justification
 
-- **MAINT-01**: Backup inspection and restore command
-- **MAINT-02**: Richer `doctor` (nested symlinks, stale locks, interrupted runs)
+## v2 Requirements (milestone 2: public baseline)
 
-### Generality and distribution
-
-- **GEN-01**: Base-ref default chain no longer team-specific (`origin/devtest` first)
-- **GEN-02**: Reftable support resolved before the public release, either through gix or a git-binary fallback
-- **DIST-01**: Versioned release binaries and a documented install for strangers
+- **HOOK-04**: Hook fallback for git < 2.54 (chaining from a `core.hooksPath` hook to the displaced one)
+- **GUARD-05**: Refuse commits on PR-protected branches at commit time (devflow pre-commit)
+- **GUARD-06**: Off-worktree guard: refuse source committed outside the active phase's worktree (devflow `lint-phase-worktree.sh`)
+- **AGNT-01..04**: Agent session integrations for Claude Code, Copilot, Codex and Antigravity. Whether they still need a per-turn action under the workspace model has to be re-derived: there are no copies to push, so the 2026-10-19 per-turn push decision may not apply
+- **GEN-01**: Reftable support (gix or a git-binary read fallback)
+- **DIST-01**: Versioned release binaries and an install documented for strangers
+- **SIGN-01**: Release-key policy for tags and `main`, by fingerprint (devflow pre-push)
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| macOS / Windows | Linux only for now; their locking and symlink semantics add scope |
-| Interactive prompts | wsx runs inside git hooks and agent hooks |
-| Writing tracked files (`.gitignore`, `.husky/`) | A load-bearing design rule |
-| Resolving conflicts on the user's behalf | A design rule. Conflicts keep both sides |
-| One-shot copy-at-create (like `.worktreeinclude`) as the main mode | Continuous two-way sync is the product |
-| Gemini CLI adapter | Antigravity CLI replaces it; owner decision 2026-10-19 |
-| Live-SQLite-consistent `lww` copies | Unverified risk (review 2026-10-19); M1 `lww` is a byte copy and the docs must not promise more |
-| Broader "other developer repo needs" features | To be explored after the milestone 2 baseline ships |
+| Copy-sync (0.1.0's model) | Dropped 2026-10-19; 0.1.0 is frozen and migrated away from (MIG-01, MIG-02) |
+| Legacy manifest grammars outside `wsx migrate` | Owner decision 2026-10-19 |
+| A narrow mirror of agent config across live worktrees | Revisit only if mid-phase config drift is felt |
+| Resolving merge or cherry-pick conflicts for the user | wsx reports, git and the user resolve |
+| macOS / Windows | Linux only for now |
+| Interactive prompts | wsx runs inside git hooks |
+| GSD plan-text lints (bashism scanner) | devflow/GSD-specific, not workspace management |
+| Gemini CLI adapter | Antigravity replaces it |
 
 ## Traceability
-
-Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 54 total
+- v1 requirements: 49 total
 - Mapped to phases: 0 (roadmap pending)
-- Unmapped: 54
+- Unmapped: 49
 
 ---
-*Requirements defined: 2026-10-18*
-*Last updated: 2026-10-19 after adversarial review (`.planning/reviews/m1-adversarial/SUMMARY.md`) and rebasing the oracle on `origin/develop`*
+*Last updated: 2026-10-19 after re-scoping to the workspace-branch model*
