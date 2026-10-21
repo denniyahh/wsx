@@ -222,11 +222,82 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| HARN-01 | Phase 2 | Pending |
+| HARN-02 | Phase 2 | Pending |
+| HARN-03 | Phase 2 | Pending |
+| HARN-04 | Phase 1 | Pending |
+| HARN-05 | Phase 2 | Pending |
+| HARN-06 | Phase 2 | Pending |
+| CONF-01 | Phase 4 | Pending |
+| CONF-02 | Phase 4 | Pending |
+| CONF-03 | Phase 4 | Pending |
+| CONF-04 | Phase 4 | Pending |
+| CONF-05 | Phase 4 | Pending |
+| CONF-06 | Phase 8 | Pending |
+| CONF-07 | Phase 4 | Pending |
+| WSYNC-01 | Phase 7 | Pending |
+| WSYNC-02 | Phase 7 | Pending |
+| WSYNC-03 | Phase 7 | Pending |
+| WSYNC-04 | Phase 7 | Pending |
+| WTREE-01 | Phase 8 | Pending |
+| WTREE-02 | Phase 8 | Pending |
+| WTREE-03 | Phase 8 | Pending |
+| WTREE-04 | Phase 8 | Pending |
+| WTREE-05 | Phase 8 | Pending |
+| WTREE-06 | Phase 8 | Pending |
+| PRCUT-01 | Phase 9 | Pending |
+| PRCUT-02 | Phase 9 | Pending |
+| PRCUT-03 | Phase 9 | Pending |
+| PRCUT-04 | Phase 10 | Pending |
+| PRCUT-05 | Phase 10 | Pending |
+| PRCUT-06 | Phase 9 | Pending |
+| PRCUT-07 | Phase 9 | Pending |
+| PRCUT-08 | Phase 10 | Pending |
+| PRCUT-09 | Phase 10 | Pending |
+| DIV-01 | Phase 5 | Pending |
+| DIV-02 | Phase 5 | Pending |
+| DIV-03 | Phase 5 | Pending |
+| DIV-04 | Phase 5 | Pending |
+| GUARD-01 | Phase 6 | Pending |
+| GUARD-02 | Phase 6 | Pending |
+| GUARD-03 | Phase 6 | Pending |
+| GUARD-04 | Phase 11 | Pending |
+| GUARD-05 | Phase 11 | Pending |
+| HOOK-01 | Phase 11 | Pending |
+| HOOK-02 | Phase 11 | Pending |
+| HOOK-03 | Phase 11 | Pending |
+| GIT-01 | Phase 3 | Pending |
+| GIT-02 | Phase 3 | Pending |
+| GIT-03 | Phase 3 | Pending |
+| GIT-04 | Phase 3 | Pending |
+| MIG-01 | Phase 12 | Pending |
+| MIG-02 | Phase 12 | Pending |
+| MIG-03 | Phase 12 | Pending |
+| MIG-04 | Phase 12 | Pending |
+| STAT-01 | Phase 13 | Pending |
+| STAT-02 | Phase 13 | Pending |
+| IF-01 | Phase 5 | Pending |
+| IF-02 | Phase 5 | Pending |
+| DEV-01 | Phase 1 | Pending |
+| DEV-02 | Phase 1 | Pending |
+| DEV-03 | Phase 1 | Pending |
+| DEV-04 | Phase 1 | Pending |
+| DEV-05 | Phase 1 | Pending |
+| DEV-06 | Phase 1 | Pending |
+| SUP-01 | Phase 1 | Pending |
+| SUP-02 | Phase 1 | Pending |
+| SUP-03 | Phase 1 | Pending |
+| SUP-04 | Phase 1 | Pending |
+| SUP-05 | Phase 1 | Pending |
+| REL-01 | Phase 15 | Pending |
+| REL-02 | Phase 15 | Pending |
+| REL-03 | Phase 14 | Pending |
+| REL-04 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 71 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 71
+- Mapped to phases: 71
+- Unmapped: 0
 
 ---
 *Last updated: 2026-10-20 after the prior-art external review*
