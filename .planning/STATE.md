@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 1
 current_phase_name: Development foundation
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-10-22T19:51:09.034Z"
+stopped_at: Completed 01-05-PLAN.md
+last_updated: "2026-10-22T19:58:32.801Z"
 last_activity: 2026-10-22
 last_activity_desc: Phase 1 execution started
-state_head: fc577890247e24bdbf9a2ba299098a176abfcaef
+state_head: 8feb1a57f6c0cf05b5577dac8c010359d79ad343
 progress:
   total_phases: 15
   completed_phases: 0
   total_plans: 7
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-20)
 ## Current Position
 
 Phase: 1 (Development foundation) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
 Status: Ready to execute
 Last activity: 2026-10-22 — Phase 1 execution started
 
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 1 P01 | 4 min | 2 tasks | 9 files |
 | Phase 01 P02 | 6min | 2 tasks | 3 files |
+| Phase 01 P05 | 5min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,8 @@ Recent decisions affecting current work:
 - [Phase 1]: 01-01: show_toolchain captures rustc --version via assignment so a failing rustc stops the gate under set -e
 - [Phase 01]: check.sh deps verifies cargo-deny with CARGO_HOME/bin ahead of PATH, matching cargo's subcommand lookup, so the verified binary is the one that scans
 - [Phase 01]: install-tools.sh passes curl --disable so no .curlrc can add headers, a user agent or a proxy to tool downloads
+- [Phase 01]: 01-05: setup-repo.sh reads multi-valued include.path into a variable (exit 1 = unset, other non-zero = error) instead of piping to grep -q, so SIGPIPE under pipefail cannot duplicate the include
+- [Phase 01]: 01-05: setup-repo.sh confirms registration via git hook list, which also makes it fail closed (exit 1) when hook.gitleaks-staged.enabled=false is already set
 
 ### Pending Todos
 
@@ -96,6 +99,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22T19:51:08.990Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-10-22T19:58:23.772Z
+Stopped at: Completed 01-05-PLAN.md
 Resume file: None
