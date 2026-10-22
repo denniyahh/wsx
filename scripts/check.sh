@@ -38,6 +38,24 @@ require_tool() {
     fi
 }
 
+# Print the compiler once per invocation, so every container and CI log
+# records which rustc produced the result (DEV-02). rust-toolchain.toml pins
+# it; this line is the evidence that the pin was honoured.
+TOOLCHAIN_SHOWN=0
+show_toolchain() {
+    if [ "$TOOLCHAIN_SHOWN" -eq 1 ]; then
+        return
+    fi
+    require_tool rustc "install rustup from https://rustup.rs"
+    # A plain assignment, not `echo "$(rustc --version)"`: only the assignment
+    # passes rustc's exit status to `set -e`, so a broken rustc (for example a
+    # pinned toolchain rustup cannot install) stops the gate here.
+    local version
+    version="$(rustc --version)"
+    echo "==> $version"
+    TOOLCHAIN_SHOWN=1
+}
+
 TARGET="${1:-all}"
 shift || true
 
@@ -57,6 +75,7 @@ fi
 
 run_fmt() {
     require_tool cargo "install rustup from https://rustup.rs"
+    show_toolchain
     require_tool cargo-fmt "rustup component add rustfmt"
     echo "==> cargo fmt --check"
     cargo fmt --check
@@ -66,6 +85,7 @@ run_clippy() {
     # --all-targets so test code is linted too; the env-mutation ban in
     # clippy.toml exists for test code above all.
     require_tool cargo "install rustup from https://rustup.rs"
+    show_toolchain
     require_tool cargo-clippy "rustup component add clippy"
     echo "==> cargo clippy --locked --workspace --all-targets -- -D warnings"
     cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -80,6 +100,7 @@ run_test() {
     # pass their own --no-tests (refused above): a filter that matches nothing
     # must fail, never report green over zero tests.
     require_tool cargo "install rustup from https://rustup.rs"
+    show_toolchain
     require_tool cargo-nextest "run scripts/install-tools.sh install cargo-nextest"
     echo "==> cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail $*"
     cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail "$@"
