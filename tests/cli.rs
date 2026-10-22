@@ -40,6 +40,13 @@ fn missing_argument_exits_with_usage() {
         stderr.contains("usage: wsx --version"),
         "`wsx` with no argument must print usage on stderr, got {stderr:?}"
     );
-    assert_eq!(stdout, "", "`wsx` with no argument must not write to stdout");
-    assert_eq!(output.status.code(), Some(2), "`wsx` with no argument exit code");
+    assert_eq!(
+        stdout, "",
+        "`wsx` with no argument must not write to stdout"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "`wsx` with no argument exit code"
+    );
 }
