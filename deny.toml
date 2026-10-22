@@ -1,0 +1,29 @@
+# cargo-deny policy, run by `scripts/check.sh deps` (advisories, licenses,
+# bans, sources). Validated with the cargo-deny version pinned in
+# scripts/install-tools.sh, which stays the only place that version is written.
+
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Only the licenses the crate graph actually uses: unused allowances only warn
+# (license-not-encountered), so later phases extend this list as each crate
+# arrives, not ahead of it.
+allow = ["MIT"]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
