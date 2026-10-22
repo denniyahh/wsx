@@ -167,8 +167,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Development setup (adopted from devflow, owner decision 2026-10-19)
 
-- [ ] **DEV-01**: `scripts/check.sh {all,fmt,clippy,test,deps}` is the single gate entry point that CI, hooks and humans call. A missing tool is a hard failure
-- [ ] **DEV-02**: `rust-toolchain.toml` pins an exact rustc (1.99.1, the host's version as of 2026-10-22) with clippy and rustfmt
+- [x] **DEV-01**: `scripts/check.sh {all,fmt,clippy,test,deps}` is the single gate entry point that CI, hooks and humans call. A missing tool is a hard failure
+- [x] **DEV-02**: `rust-toolchain.toml` pins an exact rustc (1.99.1, the host's version as of 2026-10-22) with clippy and rustfmt
 - [ ] **DEV-03**: Root `CLAUDE.md` is rewritten for Rust (still minimal and public-safe), including devflow's repo traps: `nextest --no-tests=fail -E 'test(=path)'` one test per command; `rg -c` prints nothing on zero matches; zsh has no `PIPESTATUS`; prefer a named Rust test over a shell pipeline
 - [ ] **DEV-04**: `CONTRIBUTING.md` is rewritten for Rust, with devflow's AI change acceptance bar (a regression test that fails first, a boundary assertion, proof it failed for the intended reason, full gates, independent review) and its four rejected test shapes
 - [x] **DEV-05**: A tracked `.gitconfig`, pulled in with `git config --local include.path ../.gitconfig`, sets SSH signing for commits and tags and the git-flow branch names. It contains nothing personal
@@ -278,8 +278,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | STAT-02 | Phase 13 | Pending |
 | IF-01 | Phase 5 | Pending |
 | IF-02 | Phase 5 | Pending |
-| DEV-01 | Phase 1 | Pending |
-| DEV-02 | Phase 1 | Pending |
+| DEV-01 | Phase 1 | Complete |
+| DEV-02 | Phase 1 | Complete |
 | DEV-03 | Phase 1 | Pending |
 | DEV-04 | Phase 1 | Pending |
 | DEV-05 | Phase 1 | Complete |
