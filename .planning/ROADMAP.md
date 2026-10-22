@@ -51,12 +51,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Each scanner bites before it counts as enabled. A planted fake secret is refused by the repo's own config-based gitleaks pre-commit hook (registered by a tracked setup script, alongside global hooks). A known-vulnerable or disallowed crate in a scratch copy fails `cargo deny check`. Both controls are removed afterwards. `cargo deny` runs as an advisory job on push, PR and a weekly schedule; `Cargo.lock` is committed; CI actions are pinned to SHAs; scanner versions are pinned in one install script; `.github/dependabot.yml` updates Actions and the devcontainer image weekly, grouped, against `develop`
   5. A contributor reading the root `CLAUDE.md` and `CONTRIBUTING.md` gets the Rust workflow, devflow's repo traps and the AI change acceptance bar with its four rejected test shapes. After `git config --local include.path ../.gitconfig`, commits and tags are SSH-signed and the git-flow branch names are set, and the tracked `.gitconfig` contains nothing personal
 
-**Plans**: 1/7 plans executed
+**Plans**: 2/7 plans executed
 **Wave 1**
 - [x] 01-01-PLAN.md — Tracer: `wsx --version` crate gated end to end by `scripts/check.sh`; rustc 1.99.1 pin; set_var ban
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-02-PLAN.md — Pinned tool installs, `deny.toml`, `deps` target; cargo-deny control
+- [x] 01-02-PLAN.md — Pinned tool installs, `deny.toml`, `deps` target; cargo-deny control
 - [ ] 01-05-PLAN.md — Public-safe `.gitconfig`, `scripts/setup-repo.sh` gitleaks hook; secret and signing controls
 
 **Wave 3** *(blocked on Wave 2 completion)*
@@ -267,7 +267,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Development foundation | 1/7 | In Progress | - |
+| 1. Development foundation | 2/7 | In Progress | - |
 | 2. Oracle harness | 0/TBD | Not started | - |
 | 3. Git adapter | 0/TBD | Not started | - |
 | 4. Repo model | 0/TBD | Not started | - |

@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 1
 current_phase_name: Development foundation
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-10-22T19:42:29.853Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-10-22T19:51:09.034Z"
 last_activity: 2026-10-22
 last_activity_desc: Phase 1 execution started
-state_head: 393746fd1ce443bbfc84639fae900fbc0f2cc45a
+state_head: fc577890247e24bdbf9a2ba299098a176abfcaef
 progress:
   total_phases: 15
   completed_phases: 0
   total_plans: 7
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-20)
 ## Current Position
 
 Phase: 1 (Development foundation) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
 Status: Ready to execute
 Last activity: 2026-10-22 — Phase 1 execution started
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 1 P01 | 4 min | 2 tasks | 9 files |
+| Phase 01 P02 | 6min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,8 @@ Recent decisions affecting current work:
 - Roadmap: a separate release gate (Phase 14) precedes cutover; cutover order is the wsx repo, then devflow's repo tooling (Phase 15)
 - [Phase 1]: 01-01: check.sh refuses any caller --no-tests argument (exit 2); --no-tests=fail precedes caller args
 - [Phase 1]: 01-01: show_toolchain captures rustc --version via assignment so a failing rustc stops the gate under set -e
+- [Phase 01]: check.sh deps verifies cargo-deny with CARGO_HOME/bin ahead of PATH, matching cargo's subcommand lookup, so the verified binary is the one that scans
+- [Phase 01]: install-tools.sh passes curl --disable so no .curlrc can add headers, a user agent or a proxy to tool downloads
 
 ### Pending Todos
 
@@ -93,6 +96,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22T19:42:29.809Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-10-22T19:51:08.990Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
