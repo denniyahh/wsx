@@ -1,0 +1,14 @@
+# Pinned to an exact version, deliberately — never a floating channel.
+#
+# `channel = "stable"` floats: the host, the CI runner, and the devcontainer
+# each resolve it whenever they happen to run, so they can silently drift onto
+# different compilers and produce a "works on my machine" nobody can attribute.
+# .devcontainer/Dockerfile pins its image with the same reasoning; this file
+# pins the compiler inside it and on the host.
+#
+# Bumping: change the version here, then run scripts/check-in-container.sh to
+# confirm the pinned image's rustup can install it before pushing.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
