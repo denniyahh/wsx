@@ -16,13 +16,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 usage() {
     cat >&2 <<'EOF'
-usage: scripts/check.sh [all|fmt|clippy|test [nextest args...]]
+usage: scripts/check.sh [all|fmt|clippy|test [nextest args...]|deps]
 
   all     fmt + clippy + test   (default)
   fmt     cargo fmt --check
   clippy  cargo clippy --locked --workspace --all-targets -- -D warnings
   test    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail
           [nextest args...]; --no-tests is fixed and cannot be overridden
+  deps    cargo deny --locked check (advisories, licenses, bans, sources);
+          not part of all
 
 Run inside the pinned devcontainer for CI parity:
   scripts/check-in-container.sh [target]
@@ -106,6 +108,24 @@ run_test() {
     cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail "$@"
 }
 
+run_deps() {
+    # Not part of `all`: the RustSec advisory database changes under unrelated
+    # work, so a new advisory would turn every unrelated change red. CI runs
+    # this in its own advisory job instead.
+    # A missing tool is a hard error here, never a skip — a skipped check prints
+    # nothing a log reader can tell apart from a passing one.
+    require_tool cargo "install rustup from https://rustup.rs"
+    require_tool cargo-deny "run scripts/install-tools.sh install cargo-deny"
+    # Check the pin before scanning: a package-manager upgrade must not
+    # silently replace the scanner this gate was validated against. `cargo deny`
+    # looks in $CARGO_HOME/bin before PATH, so verify searches in that same
+    # order: the binary checked is the binary the scan runs.
+    echo "==> scripts/install-tools.sh verify cargo-deny"
+    PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" scripts/install-tools.sh verify cargo-deny
+    echo "==> cargo deny --locked check"
+    cargo deny --locked check
+}
+
 case "$TARGET" in
     all)
         # Cheapest first: fail on formatting before paying for a compile.
@@ -116,6 +136,7 @@ case "$TARGET" in
     fmt) run_fmt ;;
     clippy) run_clippy ;;
     test) run_test "$@" ;;
+    deps) run_deps ;;
     -h | --help | help) usage ;;
     *)
         echo "error: unknown target '$TARGET'" >&2
