@@ -1,0 +1,51 @@
+# Tracked git policy for this repository.
+#
+# Git cannot version `.git/config`, so repository policy that must survive a
+# fresh clone lives here and is pulled in once with:
+#
+#     git config --local include.path ../.gitconfig
+#
+# or by running scripts/setup-repo.sh, which adds the same include and also
+# registers the repository's own secret-scanning pre-commit hook.
+#
+# The path is relative to the common git directory (`.git/`), so a linked
+# worktree reads the main checkout's copy of this file, not its own. A missing
+# include target is silently ignored: the policy takes effect once this file
+# is on the branch checked out in the main checkout.
+#
+# WHAT BELONGS HERE: settings that are true for every contributor.
+# WHAT DOES NOT: anything naming a specific person, key file or home
+# directory. `user.signingkey` in particular is per-contributor and MUST stay
+# in local config, because this repository is public.
+
+[gpg]
+    format = ssh
+
+[commit]
+    gpgsign = true
+
+[tag]
+    gpgsign = true
+
+# git-flow branch model.
+#
+# `git flow init -d` must NOT be used here: its default production branch is
+# `master`, and this repository's is `main`. Initialising with the defaults
+# silently configures git-flow against a branch that does not exist, and the
+# error only surfaces later, at release or hotfix time.
+#
+# These names are true for every contributor, so they live in tracked config
+# rather than being re-typed per clone. The feature prefix matches this
+# repository's phase branches (`feature/phase-1`), so `git flow feature start
+# phase-N` creates the same branch name the phase work already uses instead of
+# a second branch for the same phase.
+[gitflow "branch"]
+    master = main
+    develop = develop
+
+[gitflow "prefix"]
+    feature = feature/
+    release = release/
+    hotfix = hotfix/
+    support = support/
+    versiontag = v
