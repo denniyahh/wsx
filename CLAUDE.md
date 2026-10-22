@@ -1,57 +1,55 @@
 # CLAUDE.md
 
-Agent guidance for the **wsx** repository.
+Agent guidance for the **wsx** repository, deliberately minimal. `README.md` explains the tool;
+`CONTRIBUTING.md` holds the workflow, the design constraints and the AI change acceptance bar.
 
-`README.md` explains what the tool does and how to use it; `CONTRIBUTING.md`
-holds the design constraints and the test workflow. Read both before changing
-`bin/wsx` — most of what looks like an odd implementation choice is load-bearing
-and documented there.
+The Python 0.1.0 (`bin/wsx`, `tests/sandbox.sh`) is frozen: read it for reference only and do
+not change it. It is deleted at cutover.
 
 ## Shape of the code
 
-`bin/wsx` is one Python file, standard library only, in dependency order:
+- One package at the repository root: binary crate `wsx`, edition 2024, no library crate.
+- `rust-toolchain.toml` pins rustc. Tool versions live only in `scripts/install-tools.sh`.
 
-| Section | Contents |
-|---|---|
-| git helpers | `git()`, `git_ok()`, `list_worktrees()` |
-| `Context` | resolves roots, source worktree, manifest, base snapshot |
-| file plumbing | `digest()`, `walk()`, `copy_file()`, symlink handling |
-| planning | `plan()` produces `Action`s; `apply()` executes them |
-| ignore + guard | per-worktree `core.excludesFile`, `ensure_installed()` |
-| commands | one `cmd_*` per subcommand |
+## Canonical commands
 
-Sync decisions live **entirely** in `plan()`. `apply()` only executes what it is
-given, which is what makes `--dry-run` trustworthy: both paths run the same
-planner. Put new decision logic in `plan()`, never in `apply()`.
+- `scripts/check.sh all`: fmt, clippy, test. The default target and the gate for every change.
+- `scripts/check.sh fmt|clippy|test|deps`: one gate; `deps` (cargo-deny) is not part of `all`.
+- `scripts/check.sh test -E 'test(=name)'`: one named test (`--no-tests=fail` is always set).
+- `scripts/check-in-container.sh [target]`: the same gate in the pinned image CI uses.
+- `scripts/assert-image-parity.sh`: every workflow image matches the devcontainer pin.
+- `scripts/setup-repo.sh`: once per clone; registers the repository's gitleaks pre-commit hook
+  and includes the tracked `.gitconfig`.
 
-## Landmines
+## Repo traps
 
-- **`via_symlink()` is not redundant with `Path.is_symlink()`.** A file inside a
-  symlinked directory resolves to the source, so hashing both sides compares a
-  file with itself and reports a false "converged". Migration away from a
-  symlinked layout depends on catching exactly that.
-- **`materialise_parents()` must run before any pull write.** Otherwise the
-  write follows a symlinked ancestor back into the source worktree.
-- **The base snapshot is what makes conflicts detectable.** Comparing only the
-  two live copies cannot distinguish "they changed it" from "I changed it".
-  Keep `base.json` updated on every applied action.
-- **`cmd_hook` must not raise.** It catches everything and returns 0, except for
-  the guard. See constraint 2 in `CONTRIBUTING.md`.
-- **Never write to tracked files in a managed repo.** Not `.gitignore`, not
-  `.husky/`. Per-worktree git config and generated exclude files only.
+Shapes that ship a false green, or a commit the PR cut cannot replay.
 
-## Testing
-
-`./tests/sandbox.sh` is the suite — 28 assertions against a throwaway repo, safe
-to run any time. Run it after every change to `bin/wsx`; add a case for any bug
-you fix. `python3 -m py_compile bin/wsx` catches syntax errors quickly.
-
-Ignore-rule, guard and hook changes also need a manual pass against a real
-repository (`wsx doctor`, `wsx new`, `wsx rm`) — the sandbox only partly
-reproduces git's worktree config behaviour.
+- A nextest filter that matches nothing must fail. Gate one test with
+  `--no-tests=fail -E 'test(=module::name)'`, one test per command chained with `&&`:
+  `-E 'test(=a) | test(=b)'` skips a wrong name and still passes.
+- `rg -c` and `--count` print nothing, not `0`, on zero matches. Check absence with a Rust test
+  or `rg -q` exit codes, not a shell count.
+- zsh has no `PIPESTATUS` (its array is `pipestatus`). Capture the exit code of the command that
+  matters, not the pipeline tail, and run gate commands under bash.
+- Prefer a named Rust test to any shell pipeline; keep shell to the invocation.
+- `std::env::set_var` and `remove_var` are banned by `clippy.toml`. Scope environment to the
+  child with `Command::env`.
+- Never run `cargo init` or `cargo new` here, and add new ignore lines at the top of
+  `.gitignore`: the workspace branch appends its own block at the end, and a line beside it
+  conflicts when the PR cut replays the commit.
+- Scripts that must reach develop never go under `scripts/workspace/`, which is workspace-only
+  and stripped from PRs.
+- Commit subjects carry the phase scope, `type(NN-MM): ...`, because the PR cut replays only
+  phase-scoped commits.
+- `include.path ../.gitconfig` resolves against the common git dir, so a linked worktree reads
+  the main checkout's `.gitconfig`, not its own.
+- The container mounts the checkout read-only and builds into a volume over `target/`, so a
+  check that needs to write must use a scratch directory.
 
 ## Do not
 
-- Add a third-party dependency.
-- Make the tool interactive; it runs inside hooks.
+- Add a dependency without a justification and a clean `scripts/check.sh deps`.
+- Make the tool interactive: it never prompts.
 - Resolve a conflict on the user's behalf.
+- Push, open PRs or change repository settings from an agent session.
