@@ -119,15 +119,25 @@ install_one() {
     extract_dir="$WORK_DIR/$tool"
     echo "==> downloading $url"
     # No header or user-agent options: nothing identifying the operator is sent.
-    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --output "$archive" "$url"
+    # --disable must come first: it stops curl reading a .curlrc, which could
+    # otherwise add headers, a user agent or a proxy to the request.
+    # curl's and tar's own exit codes are mapped to 1: tar's fatal-error code
+    # is 2, which would read as a usage error.
+    if ! curl --disable --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --output "$archive" "$url"; then
+        echo "error: download failed for $tool $version" >&2
+        exit 1
+    fi
     printf '%s  %s\n' "$sha256" "$archive" >"$archive.sha256"
     if ! sha256sum --check --status "$archive.sha256"; then
         echo "error: checksum mismatch for $tool $version: refusing to install" >&2
         exit 1
     fi
     mkdir "$extract_dir"
-    tar -xzf "$archive" -C "$extract_dir" "$member"
+    if ! tar -xzf "$archive" -C "$extract_dir" "$member"; then
+        echo "error: could not extract $member from the $tool $version archive" >&2
+        exit 1
+    fi
     install -m 0755 "$extract_dir/$member" "$DEST/$tool"
     check_version "$tool" "$DEST/$tool"
     echo "==> installed $tool $version to $DEST"
