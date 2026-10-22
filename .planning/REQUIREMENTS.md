@@ -50,7 +50,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [ ] **HARN-03**: Every scenario asserts explicit expected outcomes, never only "same as the oracle": exit code, ref names, commits compared as full message (body and trailers included) + author + author date + committer name/email + tree (SHAs aren't reproducible under signing), and files on disk. Signature presence is asserted separately. The oracle's outcome is recorded in the scenario, so the evidence survives the oracle's removal. Two classes of deliberate difference:
   - `fixed:` scenarios (oracle defects and improvements) pass on Rust and fail on the oracle
   - `regression:` scenarios are deliberate refusals
-- [ ] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
+- [x] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
 - [ ] **HARN-05**: Every guard scenario has a known-positive control that must still be refused, and a clean control that must pass. A guard only ever observed refusing, or only ever observed passing, fails review
 - [ ] **HARN-06**: The scenario set covers, each with a control:
   - merge commits (integration merged into a feature branch, a conflict resolved by adding a personal file)
@@ -225,7 +225,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | HARN-01 | Phase 2 | Pending |
 | HARN-02 | Phase 2 | Pending |
 | HARN-03 | Phase 2 | Pending |
-| HARN-04 | Phase 1 | Pending |
+| HARN-04 | Phase 1 | Complete |
 | HARN-05 | Phase 2 | Pending |
 | HARN-06 | Phase 2 | Pending |
 | CONF-01 | Phase 4 | Pending |
