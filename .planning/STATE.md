@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 1
 current_phase_name: Development foundation
 status: executing
-stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-10-22T20:16:56.364Z"
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-10-22T20:25:23.871Z"
 last_activity: 2026-10-22
 last_activity_desc: Phase 1 execution started
-state_head: b10215be6f990c7ba91b55f70a752a4bd8315b51
+state_head: ebb2b25bb7ccb3696826819de3637ee7bdf61da0
 progress:
   total_phases: 15
   completed_phases: 0
   total_plans: 7
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-20)
 ## Current Position
 
 Phase: 1 (Development foundation) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
 Status: Ready to execute
 Last activity: 2026-10-22 — Phase 1 execution started
 
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P05 | 5min | 2 tasks | 2 files |
 | Phase 01 P03 | 9min | 2 tasks | 3 files |
 | Phase 01 P04 | 4min | 2 tasks | 4 files |
+| Phase 01 P06 | 6min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,8 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-03: container gate mounts the per-checkout target volume at /workspace/target (not /ctarget via CARGO_TARGET_DIR) because nextest writes its store under <workspace>/target/nextest; host mkdir -p target/ first; delete old wsx-ci-target-* volumes after the layout change
 - [Phase 01]: 01-04: assert-image-parity.sh parses with bash builtins only (dirname is its one external command), so a tool missing from the pinned image cannot be swallowed silently
 - [Phase 01]: 01-04: check.sh steps in ci.yml carry no step name, so no step is labelled Test/Clippy/Format beside the job names that become ruleset contexts
+- [Phase 01]: 01-06: CONTRIBUTING Getting started orders scripts/install-tools.sh before scripts/setup-repo.sh (setup-repo refuses without gitleaks on PATH) and the signing key before the first commit (the included policy refuses unsigned commits)
+- [Phase 01]: 01-06: public docs claim a planted-problem proof only for the gitleaks hook and cargo-deny; push protection was checked as enabled but never shown to refuse a planted secret
 
 ### Pending Todos
 
@@ -104,6 +107,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22T20:16:56.304Z
-Stopped at: Completed 01-04-PLAN.md
+Last session: 2026-10-22T20:25:23.818Z
+Stopped at: Completed 01-06-PLAN.md
 Resume file: None
