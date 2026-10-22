@@ -176,10 +176,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Supply chain (global policy, 2026-10-19)
 
-- [ ] **SUP-01**: `cargo deny check` (advisories, licenses, bans, sources) runs on every push and PR and on a weekly schedule. It is advisory, not a required check. The weekly job takes effect once merged to `main`, the default branch. No second scanner (one ecosystem; osv-scanner would read the same advisory data)
-- [ ] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions and the devcontainer image weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
+- [x] **SUP-01**: `cargo deny check` (advisories, licenses, bans, sources) runs on every push and PR and on a weekly schedule. It is advisory, not a required check. The weekly job takes effect once merged to `main`, the default branch. No second scanner (one ecosystem; osv-scanner would read the same advisory data)
+- [x] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions and the devcontainer image weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
 - [x] **SUP-03**: The repo runs its own secret scan: a tracked setup script registers a config-based pre-commit hook running `gitleaks git --pre-commit --staged --redact`, alongside any global hook. Server-side push protection (already on) is the backstop for `--no-verify`
-- [ ] **SUP-04**: `Cargo.lock` is committed. CI actions are pinned to commit SHAs. Scanner versions are pinned in one install script. A missing scanner is a hard failure, never a skip
+- [x] **SUP-04**: `Cargo.lock` is committed. CI actions are pinned to commit SHAs. Scanner versions are pinned in one install script. A missing scanner is a hard failure, never a skip
 - [ ] **SUP-05**: Each scanner is proven to bite before it counts as enabled: a planted fake secret is refused by the hook, and a known-vulnerable or disallowed crate in a scratch copy fails `cargo deny`. Both controls are cleaned up afterwards
 
 ### Cutover and gates
@@ -284,10 +284,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | DEV-04 | Phase 1 | Pending |
 | DEV-05 | Phase 1 | Complete |
 | DEV-06 | Phase 1 | Pending |
-| SUP-01 | Phase 1 | Pending |
-| SUP-02 | Phase 1 | Pending |
+| SUP-01 | Phase 1 | Complete |
+| SUP-02 | Phase 1 | Complete |
 | SUP-03 | Phase 1 | Complete |
-| SUP-04 | Phase 1 | Pending |
+| SUP-04 | Phase 1 | Complete |
 | SUP-05 | Phase 1 | Pending |
 | REL-01 | Phase 15 | Pending |
 | REL-02 | Phase 15 | Pending |

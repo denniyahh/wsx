@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 1
 current_phase_name: Development foundation
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-10-22T20:10:30.188Z"
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-10-22T20:16:56.364Z"
 last_activity: 2026-10-22
 last_activity_desc: Phase 1 execution started
-state_head: 206c14ec987fd2a927cdf42004585a0079d19d0f
+state_head: b10215be6f990c7ba91b55f70a752a4bd8315b51
 progress:
   total_phases: 15
   completed_phases: 0
   total_plans: 7
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-20)
 ## Current Position
 
 Phase: 1 (Development foundation) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Last activity: 2026-10-22 — Phase 1 execution started
 
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P02 | 6min | 2 tasks | 3 files |
 | Phase 01 P05 | 5min | 2 tasks | 2 files |
 | Phase 01 P03 | 9min | 2 tasks | 3 files |
+| Phase 01 P04 | 4min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,8 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-05: setup-repo.sh reads multi-valued include.path into a variable (exit 1 = unset, other non-zero = error) instead of piping to grep -q, so SIGPIPE under pipefail cannot duplicate the include
 - [Phase 01]: 01-05: setup-repo.sh confirms registration via git hook list, which also makes it fail closed (exit 1) when hook.gitleaks-staged.enabled=false is already set
 - [Phase 01]: 01-03: container gate mounts the per-checkout target volume at /workspace/target (not /ctarget via CARGO_TARGET_DIR) because nextest writes its store under <workspace>/target/nextest; host mkdir -p target/ first; delete old wsx-ci-target-* volumes after the layout change
+- [Phase 01]: 01-04: assert-image-parity.sh parses with bash builtins only (dirname is its one external command), so a tool missing from the pinned image cannot be swallowed silently
+- [Phase 01]: 01-04: check.sh steps in ci.yml carry no step name, so no step is labelled Test/Clippy/Format beside the job names that become ruleset contexts
 
 ### Pending Todos
 
@@ -101,6 +104,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22T20:10:30.134Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-10-22T20:16:56.304Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None
