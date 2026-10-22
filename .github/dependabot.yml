@@ -1,0 +1,45 @@
+# Weekly, grouped version updates for CI actions and the devcontainer, opened
+# against `develop` (git flow). Dependabot reads this file only from `main`,
+# the default branch, so it takes effect once released there.
+#
+# `target-branch` applies to version updates only. Automatic security-fix PRs
+# always target the default branch, so they would bypass `develop`; they stay
+# off in the repository settings.
+#
+# No `cargo` entry: no per-crate update PRs. The advisory cargo-deny workflow
+# reports vulnerable crates instead.
+version: 2
+updates:
+  # Rewrites each SHA pin and its `# vX.Y.Z` comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Devcontainer Features only; it never updates an image. None are declared,
+  # so this is expected to open no PRs.
+  - package-ecosystem: devcontainers
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      devcontainers:
+        patterns: ["*"]
+
+  # Bumps the FROM line in .devcontainer/Dockerfile, the image pin. By design,
+  # scripts/assert-image-parity.sh then fails that PR until every workflow
+  # image in it is updated to match. Review the new tag by hand: it must stay
+  # an exact version tag (dependabot-core#15530).
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      devcontainer-image:
+        patterns: ["*"]
