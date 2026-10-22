@@ -79,6 +79,22 @@ No wsx functionality is built here: the crate only needs enough code for the gat
   approval at the end of the phase. The owner asked to approve GitHub-side changes before they
   happen (2026-10-21). Verification marks only those two items as pending the owner.
 
+### Decisions after research (2026-10-22)
+- **Image pin lives in `.devcontainer/Dockerfile`** (`FROM mcr.microsoft.com/devcontainers/rust:<exact tag>`),
+  referenced from `devcontainer.json` via `build.dockerfile`, with a Dependabot `docker` ecosystem
+  entry. Research confirmed from dependabot-core that the `devcontainers` ecosystem updates only
+  Features and never `image`, so pinning in `devcontainer.json` would make SUP-02's image updates a
+  silent no-op. The parity check reads the Dockerfile and the workflow files, so a Dependabot bump
+  fails CI until the workflows match (fail closed, not silent drift). DEV-06's wording was updated to
+  match; its intent (one exact pinned tag, CI in the same image) is unchanged.
+- The hook setup script is run against this repo's real config once the scratch controls pass
+  (SUP-03 requires the repo to scan its own commits).
+- Controls must use the discriminating forms research found: `NEXTEST_NO_TESTS=pass` set and
+  `check.sh test` still failing on a no-match filter; an explicit minimal `PATH` (not a filtered
+  one, because mise shims also provide the tools); `GIT_CONFIG_GLOBAL=/dev/null` for the DEV-05
+  signing check.
+- No contact details in any request header (research hygiene note).
+
 ### Claude's Discretion
 - File layout of scripts beyond the names fixed above, the minimal placeholder `main.rs` and its
   test, nextest config location, exact `deny.toml` license list (must accept the crates actually
