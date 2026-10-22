@@ -20,7 +20,7 @@ created: "2026-10-22"
 | Property | Value |
 |----------|-------|
 | **Framework** | cargo-nextest 0.9.148 (Rust); negative-control recipes C1-C7 in 01-RESEARCH.md (shell, scratch space); `shellcheck` + `bash -n` for scripts |
-| **Config file** | none — `check.sh` carries all nextest flags; Wave 0 creates the crate and `check.sh` |
+| **Config file** | `.config/nextest.toml` (JUnit report only, for TDD red-evidence); `check.sh` carries the gate flags. Wave 0 creates the crate and `check.sh` |
 | **Quick run command** | `scripts/check.sh test` |
 | **Full suite command** | `scripts/check.sh all && scripts/check-in-container.sh all && scripts/assert-image-parity.sh && shellcheck scripts/*.sh` |
 | **Estimated runtime** | ~60 seconds on the host for the placeholder crate; container run adds a one-time toolchain install (~17 s, network) |
@@ -45,7 +45,7 @@ Filled in by the planner per task. Requirement-level map (from 01-RESEARCH.md §
 | DEV-01 | each target runs; a missing tool is named and fails | smoke + control | `scripts/check.sh all`; recipe C1 (explicit minimal `PATH`) | ❌ W0 | ⬜ pending |
 | DEV-02 | pinned rustc 1.99.1 used | smoke | `rustc --version` at repo root; container log shows 1.99.1 installed | ❌ W0 | ⬜ pending |
 | DEV-03/04 | docs carry traps, acceptance bar, four rejected shapes | manual review | reviewer reads (no grep-as-test) | ❌ W0 | ⬜ pending |
-| DEV-05 | signing + git-flow names via include | scripted control | recipe C6 with `GIT_CONFIG_GLOBAL=/dev/null`, with and without the include | ❌ W0 | ⬜ pending |
+| DEV-05 | signing + git-flow names via include | scripted control | recipe C6 with a scratch global config setting `gpgsign=false` (stronger than `GIT_CONFIG_GLOBAL=/dev/null`), with and without the include | ❌ W0 | ⬜ pending |
 | DEV-06 | container parity from a linked worktree; tag drift fails | smoke + control | `scripts/check-in-container.sh all` from `.worktrees/phase-1`; recipe C7 | ❌ W0 | ⬜ pending |
 | SUP-01 | deny job exists, advisory | smoke + owner CI run | `scripts/check.sh deps` | ❌ W0 | ⬜ pending |
 | SUP-02 | dependabot config (actions + docker), weekly, grouped, develop | review (effective only on `main`) | YAML review | ❌ W0 | ⬜ pending |

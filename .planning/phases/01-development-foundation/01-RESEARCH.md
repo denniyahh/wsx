@@ -655,9 +655,9 @@ updates:
 | A6 | `CARGO_BIN_EXE_wsx` available to integration tests | Placeholder crate | Test fails to compile; first `check.sh test` shows it |
 | A7 | GitHub accepts `integration_id: 15368` for these contexts (the app id is verified from devflow check runs) | Pattern 8 | PUT rejected; drop `integration_id` |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **How should Dependabot keep the devcontainer image current? (needs owner decision; it contradicts a CONTEXT premise)**
+1. **How should Dependabot keep the devcontainer image current?** RESOLVED 2026-10-22: Option A, decided by the orchestrator on this evidence (Option B would drop half of SUP-02; A keeps every requirement's intent). Recorded in 01-CONTEXT.md "Decisions after research"; reported to the owner for review.
    - What we know: CONTEXT locks `github-actions` + `devcontainers`. Source code shows `devcontainers` updates only Features, and no Dependabot ecosystem reads `devcontainer.json`'s `image` or a workflow `container.image`. The only Dependabot-updatable image pin is a Dockerfile `FROM`.
    - Option A (recommended):
      - Add `.devcontainer/Dockerfile` with only `FROM mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie`. `devcontainer.json` uses `"build": {"dockerfile": "Dockerfile"}`.
@@ -667,7 +667,7 @@ updates:
    - Option B: keep `"image"` in `devcontainer.json` exactly as DEV-06 words it, and amend SUP-02 to "Actions and devcontainer Features". Image bumps become manual.
    - Recommendation: A. It is the only way SUP-02's stated outcome happens at all, and the parity check turns the half-automation into a hard stop rather than drift.
 
-2. **Run the setup script against the real repo's `.git/config` during execution?** Inside the executor's remit (local, not outward-facing). Recommend yes, after the scratch controls pass, reported as done. It changes nothing visible, because the global gitleaks hook already runs.
+2. **Run the setup script against the real repo's `.git/config` during execution?** RESOLVED 2026-10-22: yes, decided by the orchestrator (within executor remit; recorded in 01-CONTEXT.md). Inside the executor's remit (local, not outward-facing). Recommend yes, after the scratch controls pass, reported as done. It changes nothing visible, because the global gitleaks hook already runs.
 
 ## Environment Availability
 
