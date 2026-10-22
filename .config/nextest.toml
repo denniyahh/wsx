@@ -1,0 +1,12 @@
+# nextest reads this file from its default location, .config/nextest.toml at
+# the workspace root, so no --config-file flag is needed anywhere.
+#
+# The JUnit report exists for one reason: the TDD gate's RED-evidence
+# classifier reads JUnit XML, and libtest console output is not a format it
+# accepts. Every `cargo nextest run` writes target/nextest/default/junit.xml.
+#
+# Nothing about no-tests behaviour belongs here: scripts/check.sh passes
+# --no-tests=fail on the command line, which outranks both this file and the
+# NEXTEST_NO_TESTS environment variable.
+[profile.default.junit]
+path = "junit.xml"
