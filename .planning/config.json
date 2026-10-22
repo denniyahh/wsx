@@ -11,7 +11,7 @@
   "perplexity": false,
   "jina": false,
   "git": {
-    "branching_strategy": "phase",
+    "branching_strategy": "none",
     "create_tag": false,
     "phase_branch_template": "feature/phase-{phase}",
     "milestone_branch_template": "gsd/{milestone}-{slug}",
