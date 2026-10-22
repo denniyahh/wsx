@@ -1,0 +1,102 @@
+name: CI
+
+# Every job runs inside the SAME pinned image the devcontainer uses, and
+# invokes the SAME scripts/check.sh a developer runs on the host or through
+# scripts/check-in-container.sh. Host OS, libc and toolchain are therefore
+# identical between a local check and a CI check.
+#
+# BOTH `main` and `develop` require THREE status contexts from this file:
+# `Test`, `Clippy` and `Format` (the job `name:` values below). Renaming or
+# removing one blocks every future merge to that branch, because the required
+# check would never report.
+#
+# Check BOTH before touching a job's name or existence. Classic branch
+# protection UNDER-REPORTS, because the contexts are declared in rulesets, a
+# separate mechanism it does not read:
+#   gh api repos/denniyahh/wsx/branches/<branch>/protection
+#   gh api repos/denniyahh/wsx/rules/branches/<branch>
+#
+# No `paths` or `paths-ignore` filter, ever: a required check whose workflow
+# is filtered out never reports and wedges the merge.
+#
+# The image tag is repeated per job because GitHub Actions does not expand
+# `env` inside `jobs.<id>.container.image`. The pin itself lives in
+# .devcontainer/Dockerfile, and scripts/assert-image-parity.sh fails the Test
+# job if any workflow image drifts from it, so the duplication cannot rot
+# silently.
+
+on:
+  push:
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# REQUIRED, not stylistic. A `run:` step in a CONTAINER job defaults to
+# `sh -e {0}`, not `bash -e {0}` as it would on a bare runner, and this
+# image's /bin/sh is dash, which has no `set -o pipefail`. Any step using bash
+# features would die on its first line while the job still reported as a real
+# failing check rather than as a misconfiguration.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # These jobs run as root inside a container while actions/checkout
+      # leaves the workspace owned by the runner user (uid 1001), so git
+      # refuses every command with "detected dubious ownership". checkout's
+      # own safe.directory entry is scoped to its step and is not visible
+      # afterwards. Phase 1's check.sh does not call git; later harness
+      # phases will.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Assert CI image matches the devcontainer pin
+        run: scripts/assert-image-parity.sh
+      - name: Install pinned tools
+        run: scripts/install-tools.sh install cargo-nextest
+      - run: scripts/check.sh test
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # See the Test job.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: scripts/check.sh clippy
+
+  format:
+    name: Format
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # See the Test job.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: scripts/check.sh fmt
