@@ -16,13 +16,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 usage() {
     cat >&2 <<'EOF'
-usage: scripts/check.sh [all|fmt|clippy|test [nextest args...]|deps]
+usage: scripts/check.sh [all|fmt|clippy|test [filters...]|deps]
 
   all     fmt + clippy + test   (default)
   fmt     cargo fmt --check
   clippy  cargo clippy --locked --workspace --all-targets -- -D warnings
   test    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail
-          [nextest args...]; --no-tests is fixed and cannot be overridden
+          [-E <filterset> | test-name filter]...; no other nextest option
   deps    cargo deny --locked check (advisories, licenses, bans, sources);
           not part of all
 
@@ -66,12 +66,34 @@ if [ "$TARGET" != "test" ] && [ "$#" -gt 0 ]; then
     usage
 fi
 
+# Only test selection passes through to nextest: a filterset (-E/--filterset)
+# or a test-name filter. Any other option could stop nextest from running tests
+# while this script still prints OK (`--help`, `--no-run`), or change what a
+# green run means (`--no-tests`, `--run-ignored`), so it is refused.
 if [ "$TARGET" = "test" ]; then
-    for arg in "$@"; do
-        if [ "$arg" = "--no-tests" ] || [[ "$arg" == --no-tests=* ]]; then
-            echo "error: --no-tests is fixed to fail by check.sh and cannot be overridden" >&2
-            exit 2
-        fi
+    args=("$@")
+    i=0
+    while [ "$i" -lt "${#args[@]}" ]; do
+        arg="${args[$i]}"
+        case "$arg" in
+            -E | --filterset)
+                if [ $((i + 1)) -ge "${#args[@]}" ]; then
+                    echo "error: $arg needs a filterset expression" >&2
+                    exit 2
+                fi
+                i=$((i + 2))
+                ;;
+            --filterset=*) i=$((i + 1)) ;;
+            --no-tests | --no-tests=*)
+                echo "error: --no-tests is fixed to fail by check.sh and cannot be overridden" >&2
+                exit 2
+                ;;
+            -*)
+                echo "error: check.sh test passes through only -E/--filterset <expr> and test-name filters, not '$arg'" >&2
+                exit 2
+                ;;
+            *) i=$((i + 1)) ;;
+        esac
     done
 fi
 
@@ -104,6 +126,10 @@ run_test() {
     require_tool cargo "install rustup from https://rustup.rs"
     show_toolchain
     require_tool cargo-nextest "run scripts/install-tools.sh install cargo-nextest"
+    # The pin is checked as in run_deps: cargo finds `cargo-nextest` in
+    # $CARGO_HOME/bin before PATH, so verify searches in that same order.
+    echo "==> scripts/install-tools.sh verify cargo-nextest"
+    PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" scripts/install-tools.sh verify cargo-nextest
     echo "==> cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail $*"
     cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail "$@"
 }
