@@ -190,6 +190,114 @@ fn shorthand_and_quoted_images_pass() {
     assert_accepted(&run, "shorthand and quoted", 3);
 }
 
+/// Asserts `run` was refused and its stderr contains every one of `needles`.
+fn assert_refused_naming(run: &Run, case: &str, needles: &[&str]) {
+    assert_refused(run, case);
+    for needle in needles {
+        assert!(
+            run.stderr.contains(needle),
+            "{case}: stderr must contain {needle:?}, got {:?}",
+            run.stderr
+        );
+    }
+}
+
+#[test]
+fn image_nested_under_a_container_sub_map_is_not_the_job_image() {
+    // The job runs in DRIFTED; a pinned `image:` under `container: env:` is
+    // an environment variable, not where the steps run.
+    let ci = workflow(&format!(
+        "  test:\n    runs-on: ubuntu-24.04\n    container:\n      image: {DRIFTED}\n\
+         \x20     env:\n        image: {PIN}\n    steps:\n      - run: true\n"
+    ));
+    let run = run_parity(&fixture_tree("nested-env-image", &[("ci.yml", &ci)]));
+    assert_refused_naming(
+        &run,
+        "nested env image",
+        &[&format!("ci.yml: job 'test': {DRIFTED}")],
+    );
+}
+
+#[test]
+fn direct_container_image_wins_over_a_nested_one() {
+    // Counterpart in the other direction: the drifted value is the nested one,
+    // so the job runs in PIN and passes, whichever line comes last.
+    let ci = workflow(&format!(
+        "  test:\n    runs-on: ubuntu-24.04\n    container:\n      env:\n        image: {DRIFTED}\n\
+         \x20     image: {PIN}\n    steps:\n      - run: true\n"
+    ));
+    let run = run_parity(&fixture_tree("nested-env-image-after", &[("ci.yml", &ci)]));
+    assert_accepted(&run, "nested drifted env image", 1);
+}
+
+#[test]
+fn non_exact_dockerfile_tag_fails() {
+    let ci = workflow(&format!(
+        "  test:\n    runs-on: ubuntu-24.04\n    container:\n      image: {PIN}\n\
+         \x20   steps:\n      - run: true\n"
+    ));
+    let root = fixture_tree("floating-pin", &[("ci.yml", &ci)]);
+    let floating = "mcr.microsoft.com/devcontainers/rust:latest";
+    fs::write(
+        root.join(".devcontainer/Dockerfile"),
+        format!("FROM {floating}\n"),
+    )
+    .expect("write floating Dockerfile");
+    let run = run_parity(&root);
+    assert_refused_naming(
+        &run,
+        "floating Dockerfile tag",
+        &[&format!(
+            "pins '{floating}', which is not an exact version tag"
+        )],
+    );
+}
+
+#[test]
+fn no_workflow_files_fails() {
+    let run = run_parity(&fixture_tree("no-workflows", &[]));
+    assert_refused_naming(
+        &run,
+        "no workflow files",
+        &["no workflow files found in .github/workflows"],
+    );
+}
+
+#[test]
+fn reusable_workflow_job_fails_naming_the_job() {
+    let ci = workflow(&format!(
+        "  test:\n    runs-on: ubuntu-24.04\n    container:\n      image: {PIN}\n\
+         \x20   steps:\n      - run: true\n\
+         \x20 call:\n    uses: octo/repo/.github/workflows/build.yml@v1\n"
+    ));
+    let run = run_parity(&fixture_tree("reusable-workflow", &[("ci.yml", &ci)]));
+    assert_refused_naming(&run, "reusable workflow job", &["ci.yml: job 'call'"]);
+    assert!(
+        !run.stderr.contains("job 'test'"),
+        "reusable workflow job: the containerised job must not be reported, got {:?}",
+        run.stderr
+    );
+}
+
+#[test]
+fn workflow_file_without_readable_jobs_fails() {
+    // The quoted key is valid YAML the parser does not read; the other
+    // file's matching image must not carry it.
+    let ci = workflow(&format!(
+        "  test:\n    runs-on: ubuntu-24.04\n    container:\n      image: {PIN}\n\
+         \x20   steps:\n      - run: true\n"
+    ));
+    let quoted = format!(
+        "name: quoted\non: push\n\n\"jobs\":\n  deny:\n    runs-on: ubuntu-24.04\n\
+         \x20   container:\n      image: {DRIFTED}\n    steps:\n      - run: true\n"
+    );
+    let run = run_parity(&fixture_tree(
+        "quoted-jobs",
+        &[("ci.yml", &ci), ("quoted.yml", &quoted)],
+    ));
+    assert_refused_naming(&run, "unreadable jobs block", &["quoted.yml: no jobs read"]);
+}
+
 #[test]
 fn repository_workflows_match_the_devcontainer_pin() {
     let run = run_parity(Path::new(REPO_ROOT));
