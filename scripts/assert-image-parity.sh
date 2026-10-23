@@ -21,7 +21,8 @@
 # stops on its failure.
 #
 # Exit 2 on any argument; exit 1 on a missing or non-exact pin, no workflow
-# files, a job without a container image, zero images, or any mismatch.
+# files, a workflow file with no readable jobs, a job without a container
+# image, zero images, or any mismatch.
 set -euo pipefail
 
 if [ "$#" -ne 0 ]; then
@@ -95,6 +96,9 @@ indent_of() {
 # including a reusable-workflow call (`uses:`), which cannot run in a container.
 # Flow mappings and anchors (`container: {image: ...}`, `*pin`) are read as the
 # literal value, so they fail as a mismatch rather than pass unread.
+# Only an `image:` that is a direct child of `container:` counts: one nested
+# deeper (say under `container: env:`) is not the image, and reading it let
+# a job running in another image pass.
 total_images=0
 mismatches=()
 missing=()
@@ -103,6 +107,8 @@ for file in "${workflows[@]}"; do
     job_indent=-1
     key_indent=-1
     container_indent=-1
+    container_child_indent=-1
+    jobs_read=0
     job=""
     job_image=""
 
@@ -121,6 +127,7 @@ for file in "${workflows[@]}"; do
         job_image=""
         key_indent=-1
         container_indent=-1
+        container_child_indent=-1
     }
 
     while IFS= read -r line || [ -n "$line" ]; do
@@ -146,6 +153,7 @@ for file in "${workflows[@]}"; do
             finish_job
             if [[ $line =~ ^[[:space:]]*([A-Za-z0-9_-]+):[[:space:]]*(#.*)?$ ]]; then
                 job="${BASH_REMATCH[1]}"
+                jobs_read=$((jobs_read + 1))
             else
                 echo "error: $file: cannot read job id from: $line" >&2
                 exit 1
@@ -158,6 +166,7 @@ for file in "${workflows[@]}"; do
         fi
         if [ "$indent" -eq "$key_indent" ]; then
             container_indent=-1
+            container_child_indent=-1
             if [[ $line =~ ^[[:space:]]*container:(.*)$ ]]; then
                 value="$(image_value "${BASH_REMATCH[1]}")"
                 if [ -z "$value" ]; then
@@ -166,12 +175,23 @@ for file in "${workflows[@]}"; do
                     job_image="$value"
                 fi
             fi
-        elif [ "$container_indent" -ge 0 ] && [ "$indent" -gt "$container_indent" ] \
-            && [[ $line =~ ^[[:space:]]*image:(.*)$ ]]; then
-            job_image="$(image_value "${BASH_REMATCH[1]}")"
+        elif [ "$container_indent" -ge 0 ] && [ "$indent" -gt "$container_indent" ]; then
+            if [ "$container_child_indent" -lt 0 ]; then
+                container_child_indent="$indent"
+            fi
+            if [ "$indent" -eq "$container_child_indent" ] \
+                && [[ $line =~ ^[[:space:]]*image:(.*)$ ]]; then
+                job_image="$(image_value "${BASH_REMATCH[1]}")"
+            fi
         fi
     done < "$file"
     finish_job
+    # A jobs block this parser cannot read (a quoted `"jobs":`, say) would
+    # otherwise add nothing and pass on the other files' images.
+    if [ "$jobs_read" -eq 0 ]; then
+        echo "error: $file: no jobs read; every workflow job must run in $pin" >&2
+        exit 1
+    fi
 done
 
 if [ "${#missing[@]}" -ne 0 ]; then
