@@ -4,6 +4,8 @@
 //! - A tool missing from PATH is named on stderr and fails the gate (DEV-01).
 //! - The nextest pin is checked on the binary cargo runs, not on another copy
 //!   found by a different search (T-01-07).
+//! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
+//!   caller's working directory.
 //! - A filter that matches nothing fails even with `NEXTEST_NO_TESTS=pass`
 //!   (HARN-04), with the bare-nextest counterpart showing that the env var
 //!   would otherwise turn it green.
@@ -343,5 +345,106 @@ fn env_mutation_passes_clippy_without_the_ban() {
         output.status.code(),
         Some(0),
         "the fixture must pass clippy with an empty config; stderr: {stderr:?}"
+    );
+}
+
+/// `program` with every inherited `GIT_*` variable removed and no global or
+/// system git config, so only the fixture repositories decide what git sees.
+fn without_git_env(program: &str) -> Command {
+    let mut command = Command::new(program);
+    for (key, _) in env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(&key);
+        }
+    }
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
+}
+
+/// A fresh git repository at `repo` whose Dockerfile pins `image`.
+fn fixture_repo(repo: &Path, image: &str) {
+    let devcontainer = repo.join(".devcontainer");
+    fs::create_dir_all(&devcontainer)
+        .unwrap_or_else(|err| panic!("create {}: {err}", devcontainer.display()));
+    fs::write(devcontainer.join("Dockerfile"), format!("FROM {image}\n"))
+        .expect("write fixture Dockerfile");
+    let output = without_git_env("git")
+        .args(["init", "--quiet"])
+        .arg(repo)
+        .output()
+        .expect("spawn git init");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "git init {} exit code; stderr: {:?}",
+        repo.display(),
+        text(output.stderr, "git init stderr")
+    );
+}
+
+#[test]
+fn container_gate_mounts_its_own_checkout_not_the_callers() {
+    // Fixture repositories rather than this checkout: they are owned by the
+    // test's user, so git trusts them inside the container as well.
+    let root = fresh_dir("container-gate");
+    let own = root.join("own");
+    let caller = root.join("caller");
+    let own_image = "example/own:1.0.0-1-trixie";
+    fixture_repo(&own, own_image);
+    fixture_repo(&caller, "example/caller:1.0.0-1-trixie");
+    let script = own.join("scripts/check-in-container.sh");
+    fs::create_dir_all(own.join("scripts")).expect("create fixture scripts dir");
+    fs::copy(
+        Path::new(REPO_ROOT).join("scripts/check-in-container.sh"),
+        &script,
+    )
+    .expect("copy check-in-container.sh");
+
+    // A docker that records its arguments, one per line, and succeeds.
+    let stub_dir = root.join("stub");
+    fs::create_dir_all(&stub_dir).expect("create stub dir");
+    let stub = stub_dir.join("docker");
+    fs::write(
+        &stub,
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" >>\"$DOCKER_LOG\"\n",
+    )
+    .expect("write docker stub");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let log = root.join("docker.log");
+    let inherited = env::var_os("PATH").expect("PATH is set for the test process");
+    let path = env::join_paths(std::iter::once(stub_dir).chain(env::split_paths(&inherited)))
+        .expect("join PATH");
+
+    let output = without_git_env("/bin/bash")
+        .arg(&script)
+        .arg("fmt")
+        .current_dir(&caller)
+        .env("PATH", path)
+        .env("DOCKER_LOG", &log)
+        .output()
+        .expect("spawn /bin/bash check-in-container.sh");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "check-in-container.sh with a stub docker exit code; stderr: {:?}",
+        text(output.stderr, "check-in-container.sh stderr")
+    );
+
+    let args = fs::read_to_string(&log).expect("read docker stub log");
+    let mount = args
+        .lines()
+        .find_map(|arg| arg.strip_suffix(":/workspace:ro"))
+        .unwrap_or_else(|| panic!("no read-only /workspace mount in docker args {args:?}"));
+    let own_root = fs::canonicalize(&own).expect("canonicalize fixture repo");
+    assert_eq!(
+        Path::new(mount),
+        own_root,
+        "the gate must mount the checkout holding the script, not the caller's"
+    );
+    assert!(
+        args.lines().any(|arg| arg == own_image),
+        "the image must come from the script's own Dockerfile, got docker args {args:?}"
     );
 }
