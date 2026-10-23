@@ -2,6 +2,8 @@
 //! `scripts/check.sh` or `clippy.toml` refuses the case it exists for.
 //!
 //! - A tool missing from PATH is named on stderr and fails the gate (DEV-01).
+//! - The nextest pin is checked on the binary cargo runs, not on another copy
+//!   found by a different search (T-01-07).
 //! - A filter that matches nothing fails even with `NEXTEST_NO_TESTS=pass`
 //!   (HARN-04), with the bare-nextest counterpart showing that the env var
 //!   would otherwise turn it green.
@@ -15,7 +17,7 @@
 
 use std::env;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -135,6 +137,76 @@ fn missing_nextest_fails_test_by_name() {
 #[test]
 fn missing_cargo_deny_fails_deps_by_name() {
     assert_missing_tool_named("deps", &["dirname", "cargo"], "cargo-deny");
+}
+
+/// A stand-in `cargo-nextest`. Run directly with `--version` it hands off to
+/// the real, pinned binary, so a check that looks the tool up on PATH sees the
+/// pin. Run by cargo, as `cargo-nextest nextest --version`, it reports a
+/// version that is not the pin. Anything else stands in for a test run that
+/// runs nothing and exits 0.
+fn nextest_stub(real: &Path) -> String {
+    format!(
+        "#!/bin/bash\n\
+         if [ \"$1\" = --version ]; then exec '{}' --version; fi\n\
+         if [ \"$1\" = nextest ] && [ \"$2\" = --version ]; then\n\
+         \x20   echo 'cargo-nextest 0.0.0-stub'; exit 0\n\
+         fi\n\
+         echo \"STUB cargo-nextest ran: $*\"\n",
+        real.display()
+    )
+}
+
+#[test]
+fn nextest_pin_is_checked_on_the_binary_cargo_runs() {
+    // The documented setup: the pinned nextest in $CARGO_HOME/bin, which is
+    // on PATH. cargo then follows PATH order, so an earlier copy (here the
+    // stub, in practice a package manager's) is the one `cargo nextest` runs.
+    let root = fresh_dir("cargo-resolution");
+    let stub_dir = root.join("stub");
+    let cargo_home = root.join("cargo-home");
+    let cargo_home_bin = cargo_home.join("bin");
+    for dir in [&stub_dir, &cargo_home_bin] {
+        fs::create_dir_all(dir).unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
+    }
+    let real = on_path("cargo-nextest");
+    symlink(&real, cargo_home_bin.join("cargo-nextest")).expect("link pinned nextest");
+    let stub = stub_dir.join("cargo-nextest");
+    fs::write(&stub, nextest_stub(&real)).expect("write cargo-nextest stub");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let tools = minimal_path(
+        "cargo-resolution-tools",
+        &["bash", "cargo", "rustc", "dirname"],
+    );
+    let path = env::join_paths([&stub_dir, &cargo_home_bin, &tools]).expect("join PATH");
+
+    let output = Command::new("/bin/bash")
+        .arg(check_sh())
+        .arg("test")
+        .env("PATH", path)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("spawn /bin/bash scripts/check.sh test");
+    let stdout = text(output.stdout, "check.sh stdout");
+    let stderr = text(output.stderr, "check.sh stderr");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check.sh test must refuse the unpinned nextest cargo runs; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stub'"),
+        "the refusal must name the version cargo's nextest reports, got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("STUB cargo-nextest ran"),
+        "the unverified nextest must never run, got stdout {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("check.sh: test OK"),
+        "check.sh test must not report success, got stdout {stdout:?}"
+    );
 }
 
 /// A command that runs a nested nextest: inherited `NEXTEST_*` variables from
