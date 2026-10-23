@@ -302,3 +302,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.3: Per-checkout devcontainer target volume (BACKLOG)
+
+**Goal:** .devcontainer/devcontainer.json names its target volume `wsx-target-${localWorkspaceFolderBasename}`, so two checkouts with the same folder name (two clones named wsx, or phase-1 worktrees of different repos) share build output, the stale-artifact hazard check-in-container.sh avoids with a full-path hash. Key it on the full checkout path. Source: external adversarial review, 2026-10-22 (codex).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
