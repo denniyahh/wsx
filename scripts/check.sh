@@ -22,7 +22,8 @@ usage: scripts/check.sh [all|fmt|clippy|test [filters...]|deps]
   fmt     cargo fmt --check
   clippy  cargo clippy --locked --workspace --all-targets -- -D warnings
   test    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail
-          [-E <filterset> | test-name filter]...; no other nextest option
+          [-E <filterset> | test-name filter], at most one; no other
+          nextest option
   deps    cargo deny --locked check (advisories, licenses, bans, sources);
           not part of all
 
@@ -70,9 +71,12 @@ fi
 # or a test-name filter. Any other option could stop nextest from running tests
 # while this script still prints OK (`--help`, `--no-run`), or change what a
 # green run means (`--no-tests`, `--run-ignored`), so it is refused.
+# At most one selector: nextest ORs several together, so a second one that
+# matches nothing still passes on the first one's tests.
 if [ "$TARGET" = "test" ]; then
     args=("$@")
     i=0
+    selectors=0
     while [ "$i" -lt "${#args[@]}" ]; do
         arg="${args[$i]}"
         case "$arg" in
@@ -82,8 +86,12 @@ if [ "$TARGET" = "test" ]; then
                     exit 2
                 fi
                 i=$((i + 2))
+                selectors=$((selectors + 1))
                 ;;
-            --filterset=*) i=$((i + 1)) ;;
+            --filterset=*)
+                i=$((i + 1))
+                selectors=$((selectors + 1))
+                ;;
             --no-tests | --no-tests=*)
                 echo "error: --no-tests is fixed to fail by check.sh and cannot be overridden" >&2
                 exit 2
@@ -92,9 +100,16 @@ if [ "$TARGET" = "test" ]; then
                 echo "error: check.sh test passes through only -E/--filterset <expr> and test-name filters, not '$arg'" >&2
                 exit 2
                 ;;
-            *) i=$((i + 1)) ;;
+            *)
+                i=$((i + 1))
+                selectors=$((selectors + 1))
+                ;;
         esac
     done
+    if [ "$selectors" -gt 1 ]; then
+        echo "error: check.sh test takes at most one -E/--filterset expression or test name; run one test per command, because a second selector that matches nothing still passes" >&2
+        exit 2
+    fi
 fi
 
 run_fmt() {
