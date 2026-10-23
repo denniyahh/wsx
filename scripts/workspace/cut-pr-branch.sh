@@ -3,7 +3,12 @@
 # by filtering out all personal/agent planning artifacts (.planning, .agents, etc.).
 #
 # Usage:
-#   ./scripts/cut-pr-branch.sh [--phase N] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
+#   ./scripts/cut-pr-branch.sh [--phase N] [--force] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
+#
+# The PR branch is reset to BASE_BRANCH before the replay, so it is never a
+# shared or workspace branch (main, master, develop, BASE_BRANCH, workspace/*,
+# personal/*), and an existing one is re-cut only with --force, which discards
+# whatever it holds.
 #
 # Phase mode (--phase N, or automatic on a feature/phase-N branch) replays only
 # the commits in BASE_BRANCH..HEAD whose conventional-commit scope names phase N
@@ -48,6 +53,7 @@ refuse_quoted_paths() {
 }
 
 PHASE="${PHASE:-}"
+FORCE=0
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,6 +64,10 @@ while [ $# -gt 0 ]; do
             ;;
         --phase=*)
             PHASE="${1#--phase=}"
+            shift
+            ;;
+        --force)
+            FORCE=1
             shift
             ;;
         *)
@@ -109,6 +119,18 @@ fi
 
 if [ "$PR_BRANCH" = "$CURRENT_BRANCH" ]; then
     echo "error: PR branch name '$PR_BRANCH' matches current branch. Specify a distinct branch name." >&2
+    exit 1
+fi
+# The cut resets PR_BRANCH to the base: on a shared or workspace branch that
+# drops its unpushed commits and then commits the phase onto it.
+case "$PR_BRANCH" in
+    main | master | develop | "$BASE_BRANCH" | workspace/* | personal/*)
+        echo "error: refusing to use '$PR_BRANCH' as the PR branch: the cut resets it to $BASE_REF. Pass a PR branch name." >&2
+        exit 1
+        ;;
+esac
+if git show-ref --verify --quiet "refs/heads/$PR_BRANCH" && [ "$FORCE" -ne 1 ]; then
+    echo "error: '$PR_BRANCH' already exists; pass --force to re-cut it, which discards its current commits." >&2
     exit 1
 fi
 
@@ -187,7 +209,9 @@ echo "==> Target clean PR branch: $PR_BRANCH (rooted at $BASE_REF)"
 
 # Create target clean branch off BASE_REF
 echo "==> Initializing clean branch '$PR_BRANCH' from $BASE_REF..."
-git branch -f "$PR_BRANCH" "$BASE_REF"
+# --no-track: an upstream of $BASE_REF would send a bare `git push` to the
+# base under push.default=upstream.
+git branch -f --no-track "$PR_BRANCH" "$BASE_REF"
 
 ORIG_BRANCH="$CURRENT_BRANCH"
 cleanup() {
