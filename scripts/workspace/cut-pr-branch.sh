@@ -3,7 +3,7 @@
 # by filtering out all personal/agent planning artifacts (.planning, .agents, etc.).
 #
 # Usage:
-#   ./scripts/cut-pr-branch.sh [--phase N] [--force] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
+#   scripts/workspace/cut-pr-branch.sh [--phase N] [--force] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
 #
 # The PR branch is reset to BASE_BRANCH before the replay, so it is never a
 # shared or workspace branch (main, master, develop, BASE_BRANCH, workspace/*,
@@ -27,10 +27,10 @@
 #
 # Examples:
 #   On branch feature/phase-48:
-#     ./scripts/cut-pr-branch.sh                # Creates feature/phase-48-pr off origin/develop
+#     scripts/workspace/cut-pr-branch.sh                # Creates feature/phase-48-pr off origin/develop
 #   On branch workspace/phase-45:
-#     ./scripts/cut-pr-branch.sh                # Creates feature/phase-45 off origin/develop
-#     ./scripts/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
+#     scripts/workspace/cut-pr-branch.sh                # Creates feature/phase-45 off origin/develop
+#     scripts/workspace/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
 set -euo pipefail
 
 # Raw path names from every git listing below. Under git's default
@@ -352,7 +352,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Clean PR Branch Ready: $PR_BRANCH"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Next steps:"
-echo "  1. Test:      git checkout $PR_BRANCH && ./tests/sandbox.sh"
+echo "  1. Test:      git checkout $PR_BRANCH && scripts/check.sh all"
 echo "  2. Push:      git push -u origin $PR_BRANCH"
 echo "  3. Open PR:   gh pr create --base $BASE_BRANCH --head $PR_BRANCH"
 echo ""
