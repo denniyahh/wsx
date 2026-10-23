@@ -61,3 +61,30 @@ fn option_after_filterset_is_refused() {
 fn filterset_flag_without_expression_is_refused() {
     assert_refused(&["-E"], "-E needs a filterset expression");
 }
+
+/// A second selector is refused: nextest ORs selectors, so one that matches
+/// nothing would pass on the other's tests.
+const SECOND_SELECTOR: &str = "takes at most one -E/--filterset expression or test name";
+
+#[test]
+fn second_filterset_is_refused() {
+    assert_refused(
+        &["-E", "test(=a)", "-E", "test(=no_such_xyz)"],
+        SECOND_SELECTOR,
+    );
+    assert_refused(
+        &["--filterset=test(=a)", "--filterset", "test(=no_such_xyz)"],
+        SECOND_SELECTOR,
+    );
+}
+
+#[test]
+fn second_test_name_is_refused() {
+    // Names that match no test: a name filter is a substring match, so if
+    // the refusal regressed, a short one would run this test inside itself.
+    assert_refused(&["no_such_xyz_one", "no_such_xyz_two"], SECOND_SELECTOR);
+    assert_refused(
+        &["-E", "test(=no_such_xyz_one)", "no_such_xyz_two"],
+        SECOND_SELECTOR,
+    );
+}

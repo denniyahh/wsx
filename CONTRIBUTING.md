@@ -78,7 +78,7 @@ same script, so a clean local run means the same thing as a clean CI run.
 | `scripts/check.sh` or `scripts/check.sh all` | fmt, then clippy, then test (the default) |
 | `scripts/check.sh fmt` | `cargo fmt --check` |
 | `scripts/check.sh clippy` | clippy over all targets with `-D warnings` |
-| `scripts/check.sh test [-E <filterset>] [name...]` | the nextest suite; `--no-tests=fail` is always set and no other nextest option is accepted |
+| `scripts/check.sh test [-E <filterset> \| name]` | the nextest suite; `--no-tests=fail` is always set, at most one filterset or test name is accepted, and no other nextest option |
 | `scripts/check.sh deps` | `cargo deny` advisories, licenses, bans and sources; not part of `all` |
 
 Run one test by its full name with `scripts/check.sh test -E 'test(=name)'`.
