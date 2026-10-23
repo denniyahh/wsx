@@ -25,8 +25,12 @@
 # Docker is unreachable, otherwise check.sh's exit code.
 set -euo pipefail
 
-# git is legitimately required here: the gitdir mounts below need it.
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# git is legitimately required here: the gitdir mounts below need it. The
+# repository is the one holding this script, never the caller's directory:
+# run from another checkout (the main checkout holds the linked worktrees
+# under .worktrees/), the caller's tree would be gated under this name.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 TARGET="${1:-all}"
