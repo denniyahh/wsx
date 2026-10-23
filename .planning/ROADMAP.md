@@ -311,3 +311,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.4: Isolate nested nextest runs from the outer report (BACKLOG)
+
+**Goal:** tests/gate_controls.rs `no_match_filter_fails_even_when_env_allows_no_tests` starts a nested `scripts/check.sh test`; even with its own CARGO_TARGET_DIR the nested nextest writes its store to `<repo>/target/nextest`, the same place as the outer run's `junit.xml` (the TDD gate's RED evidence). The outer report has won every observed run because it is written last, but that ordering is not guaranteed. Give nested runs a separate store or profile. Phase 2 (oracle harness) builds on nextest, so settle it before then. Source: Nyquist auditor, 2026-10-23.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
