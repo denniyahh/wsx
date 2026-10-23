@@ -282,3 +282,14 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 13. Status and doctor | 0/TBD | Not started | - |
 | 14. Release gate | 0/TBD | Not started | - |
 | 15. Cutover and retirement | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Deduplicate CI runs on PR branches (BACKLOG)
+
+**Goal:** ci.yml and deny.yml trigger on every `push:` and on `pull_request`, and the concurrency group keys on `github.ref`, so a push to a PR branch starts two runs (refs/heads/<branch> and refs/pull/N/merge) that never cancel each other: same results, double runner minutes. Limit `push` to main and develop. Source: external adversarial review, 2026-10-22 (agy).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
