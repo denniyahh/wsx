@@ -293,3 +293,12 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 Plans:
 - [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.2: Cache pinned tools in container checks (BACKLOG)
+
+**Goal:** scripts/check-in-container.sh runs `install-tools.sh install cargo-nextest cargo-deny` in a throwaway container, so every run downloads both again (about 17 s) and the check fails offline. Cache the verified binaries in a per-checkout volume, keeping the sha256 and version checks. Source: external adversarial review, 2026-10-22 (agy).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
