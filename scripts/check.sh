@@ -126,10 +126,12 @@ run_test() {
     require_tool cargo "install rustup from https://rustup.rs"
     show_toolchain
     require_tool cargo-nextest "run scripts/install-tools.sh install cargo-nextest"
-    # The pin is checked as in run_deps: cargo finds `cargo-nextest` in
-    # $CARGO_HOME/bin before PATH, so verify searches in that same order.
-    echo "==> scripts/install-tools.sh verify cargo-nextest"
-    PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" scripts/install-tools.sh verify cargo-nextest
+    # The pin is checked through cargo, as in run_deps: cargo puts
+    # $CARGO_HOME/bin first only when it is absent from PATH and otherwise
+    # follows PATH order, so only `cargo nextest --version` is guaranteed to
+    # run the binary `cargo nextest run` runs below.
+    echo "==> scripts/install-tools.sh verify-cargo cargo-nextest"
+    scripts/install-tools.sh verify-cargo cargo-nextest
     echo "==> cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail $*"
     cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail "$@"
 }
@@ -143,11 +145,12 @@ run_deps() {
     require_tool cargo "install rustup from https://rustup.rs"
     require_tool cargo-deny "run scripts/install-tools.sh install cargo-deny"
     # Check the pin before scanning: a package-manager upgrade must not
-    # silently replace the scanner this gate was validated against. `cargo deny`
-    # looks in $CARGO_HOME/bin before PATH, so verify searches in that same
-    # order: the binary checked is the binary the scan runs.
-    echo "==> scripts/install-tools.sh verify cargo-deny"
-    PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" scripts/install-tools.sh verify cargo-deny
+    # silently replace the scanner this gate was validated against. The
+    # version is asked of `cargo deny` itself, because cargo's subcommand
+    # lookup (PATH order, with $CARGO_HOME/bin first only when it is absent
+    # from PATH) decides which binary the scan runs.
+    echo "==> scripts/install-tools.sh verify-cargo cargo-deny"
+    scripts/install-tools.sh verify-cargo cargo-deny
     echo "==> cargo deny --locked check"
     cargo deny --locked check
 }

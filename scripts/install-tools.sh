@@ -20,6 +20,13 @@
 #   install TOOL...  download, verify and install into
 #                    ${WSX_TOOLS_DIR:-${CARGO_HOME:-$HOME/.cargo}/bin}
 #   verify TOOL...   the tool on PATH must report the pinned version
+#   verify-cargo TOOL...
+#                    `cargo <subcommand> --version` must report the pinned
+#                    version, for cargo-* tools only. This asks cargo itself,
+#                    so the binary checked is the binary `cargo <subcommand>`
+#                    runs: cargo puts $CARGO_HOME/bin first only when it is
+#                    absent from PATH, and otherwise follows PATH order
+#                    (cargo#11020), which no PATH lookup here can reproduce.
 #
 # Exit 2 on a usage error, 1 on any failure.
 set -euo pipefail
@@ -35,6 +42,7 @@ usage() {
     cat >&2 <<'EOF'
 usage: scripts/install-tools.sh install TOOL...
        scripts/install-tools.sh verify TOOL...
+       scripts/install-tools.sh verify-cargo TOOL...
 
   TOOL is one of: cargo-nextest, cargo-deny, gitleaks
 
@@ -42,6 +50,9 @@ usage: scripts/install-tools.sh install TOOL...
            the binary into $WSX_TOOLS_DIR (default $CARGO_HOME/bin, else
            ~/.cargo/bin); x86_64 Linux only
   verify   fail unless the tool on PATH reports the pinned version
+  verify-cargo
+           fail unless `cargo <subcommand> --version` reports the pinned
+           version; cargo-nextest and cargo-deny only
 EOF
     exit 2
 }
@@ -82,18 +93,19 @@ tool_info() {
     esac
 }
 
-# $1 = tool, $2 = path to its binary. Exit 1 unless the first line of its
-# version output matches the pin.
+# $1 = tool, $2 = where it was found (for messages), then the command that
+# runs it. Exit 1 unless the first line of its version output matches the pin.
 check_version() {
-    local output first
-    tool_info "$1"
-    if ! output="$("$2" "$version_arg")"; then
-        echo "error: $1 at $2 failed to report its version; run scripts/install-tools.sh install $1" >&2
+    local tool="$1" where="$2" output first
+    shift 2
+    tool_info "$tool"
+    if ! output="$("$@" "$version_arg")"; then
+        echo "error: $tool $where failed to report its version; run scripts/install-tools.sh install $tool" >&2
         exit 1
     fi
     first="${output%%$'\n'*}"
     if [[ ! "$first" =~ $pattern ]]; then
-        echo "error: $1 at $2 reports '$first', expected $version; run scripts/install-tools.sh install $1" >&2
+        echo "error: $tool $where reports '$first', expected $version; run scripts/install-tools.sh install $tool" >&2
         exit 1
     fi
 }
@@ -105,8 +117,21 @@ cmd_verify() {
             echo "error: $tool is not on PATH; run scripts/install-tools.sh install $tool" >&2
             exit 1
         fi
-        check_version "$tool" "$bin"
+        check_version "$tool" "at $bin" "$bin"
         echo "==> $tool $version OK"
+    done
+}
+
+cmd_verify_cargo() {
+    local tool sub
+    for tool in "$@"; do
+        if [ "${tool#cargo-}" = "$tool" ]; then
+            echo "error: verify-cargo checks cargo subcommands only, not '$tool'" >&2
+            usage
+        fi
+        sub="${tool#cargo-}"
+        check_version "$tool" "run as 'cargo $sub'" cargo "$sub"
+        echo "==> cargo $sub: $tool $version OK"
     done
 }
 
@@ -139,7 +164,7 @@ install_one() {
         exit 1
     fi
     install -m 0755 "$extract_dir/$member" "$DEST/$tool"
-    check_version "$tool" "$DEST/$tool"
+    check_version "$tool" "at $DEST/$tool" "$DEST/$tool"
     echo "==> installed $tool $version to $DEST"
 }
 
@@ -183,6 +208,7 @@ done
 case "$MODE" in
     install) cmd_install "$@" ;;
     verify) cmd_verify "$@" ;;
+    verify-cargo) cmd_verify_cargo "$@" ;;
     *)
         echo "error: unknown mode '$MODE'" >&2
         usage
