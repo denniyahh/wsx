@@ -5,8 +5,8 @@
 # in one place, the first FROM line of .devcontainer/Dockerfile, but GitHub
 # Actions cannot read a job's container image from a file, so every workflow
 # job repeats it as `container: image:`. This script compares the Dockerfile
-# pin with every `image:` in .github/workflows/*.yml and *.yaml, so the copies
-# cannot drift silently. A Dependabot PR that bumps only the Dockerfile fails
+# pin with every job's container image in .github/workflows/*.yml and *.yaml,
+# so the copies cannot drift silently. A Dependabot PR that bumps only the Dockerfile fails
 # here until the workflows in the same PR match.
 #
 # It reads files only: no argument, and no copy of the image anywhere else to
@@ -81,30 +81,108 @@ image_value() {
     printf '%s' "$value"
 }
 
+# Leading spaces of a line (YAML forbids tabs for indentation).
+indent_of() {
+    local line="$1"
+    local stripped="${line#"${line%%[! ]*}"}"
+    printf '%s' "$(( ${#line} - ${#stripped} ))"
+}
+
+# The image a job runs in is `jobs.<id>.container.image`, or the shorthand
+# `jobs.<id>.container: <image>`. Only those count: an `image:` anywhere else
+# (a service container, an action input) does not decide where the job's steps
+# run, so it must neither satisfy nor fail the check. A job without one fails,
+# including a reusable-workflow call (`uses:`), which cannot run in a container.
+# Flow mappings and anchors (`container: {image: ...}`, `*pin`) are read as the
+# literal value, so they fail as a mismatch rather than pass unread.
 total_images=0
 mismatches=()
+missing=()
 for file in "${workflows[@]}"; do
-    jobs=0
-    images=0
-    # Only lines whose first non-blank text is the key match, so comments may
-    # mention either word.
-    while IFS= read -r line || [ -n "$line" ]; do
-        if [[ $line =~ ^[[:space:]]*runs-on: ]]; then
-            jobs=$((jobs + 1))
-        elif [[ $line =~ ^[[:space:]]*image:(.*)$ ]]; then
-            images=$((images + 1))
-            image="$(image_value "${BASH_REMATCH[1]}")"
-            if [ "$image" != "$pin" ]; then
-                mismatches+=("$file: $image")
+    in_jobs=0
+    job_indent=-1
+    key_indent=-1
+    container_indent=-1
+    job=""
+    job_image=""
+
+    finish_job() {
+        if [ -n "$job" ]; then
+            if [ -z "$job_image" ]; then
+                missing+=("$file: job '$job'")
+            else
+                total_images=$((total_images + 1))
+                if [ "$job_image" != "$pin" ]; then
+                    mismatches+=("$file: job '$job': $job_image")
+                fi
             fi
         fi
+        job=""
+        job_image=""
+        key_indent=-1
+        container_indent=-1
+    }
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Blank lines and whole-line comments carry no structure.
+        if [[ $line =~ ^[[:space:]]*(#|$) ]]; then
+            continue
+        fi
+        indent="$(indent_of "$line")"
+        if [ "$indent" -eq 0 ]; then
+            finish_job
+            in_jobs=0
+            if [[ $line =~ ^jobs:[[:space:]]*(#.*)?$ ]]; then
+                in_jobs=1
+                job_indent=-1
+            fi
+            continue
+        fi
+        [ "$in_jobs" -eq 1 ] || continue
+        if [ "$job_indent" -lt 0 ]; then
+            job_indent="$indent"
+        fi
+        if [ "$indent" -eq "$job_indent" ]; then
+            finish_job
+            if [[ $line =~ ^[[:space:]]*([A-Za-z0-9_-]+):[[:space:]]*(#.*)?$ ]]; then
+                job="${BASH_REMATCH[1]}"
+            else
+                echo "error: $file: cannot read job id from: $line" >&2
+                exit 1
+            fi
+            continue
+        fi
+        [ -n "$job" ] || continue
+        if [ "$key_indent" -lt 0 ]; then
+            key_indent="$indent"
+        fi
+        if [ "$indent" -eq "$key_indent" ]; then
+            container_indent=-1
+            if [[ $line =~ ^[[:space:]]*container:(.*)$ ]]; then
+                value="$(image_value "${BASH_REMATCH[1]}")"
+                if [ -z "$value" ]; then
+                    container_indent="$indent"
+                else
+                    job_image="$value"
+                fi
+            fi
+        elif [ "$container_indent" -ge 0 ] && [ "$indent" -gt "$container_indent" ] \
+            && [[ $line =~ ^[[:space:]]*image:(.*)$ ]]; then
+            job_image="$(image_value "${BASH_REMATCH[1]}")"
+        fi
     done < "$file"
-    if [ "$images" -lt "$jobs" ]; then
-        echo "error: $file has $jobs job(s) but only $images container image(s); every CI job must run in the pinned image" >&2
-        exit 1
-    fi
-    total_images=$((total_images + images))
+    finish_job
 done
+
+if [ "${#missing[@]}" -ne 0 ]; then
+    {
+        echo "error: every CI job must run in the pinned image $pin; these have no container image:"
+        for entry in "${missing[@]}"; do
+            echo "  $entry"
+        done
+    } >&2
+    exit 1
+fi
 
 if [ "$total_images" -eq 0 ]; then
     echo "error: no container image found in any workflow file; every CI job must run in $pin" >&2
@@ -125,4 +203,4 @@ if [ "${#mismatches[@]}" -ne 0 ]; then
     exit 1
 fi
 
-echo "image parity OK: $pin ($total_images workflow image(s))"
+echo "image parity OK: $pin ($total_images job container image(s))"
