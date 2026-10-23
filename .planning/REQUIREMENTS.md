@@ -172,7 +172,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [x] **DEV-03**: Root `CLAUDE.md` is rewritten for Rust (still minimal and public-safe), including devflow's repo traps: `nextest --no-tests=fail -E 'test(=path)'` one test per command; `rg -c` prints nothing on zero matches; zsh has no `PIPESTATUS`; prefer a named Rust test over a shell pipeline
 - [x] **DEV-04**: `CONTRIBUTING.md` is rewritten for Rust, with devflow's AI change acceptance bar (a regression test that fails first, a boundary assertion, proof it failed for the intended reason, full gates, independent review) and its four rejected test shapes
 - [x] **DEV-05**: A tracked `.gitconfig`, pulled in with `git config --local include.path ../.gitconfig`, sets SSH signing for commits and tags and the git-flow branch names. It contains nothing personal
-- [ ] **DEV-06**: Container parity. `.devcontainer/Dockerfile` (used by `devcontainer.json`) pins an exact image tag. `scripts/check-in-container.sh` runs `check.sh` in that image and is worktree-aware (it bind-mounts the common git dir) with per-checkout cargo volumes. CI jobs run in the same image, and an image-tag parity check fails CI if the two drift. Requires a Docker daemon (rootless Docker 29.9 on the host). devflow's CPU-pinned sequential job is not ported
+- [x] **DEV-06**: Container parity. `.devcontainer/Dockerfile` (used by `devcontainer.json`) pins an exact image tag. `scripts/check-in-container.sh` runs `check.sh` in that image and is worktree-aware (it bind-mounts the common git dir) with per-checkout cargo volumes. CI jobs run in the same image, and an image-tag parity check fails CI if the two drift. Requires a Docker daemon (rootless Docker 29.9 on the host). devflow's CPU-pinned sequential job is not ported
 
 ### Supply chain (global policy, 2026-10-19)
 
@@ -180,14 +180,14 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [x] **SUP-02**: `.github/dependabot.yml` updates GitHub Actions and the devcontainer image weekly, grouped, with `target-branch: develop`. No per-crate update PRs. Dependabot alerts are on (enabled 2026-10-19). Automatic security-fix PRs stay off, because they target `main` and would bypass `develop`
 - [x] **SUP-03**: The repo runs its own secret scan: a tracked setup script registers a config-based pre-commit hook running `gitleaks git --pre-commit --staged --redact`, alongside any global hook. Server-side push protection (already on) is the backstop for `--no-verify`
 - [x] **SUP-04**: `Cargo.lock` is committed. CI actions are pinned to commit SHAs. Scanner versions are pinned in one install script. A missing scanner is a hard failure, never a skip
-- [ ] **SUP-05**: Each scanner is proven to bite before it counts as enabled: a planted fake secret is refused by the hook, and a known-vulnerable or disallowed crate in a scratch copy fails `cargo deny`. Both controls are cleaned up afterwards
+- [x] **SUP-05**: Each scanner is proven to bite before it counts as enabled: a planted fake secret is refused by the hook, and a known-vulnerable or disallowed crate in a scratch copy fails `cargo deny`. Both controls are cleaned up afterwards
 
 ### Cutover and gates
 
 - [ ] **REL-01**: `install.sh` installs the Rust binary. In the wsx and devflow repos, wsx replaces the shell scripts and the devflow hook's personal-path policy, with `.wsx.conf` migrated (MIG-01) at that point and not before
 - [ ] **REL-02**: The vendored shell oracle (`tests/oracle/`) stays until the harness passes on Rust with every recorded expectation intact, then is deleted. Python 0.1.0 `bin/wsx` is deleted from `develop`, with a `v0.1.0` tag kept
 - [ ] **REL-03**: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check` and `cargo deny check` pass. `cargo mutants` on the path matcher, commit classifier (scope and personal-path) and guard range logic leaves zero surviving mutants, apart from any listed as equivalent with a justification
-- [ ] **REL-04**: CI runs test, clippy and fmt on every PR to `develop` and `main`. Once it has run, those check names are added as required checks (up to date before merge) to the `develop-merge-or-squash` and `main-squash-only` rulesets created 2026-10-19
+- [x] **REL-04**: CI runs test, clippy and fmt on every PR to `develop` and `main`. Once it has run, those check names are added as required checks (up to date before merge) to the `develop-merge-or-squash` and `main-squash-only` rulesets created 2026-10-19
 
 ## v2 Requirements (milestone 2: public baseline)
 
@@ -283,16 +283,16 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | DEV-03 | Phase 1 | Complete |
 | DEV-04 | Phase 1 | Complete |
 | DEV-05 | Phase 1 | Complete |
-| DEV-06 | Phase 1 | Pending |
+| DEV-06 | Phase 1 | Complete |
 | SUP-01 | Phase 1 | Complete |
 | SUP-02 | Phase 1 | Complete |
 | SUP-03 | Phase 1 | Complete |
 | SUP-04 | Phase 1 | Complete |
-| SUP-05 | Phase 1 | Pending |
+| SUP-05 | Phase 1 | Complete |
 | REL-01 | Phase 15 | Pending |
 | REL-02 | Phase 15 | Pending |
 | REL-03 | Phase 14 | Pending |
-| REL-04 | Phase 1 | Pending |
+| REL-04 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 71 total
