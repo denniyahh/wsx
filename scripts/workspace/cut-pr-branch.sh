@@ -28,6 +28,25 @@
 #     ./scripts/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
 set -euo pipefail
 
+# Raw path names from every git listing below. Under git's default
+# core.quotePath a non-ASCII name prints quoted and octal-escaped
+# (".planning/r\303\251sum\303\251.md"), which the anchored forbidden-path
+# regex never matches, so such a file passed both the strip and the audit.
+git() { command git -c core.quotePath=false "$@"; }
+
+# Names git still quotes (a `"`, `\` or control character, such as a newline)
+# cannot be matched line by line either; stop rather than classify them.
+# $1 = newline-separated git name listing, $2 = where it came from.
+refuse_quoted_paths() {
+    local quoted
+    quoted="$(printf '%s\n' "$1" | grep '^"' || true)"
+    if [ -n "$quoted" ]; then
+        echo "error: $2 touches path(s) this script cannot classify safely; cut this branch by hand:" >&2
+        printf '%s\n' "$quoted" | sed 's/^/  /' >&2
+        exit 1
+    fi
+}
+
 PHASE="${PHASE:-}"
 POSITIONAL=()
 while [ $# -gt 0 ]; do
@@ -188,6 +207,7 @@ INCLUDED_HASHES=()
 
 for HASH in "${COMMIT_LIST[@]}"; do
     TOUCHED_FILES=$(git diff-tree --no-commit-id --name-only -r "$HASH")
+    refuse_quoted_paths "$TOUCHED_FILES" "commit $HASH"
     NON_FORBIDDEN=$(echo "$TOUCHED_FILES" | grep -v -E "$FORBIDDEN_REGEX" | grep -v '^$' || true)
 
     if [ -z "$NON_FORBIDDEN" ]; then
@@ -251,7 +271,9 @@ if [ "$INCLUDED_COUNT" -eq 0 ]; then
 fi
 
 echo "==> Verifying zero forbidden files on $PR_BRANCH (pre-push policy audit)..."
-LEAKED="$(git log --name-only --format='' "$BASE_REF..$PR_BRANCH" | grep -E "$FORBIDDEN_REGEX" || true)"
+PR_PATHS="$(git log --name-only --format='' "$BASE_REF..$PR_BRANCH")"
+refuse_quoted_paths "$PR_PATHS" "'$PR_BRANCH'"
+LEAKED="$(printf '%s\n' "$PR_PATHS" | grep -E "$FORBIDDEN_REGEX" || true)"
 if [ -n "$LEAKED" ]; then
     echo "error: forbidden files detected on clean PR branch '$PR_BRANCH':" >&2
     echo "$LEAKED" | head -10 | sed 's/^/  /' >&2
