@@ -216,8 +216,19 @@ for HASH in "${COMMIT_LIST[@]}"; do
         continue
     fi
 
-    # Commit contains code changes; cherry-pick without auto-commit
-    git cherry-pick "$HASH" --no-commit >/dev/null 2>&1 || true
+    # Commit contains code changes; cherry-pick without auto-commit. A
+    # conflict is handled below; any other failure (for example an untracked
+    # file the pick would overwrite) stages nothing, and treating that as an
+    # empty commit silently dropped the commit's code from the PR branch.
+    if ! PICK_ERR="$(git cherry-pick "$HASH" --no-commit 2>&1 >/dev/null)"; then
+        if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "error: cherry-pick of commit $HASH failed without a conflict; the cut is aborted:" >&2
+            printf '%s\n' "$PICK_ERR" | sed 's/^/  /' >&2
+            git cherry-pick --abort >/dev/null 2>&1 || git reset --hard HEAD --quiet
+            git checkout "$ORIG_BRANCH" --quiet
+            exit 1
+        fi
+    fi
 
     # Remove forbidden paths from the index by the same prefix rule the audit
     # below uses. (A pathspec list is not a prefix match, and one pathspec that
