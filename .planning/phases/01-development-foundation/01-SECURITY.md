@@ -40,7 +40,7 @@ Built from the `<threat_model>` blocks of 01-01..01-07-PLAN.md (33 threats, all 
 | T-01-SC(01) | T | crate deps | high | mitigate | no deps, Cargo.lock tracked, `--locked` | closed |
 | T-01-05 | T | tool downloads | high | mitigate | https/TLS1.2, sha256 before extract | closed |
 | T-01-06 | I | curl requests | medium | mitigate | `curl --disable`, no identifying headers | closed |
-| T-01-07 | T | cargo-deny binary | medium | mitigate | version verified before scan, CARGO_HOME/bin first | closed |
+| T-01-07 | T | cargo-deny binary | medium | mitigate | version verified through cargo itself (`install-tools.sh verify-cargo`, d179d7a; the earlier CARGO_HOME/bin-first check was bypassable by PATH order, code review CR-02) | closed |
 | T-01-08 | S | dependency sources | medium | mitigate | deny.toml: unknown registries and git denied | closed |
 | T-01-SC(02) | T | tool versions | high | mitigate | pinned in install-tools.sh only | closed |
 | T-01-09 | T | container mount | high | mitigate | source mounted read-only; target volume (decided deviation) | closed |
@@ -50,7 +50,7 @@ Built from the `<threat_model>` blocks of 01-01..01-07-PLAN.md (33 threats, all 
 | T-01-12 | T | actions | high | mitigate | SHA-pinned (v7.0.1 verified); tests/repo_policy.rs | closed |
 | T-01-13 | E | workflow token | medium | mitigate | read-only permissions, `persist-credentials: false`, no `pull_request_target` | closed |
 | T-01-14 | T | workflow injection | medium | mitigate | `${{ }}` only in concurrency keys | closed |
-| T-01-15 | T | image drift | high | mitigate | assert-image-parity.sh per-job container image; tests/image_parity.rs | closed |
+| T-01-15 | T | image drift | high | mitigate | assert-image-parity.sh counts only `jobs.<id>.container.image` (9246940; nested `image:` under container accepted before, code review WR-02); tests/image_parity.rs | closed |
 | T-01-16 | R | advisory deny job | medium | mitigate | no continue-on-error; not a required check | closed |
 | T-01-SC(04) | T | Dependabot | high | mitigate | targets develop, which requires a PR | closed |
 | T-01-17 | I | secrets in commits | high | mitigate | global hook (fail-closed, `--redact`) in this clone; repo hook via setup-repo.sh in fresh clones; push protection on | closed (see AR-02) |
@@ -90,6 +90,7 @@ Note on T-01-26: the 01-07 history scan's literal list predates commit 1da1794, 
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-23 | 33 | 32 | 1 (medium, accepted) | gsd-security-auditor (ASVS L1, block_on high) |
+| 2026-10-23 | 33 | 32 | 1 (medium, accepted) | orchestrator: T-01-07/T-01-15 re-closed on the code-review fixes (CR-02, WR-02); re-verified by tests and a fake-binary control |
 
 ---
 
