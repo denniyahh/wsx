@@ -20,6 +20,7 @@ status: all_fixed
 - Fixed: 7
 - Skipped: 0
 - Out of scope by instruction and untouched: CR-01 (the `.gitconfig` include design, for the owner to decide), IN-02, IN-03, IN-04
+- CR-01 resolved afterwards by the orchestrator on the owner's decision (2026-10-24, "copy, don't include"): b16287f. `setup-repo.sh` copies an allowlist of keys into local config, refuses any other key, removes the legacy include, and adds `policy` and `check` modes. Controls in tests/setup_repo.rs: a tracked `core.fsmonitor` is refused and never runs, while the counterpart test shows the old include runs it on `git status`; mutating the allowlist to `.*` or skipping the include removal each fails a test. The owner's clone was migrated with `setup-repo.sh policy` (check: rc 1 before, rc 0 after).
 
 Every fix has a negative control: the old code fails it and the new code passes it. Where the code reaches develop, the control is a Rust test. For `scripts/workspace/` it is a shell control in a scratch repository, because tests must not reference workspace-only scripts.
 

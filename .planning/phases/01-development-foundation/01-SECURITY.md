@@ -54,6 +54,7 @@ Built from the `<threat_model>` blocks of 01-01..01-07-PLAN.md (33 threats, all 
 | T-01-16 | R | advisory deny job | medium | mitigate | no continue-on-error; not a required check | closed |
 | T-01-SC(04) | T | Dependabot | high | mitigate | targets develop, which requires a PR | closed |
 | T-01-17 | I | secrets in commits | high | mitigate | global hook (fail-closed, `--redact`) in this clone; repo hook via setup-repo.sh in fresh clones; push protection on | closed (see AR-02) |
+| T-01-27 | E | tracked .gitconfig read live | high | mitigate | copied by setup-repo.sh from a key allowlist, never included; legacy include removed; tests/setup_repo.rs (code review CR-01, b16287f) | closed |
 | T-01-18 | I | .gitconfig personal data | high | mitigate | no `user.*`; tests/repo_policy.rs | closed |
 | T-01-19 | R | hook registration | medium | mitigate | setup-repo.sh refuses git < 2.54, checks `git hook list` | closed |
 | T-01-20 | I | secret in hook output | medium | mitigate | `--redact` in repo and global hooks | closed |
@@ -91,6 +92,7 @@ Note on T-01-26: the 01-07 history scan's literal list predates commit 1da1794, 
 |------------|---------------|--------|------|--------|
 | 2026-10-23 | 33 | 32 | 1 (medium, accepted) | gsd-security-auditor (ASVS L1, block_on high) |
 | 2026-10-23 | 33 | 32 | 1 (medium, accepted) | orchestrator: T-01-07/T-01-15 re-closed on the code-review fixes (CR-02, WR-02); re-verified by tests and a fake-binary control |
+| 2026-10-24 | 34 | 33 | 1 (medium, accepted) | orchestrator: T-01-27 added and closed on CR-01 (owner decision: copy, not include) |
 
 ---
 
