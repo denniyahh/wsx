@@ -1,25 +1,21 @@
 ---
-status: testing
+status: complete
 phase: 01-development-foundation
 source: [01-VERIFICATION.md]
 started: 2026-10-23T20:48:06Z
-updated: 2026-10-23T20:48:06Z
+updated: 2026-10-24T07:30:00Z
 ---
 
 ## Current Test
 
-number: 1
-name: CI on the current phase tree
-expected: |
-  After PR #2 is re-cut and pushed, `gh pr checks 2` shows Test, Clippy and Format succeeding on the new head SHA (app 15368); the Test log shows the parity OK line, rustc 1.99.1 and 38 tests.
-awaiting: owner approval to re-cut and force-push feature/phase-1-pr (outward-facing)
+[testing complete]
 
 ## Tests
 
 ### 1. CI on the current phase tree
 expected: Test, Clippy, Format succeed on PR #2's new head SHA after the re-cut; Test log shows parity OK, rustc 1.99.1, 38 tests
-result: [pending]
-resolution: pending — needs the owner's approval for the force-push (outward-facing); checked by the orchestrator afterwards with gh pr checks against the head SHA
+result: pass
+resolution: decided by orchestrator 2026-10-24 — owner approved the re-cut ("Re-cut."); feature/phase-1-pr force-pushed with lease from 34e1b54 to d8456e5. PR #2 headRefOid is d8456e5 and its check rollup shows Test, Clippy, Format and cargo deny SUCCESS. CI run 40089958293 Test log: image parity OK (rust:2.1.3-1-trixie, 4 job images), rustc 1.99.1, 47 tests passed (38 expected at verification, plus the 9 setup-repo tests added for CR-01). Each check appears twice because push and pull_request both trigger (backlog 999.1).
 
 ### 2. Dependabot behaviour
 expected: weekly grouped update PRs against develop once the config is on main
@@ -34,9 +30,9 @@ resolution: decided by orchestrator 2026-10-23 from the conversation record — 
 ## Summary
 
 total: 3
-passed: 1
+passed: 2
 issues: 0
-pending: 1
+pending: 0
 skipped: 1
 blocked: 0
 
