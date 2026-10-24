@@ -18,8 +18,8 @@ not change it. It is deleted at cutover.
 - `scripts/check.sh test -E 'test(=name)'`: one named test (`--no-tests=fail` is always set).
 - `scripts/check-in-container.sh [target]`: the same gate in the pinned image CI uses.
 - `scripts/assert-image-parity.sh`: every workflow image matches the devcontainer pin.
-- `scripts/setup-repo.sh`: once per clone; registers the repository's gitleaks pre-commit hook
-  and includes the tracked `.gitconfig`.
+- `scripts/setup-repo.sh [all|policy|check]`: once per clone, and after `.gitconfig` changes;
+  registers the gitleaks pre-commit hook and copies the tracked `.gitconfig` into local config.
 
 ## Repo traps
 
@@ -42,8 +42,9 @@ Shapes that ship a false green, or a commit the PR cut cannot replay.
   and stripped from PRs.
 - Commit subjects carry the phase scope, `type(NN-MM): ...`, because the PR cut replays only
   phase-scoped commits.
-- `include.path ../.gitconfig` resolves against the common git dir, so a linked worktree reads
-  the main checkout's `.gitconfig`, not its own.
+- Never `include.path` the tracked `.gitconfig`: git would read it live from any checked-out
+  branch. `setup-repo.sh` copies an allowlist of keys; a new policy key goes in its
+  `POLICY_KEYS` first.
 - The container mounts the checkout read-only and builds into a volume over `target/`, so a
   check that needs to write must use a scratch directory.
 

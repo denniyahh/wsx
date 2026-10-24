@@ -32,12 +32,13 @@ required.
    ```
 
    It registers the repository's own gitleaks pre-commit hook, which runs
-   beside any global hook you already have, and includes the tracked
-   `.gitconfig` (see [Repository git policy](#repository-git-policy)). It
+   beside any global hook you already have, and copies the tracked
+   `.gitconfig` into local config (see
+   [Repository git policy](#repository-git-policy)). It
    refuses to run, before changing anything, on git older than 2.54 or when
    `gitleaks` is not on `PATH`. From then on a commit made where `gitleaks` is
    not on `PATH` is refused rather than committed unscanned.
-4. Set your own signing key. The included policy signs every commit and tag
+4. Set your own signing key. The policy signs every commit and tag
    with SSH, so a commit is refused until a key is configured:
 
    ```bash
@@ -49,23 +50,25 @@ required.
 ## Repository git policy
 
 Git cannot version `.git/config`, so settings that must survive a fresh clone
-live in the tracked [`.gitconfig`](.gitconfig) and are pulled in once, either
-by `scripts/setup-repo.sh` or by hand:
+live in the tracked [`.gitconfig`](.gitconfig) and are copied into local config
+by `scripts/setup-repo.sh` (`scripts/setup-repo.sh policy` copies them without
+registering the hook). This turns on SSH-format signing for both commits and
+tags, and configures the git-flow branch model. It deliberately does **not**
+set `user.signingkey`: that is per-contributor and this repository is public.
+Local config is shared by every worktree of the clone.
 
-```bash
-git config --local include.path ../.gitconfig
-```
+**Do not `include.path` the file.** An include is read live from whatever
+branch is checked out, so a branch could set a key that runs a program
+(`core.fsmonitor`, `core.pager`) on your next `git status`. The script copies
+only an allowlist of keys and refuses a `.gitconfig` that sets any other. The
+cost is that a change to `.gitconfig` applies when you re-run the script;
+`scripts/setup-repo.sh check` exits 1 when your local config differs from it,
+and a clone set up with the old include has it removed on the next run.
 
-The path is relative to the common git directory (`.git/`), so linked
-worktrees read the main checkout's copy of `.gitconfig`, not their own. This
-turns on SSH-format signing for both commits and tags, and configures the
-git-flow branch model. It deliberately does **not** set `user.signingkey` —
-that is per-contributor and this repository is public.
-
-Because the model is supplied by that include, **do not run `git flow init -d`**:
+Because the model is supplied by that policy, **do not run `git flow init -d`**:
 its default production branch is `master` and this repository's is `main`, so
 the defaults would misconfigure git-flow against a branch that does not exist,
-surfacing only later at release or hotfix time. With the include in place,
+surfacing only later at release or hotfix time. With the policy applied,
 `git flow feature start <name>` works directly.
 
 ## Development commands
