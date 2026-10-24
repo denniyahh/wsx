@@ -1,17 +1,17 @@
 # Tracked git policy for this repository.
 #
 # Git cannot version `.git/config`, so repository policy that must survive a
-# fresh clone lives here and is pulled in once with:
+# fresh clone lives here and is copied into local config by:
 #
-#     git config --local include.path ../.gitconfig
+#     scripts/setup-repo.sh policy     (or plain setup-repo.sh, which also
+#                                       registers the secret-scanning hook)
 #
-# or by running scripts/setup-repo.sh, which adds the same include and also
-# registers the repository's own secret-scanning pre-commit hook.
-#
-# The path is relative to the common git directory (`.git/`), so a linked
-# worktree reads the main checkout's copy of this file, not its own. A missing
-# include target is silently ignored: the policy takes effect once this file
-# is on the branch checked out in the main checkout.
+# Do NOT `include.path` this file. An include makes git read it live from
+# whatever branch is checked out, so a branch could set keys that run a
+# program on the next `git status`. setup-repo.sh copies only an allowlist of
+# keys and refuses any other key here; add a key to its POLICY_KEYS first.
+# After changing this file, re-run setup-repo.sh; `setup-repo.sh check`
+# reports a clone whose local config no longer matches.
 #
 # WHAT BELONGS HERE: settings that are true for every contributor.
 # WHAT DOES NOT: anything naming a specific person, key file or home
