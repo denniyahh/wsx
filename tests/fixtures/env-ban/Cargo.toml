@@ -1,0 +1,21 @@
+# Fixture crate for the clippy.toml env-mutation ban (tests/gate_controls.rs).
+#
+# It must fail `cargo clippy -- -D warnings` for `disallowed_methods`, and only
+# because the repository's clippy.toml is found by walking up from here.
+#
+# The empty [workspace] makes this its own workspace root, so cargo never
+# treats it as a member of whatever package or workspace sits above it. It is
+# not part of the root package's build: cargo discovers tests/*.rs and
+# tests/*/main.rs only, never tests/fixtures/env-ban/src/main.rs.
+#
+# Cargo.lock is committed so `--locked` needs no write: the container mounts
+# the source tree read-only.
+[package]
+name = "env-ban-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
