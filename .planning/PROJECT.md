@@ -112,6 +112,8 @@ cut that silently drops code, is the unacceptable failure.
 | wsx manages the repo; devflow manages agents and GSD; no overlap; wsx is standalone | Owner intent 2026-10-19. wsx has no GSD/agent knowledge (IF-02); devflow drives wsx via `--json` (IF-01); phase concepts, agent integrations, ship/versioning stay in devflow | — Pending |
 | Improve over prior art; never inherit worse behaviour to match devflow or 0.1.0 | Owner mandate 2026-10-20. The oracle is a floor on safety outcomes, not a spec. First applications: cut in a temporary worktree, sync from any worktree, commit-coverage fidelity, protected-branch commit refusal in M1 (reviews/m1-prior-art) | — Pending |
 | No public library crate in milestone 1; `--json` is the only interface for callers | wsx's hooks run the `wsx` binary, so callers install it anyway; the git adapter lives in the binary crate, so a library would expose only the pure planner. Revisit when devflow's code adopts wsx. Owner agreed 2026-10-20 | — Pending |
+| Tracked `.gitconfig` is copied into local config from a key allowlist, never `include.path`d | An include is read live from whatever branch is checked out, so a branch could set a key that runs a program on `git status` (proven by test). Owner decision 2026-10-24; UDE owns the practice for all projects (UDE backlog 999.2), `scripts/setup-repo.sh` stands in | Phase 1 (DEV-05 amended) |
+| Secret scanning in the owner's clone comes from the UDE global hook only | Two scans of the same commit add nothing (owner, 2026-10-22); a fresh clone still gets the repo hook from `setup-repo.sh` | Phase 1 (AR-02) |
 | `wsx land` in milestone 1; no `wsx adopt` | Without `land`, a standalone user can't finish the new → cut → land → rm loop. `adopt` was dropped (owner, 2026-10-20): the commit guard never refused hand-made branches, so it had no job left | — Pending |
 
 ## Evolution
@@ -132,4 +134,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-19 after re-scoping to the workspace-branch model*
+*Last updated: 2026-10-25 after Phase 1*

@@ -21,10 +21,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-20)
+See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** wsx must never let a personal file reach a shared branch or PR, and must never lose work while moving it between the workspace branch, feature worktrees and PR branches.
-**Current focus:** Phase 1 — Development foundation
+**Current focus:** Phase 2 — Oracle harness
 
 ## Current Position
 
@@ -75,17 +75,10 @@ Recent decisions affecting current work:
 - Roadmap: every HARN requirement lands by Phase 2 (HARN-04, the nextest gate and clippy env-mutation ban, in Phase 1); later layers enable the Rust side of the scenarios Phase 2 records against the oracle
 - Roadmap: the `--json`/exit-code contract (IF-01) and the no-GSD rule (IF-02) start with the first command (Phase 5), so every later command joins an enforced contract
 - Roadmap: a separate release gate (Phase 14) precedes cutover; cutover order is the wsx repo, then devflow's repo tooling (Phase 15)
-- [Phase 1]: 01-01: check.sh refuses any caller --no-tests argument (exit 2); --no-tests=fail precedes caller args
-- [Phase 1]: 01-01: show_toolchain captures rustc --version via assignment so a failing rustc stops the gate under set -e
-- [Phase 01]: check.sh deps verifies cargo-deny with CARGO_HOME/bin ahead of PATH, matching cargo's subcommand lookup, so the verified binary is the one that scans
-- [Phase 01]: install-tools.sh passes curl --disable so no .curlrc can add headers, a user agent or a proxy to tool downloads
-- [Phase 01]: 01-05: setup-repo.sh reads multi-valued include.path into a variable (exit 1 = unset, other non-zero = error) instead of piping to grep -q, so SIGPIPE under pipefail cannot duplicate the include
-- [Phase 01]: 01-05: setup-repo.sh confirms registration via git hook list, which also makes it fail closed (exit 1) when hook.gitleaks-staged.enabled=false is already set
-- [Phase 01]: 01-03: container gate mounts the per-checkout target volume at /workspace/target (not /ctarget via CARGO_TARGET_DIR) because nextest writes its store under <workspace>/target/nextest; host mkdir -p target/ first; delete old wsx-ci-target-* volumes after the layout change
-- [Phase 01]: 01-04: assert-image-parity.sh parses with bash builtins only (dirname is its one external command), so a tool missing from the pinned image cannot be swallowed silently
-- [Phase 01]: 01-04: check.sh steps in ci.yml carry no step name, so no step is labelled Test/Clippy/Format beside the job names that become ruleset contexts
-- [Phase 01]: 01-06: CONTRIBUTING Getting started orders scripts/install-tools.sh before scripts/setup-repo.sh (setup-repo refuses without gitleaks on PATH) and the signing key before the first commit (the included policy refuses unsigned commits)
-- [Phase 01]: 01-06: public docs claim a planted-problem proof only for the gitleaks hook and cargo-deny; push protection was checked as enabled but never shown to refuse a planted secret
+- [Phase 1]: tracked `.gitconfig` is copied into local config by `setup-repo.sh` (allowlisted keys; `all|policy|check`), never included (owner, 2026-10-24)
+- [Phase 1]: tool pins are verified through `cargo` itself (`install-tools.sh verify-cargo`), not by a PATH or CARGO_HOME search (code review CR-02)
+- [Phase 1]: the PR cut aborts on a failed cherry-pick, refuses protected branches, and re-cuts only with `--force` (CR-03, WR-04)
+- [Phase 1]: phase-1 fixes made after PR #2 merged (f1f1303) reach develop only through a follow-up PR; a phase-N cut replays only phase-N commits
 
 ### Pending Todos
 
@@ -94,7 +87,6 @@ Recent decisions affecting current work:
 ### Blockers/Concerns
 
 - Phase 12: MIG-03 covers the 0.1.0 projects on the owner's work PC, which are not on this machine (checked 2026-10-20); their expected results must be recorded and checked there
-- Phase 1: DEV-06 needs a Docker daemon (rootless Docker 29.9 on the host); REL-04's ruleset change is an outward-facing GitHub setting, applied after CI's first run
 - Phase 3: gix 0.89 method names are unverified against a stale crate-status item (research/SUMMARY.md, Gaps); spike at phase start
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
 
@@ -108,6 +100,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-23T19:54:21.431Z
+Last session: 2026-10-25T11:10:00Z
 Stopped at: Phase 1 complete, ready to plan Phase 2
 Resume file: None
