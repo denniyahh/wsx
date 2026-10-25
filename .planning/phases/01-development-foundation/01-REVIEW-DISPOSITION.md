@@ -71,7 +71,7 @@ recorded: 2026-10-25T10:54:57.230Z
 | IN-04 | info | deferred | policy is a stand-in until UDE backlog 999.2; the refusal branches print and exit before any write, which the refusal test pins for the security-relevant one |
 | IN-05 | info | deferred | UDE backlog 999.2 owns drift reporting for all projects; the stand-in stays minimal |
 | IN-06 | info | deferred | stand-in script; wsx PRCUT-02 specifies merge-commit handling for the replacement (phases 9-10). Phase cuts use --no-merges and the fidelity check warns on any path that differs |
-| IN-07 | info | deferred | carried from the first review (prior IN-04); check.sh gate forms are re-specified in phase 5 (command contract) |
+| IN-07 | info | deferred | carried from the first review (prior IN-04); a test gap only, no defect found; the refused forms are tested in tests/gate.rs, the accepted single-selector forms are not tested anywhere |
 | CR-02 | critical | fixed | 01-REVIEW-FIX.md (not in the current review) |
 | CR-03 | critical | fixed | 01-REVIEW-FIX.md (not in the current review) |
 | WR-02 | warning | fixed | 01-REVIEW-FIX.md (not in the current review) |
