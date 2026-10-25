@@ -1,319 +1,203 @@
 ---
 phase: 01-development-foundation
-reviewed: 2026-10-23T20:23:53Z
+reviewed: 2026-10-25T10:51:19Z
 depth: deep
-files_reviewed: 31
+iteration: 2
+diff_base: bf68d0a5f77dac069836aee77bc61ad5fed96f49
+files_reviewed: 13
 files_reviewed_list:
+  - .gitconfig
   - CLAUDE.md
   - CONTRIBUTING.md
-  - .config/nextest.toml
-  - .devcontainer/Dockerfile
-  - .devcontainer/devcontainer.json
-  - .gitconfig
-  - .github/dependabot.yml
-  - .github/workflows/ci.yml
-  - .github/workflows/deny.yml
-  - .gitignore
-  - .workspace-divergence
-  - Cargo.toml
-  - clippy.toml
-  - deny.toml
-  - rust-toolchain.toml
   - scripts/assert-image-parity.sh
   - scripts/check-in-container.sh
   - scripts/check.sh
   - scripts/install-tools.sh
   - scripts/setup-repo.sh
   - scripts/workspace/cut-pr-branch.sh
-  - scripts/workspace/phase-worktree.sh
-  - scripts/workspace/sync-workspace.sh
-  - src/main.rs
-  - tests/cli.rs
-  - tests/fixtures/env-ban/Cargo.toml
-  - tests/fixtures/env-ban/src/main.rs
   - tests/gate.rs
   - tests/gate_controls.rs
   - tests/image_parity.rs
-  - tests/repo_policy.rs
+  - tests/setup_repo.rs
+prior_findings_resolved:
+  - CR-01
+  - CR-02
+  - CR-03
+  - WR-01
+  - WR-02
+  - WR-03
+  - WR-04
+  - IN-01
+prior_findings_open:
+  - IN-02
+  - IN-03
+  - IN-04
 findings:
-  critical: 3
-  warning: 4
-  info: 4
-  total: 11
+  critical: 0
+  warning: 1
+  info: 7
+  total: 8
 status: issues_found
 ---
 
-# Phase 1: Code Review Report
+# Phase 1: Code Review Report (iteration 2, incremental)
 
-**Reviewed:** 2026-10-23T20:23:53Z
+**Reviewed:** 2026-10-25T10:51:19Z
 **Depth:** deep
-**Files Reviewed:** 31: 29 source and config files, plus CLAUDE.md and CONTRIBUTING.md (context, and in scope as docs). The lockfiles `Cargo.lock` and `tests/fixtures/env-ban/Cargo.lock` were left out by the scope filter.
+**Files Reviewed:** 13
 **Status:** issues_found
 
 ## Summary
 
-Scope: everything in `d693c9ec..HEAD` (ba901b9) outside `.planning/`. Backlog items 999.1–999.4 and the findings the earlier external review rejected are not reported again.
+This is an incremental re-review of `bf68d0a..HEAD` (85392a4) over the 13 files listed. It covers the fixes for CR-02, CR-03, WR-01 to WR-04 and IN-01, and the CR-01 resolution: `setup-repo.sh` now copies an allowlist of keys and has `all|policy|check` modes.
 
-Every finding below except IN-03 was reproduced in a throwaway repo or a `git archive` copy under the session scratchpad, with a negative control, before it was written down. The reproduction steps are in each finding. The scratch trees have since been deleted.
+**No blocker was found.** Every prior Critical and Warning is fixed. The CR-01 redesign holds against everything tried: include directives, keys outside the allowlist, bare booleans and duplicate keys are each refused before anything is written.
 
-Two findings contradict threats that `01-SECURITY.md` marks closed:
-- **T-01-07** ("version verified before scan, CARGO_HOME/bin first"): CR-02 shows the version check can pass on one binary while a different, unverified binary runs.
-- **T-01-15** ("per-job container image"): WR-02 shows a job running in an unpinned image that still passes the check.
+One new Warning, reproduced. `setup-repo.sh policy` aborts part-way through with git's raw exit 5 when a policy key already has several values in local config. By then it has already removed the legacy include and written some keys. The `check` mode's advice ("run setup-repo.sh policy") then loops, because `policy` fails the same way every time.
 
-CR-01 is a threat that is missing from the register altogether.
+The Info items are:
+- two leftovers from the WR-04 and IN-01 fixes (one reproduced, one confirmed by evaluating the script's own slug logic);
+- one environment-dependent root-resolution issue that predates this work (reproduced);
+- test gaps in the new `setup-repo.sh` refusal branches;
+- a pre-existing silent-drop path for merge commits in the PR cut (reproduced), in the same class as CR-03;
+- the prior IN-04, which is still open.
 
-The supporting work is sound. Specifically:
-- the env-ban clippy control and its empty-config counterpart
-- the `NEXTEST_NO_TESTS=pass` control
-- the `.gitconfig` exact-policy test
-- the SHA-pin checker and its rejection fixture
+What was run:
+- `scripts/check.sh test -E 'binary(setup_repo)'`: 9/9 passed. This shows the new tests pass on this host. It does not show they cover the untested refusal branches listed in IN-04 below.
+- Scratch reproductions under the session scratchpad, each with a control that has to come out the other way. The scratch directory has been deleted. The test run's own fixtures stay under the gitignored `target/tmp`.
 
-Each has a real negative control and was not found defective.
+Not done: no container run, no CI re-run, no mutation testing beyond grepping the tests for the refusal messages.
+
+## Prior findings: status
+
+| Prior | Status | Evidence |
+|---|---|---|
+| CR-01: tracked `.gitconfig` include runs code and can disable the scan | **Resolved** | `setup-repo.sh:52,101-134` reads with `--no-includes -z` and refuses any key outside `POLICY_KEYS` before writing anything. `:195-198` removes only the exact legacy include. `tests/setup_repo.rs:197-232` has the refusal test and an include counterpart that must run the fsmonitor. None of the allowlisted keys names a program. T-01-27 is registered. Residual: WR-01 and IN-05 below. |
+| CR-02: pin check verifies one binary while cargo runs another | **Resolved** | `install-tools.sh verify-cargo` runs `cargo <sub> --version`, so the version comes from the binary cargo resolves. `check.sh:149,168` use it. `gate_controls.rs::nextest_pin_is_checked_on_the_binary_cargo_runs` puts a stub earlier on PATH than the real binary and asserts exit 1, the stub's version in stderr, and that the stub never ran. The cargo-deny side has only a shell control, as the fix report admits. |
+| CR-03: PR cut silently drops a commit whose cherry-pick fails | **Resolved** for the reproduced class (`cut-pr-branch.sh:247-255` aborts on a failed pick that leaves no conflict). The untracked-file pre-check and the wider fidelity check were deliberately not applied. A related pre-existing path remains: see IN-06. |
+| WR-01: several selectors bring back the false green | **Resolved** | `check.sh:79-112` counts selectors and refuses a second one. `gate.rs:65-90` covers the two-`-E`, `--filterset`/`--filterset=` and two-name forms with exact-match names, so the test cannot recurse into itself if the refusal regresses. The positional substring match is still open (folded into IN-04). |
+| WR-02: nested `image:` passes a drifted job; untested refusal branches | **Resolved** | Only a direct child of `container:` counts (`assert-image-parity.sh:178-186`), and a file with no readable jobs is refused (`:191-194`). Six fixtures were added, including the reverse-order case. Traced bypasses that now fail closed: a quoted `"container":` or `container :` key, a flow mapping, a multi-line plain scalar under `container:`, `jobs: {}`, CRLF line endings. |
+| WR-03: container gate uses the caller's directory | **Resolved** | `check-in-container.sh:32-34`, with a stub-docker test. See IN-03 for the CDPATH caveat. |
+| WR-04: PR cut force-resets any branch | **Resolved**, with a narrow residual (IN-02) | `cut-pr-branch.sh:126-135,214`. |
+| IN-01: stale usage and next steps | **Resolved**, with a residual (IN-01 below) | `cut-pr-branch.sh:6,355`. |
+| IN-02 (`src/main.rs` panic), IN-03 (`phase-worktree.sh` regex) | **Open, not re-reviewed** | Outside this review's file scope. Neither file changed since `bf68d0a`. |
+| IN-04: gate accepted forms untested | **Open** | See IN-04 below. |
 
 ## Narrative Findings (AI reviewer)
 
-## Critical Issues
-
-### CR-01: The tracked `.gitconfig` include lets any checked-out branch run code and disable the secret scan
-
-**File:** `.gitconfig:1-14`, `scripts/setup-repo.sh:36,69-70,81-83,85-91`, `CONTRIBUTING.md:51-63`
-
-**Issue:** `setup-repo.sh` adds `include.path ../.gitconfig` to `.git/config`. git resolves that path against the common git dir, so it points at the working-tree file of whatever branch is checked out in the main checkout. git re-reads it on every command. This is why git refuses to version config.
-
-Failure scenario: the repository is public and accepts PRs. A PR changes `.gitconfig` to add `[core] fsmonitor = "<cmd>"`, or `core.pager`, `core.sshCommand`, `diff.external`, an alias, and so on. The maintainer runs `gh pr checkout N` or `git switch` in the main checkout. From the next `git` command on, `<cmd>` runs. That includes the git calls `gh` itself makes, and git calls in every linked worktree, because they all read the main checkout's copy.
-
-The same file can also replace the secret scan. `setup-repo.sh` writes `hook.gitleaks-staged.command` (line 69) *before* the include (line 82). An included `[hook "gitleaks-staged"] command = true` therefore wins, because the last value read is the one git uses. `git hook list pre-commit`, the check at lines 87-91, still prints `gitleaks-staged`, so the setup check stays green while nothing is scanned.
-
-`tests/repo_policy.rs::tracked_gitconfig_sets_exactly_the_shared_policy` would flag such a PR in CI. The code has already run on the reviewer's machine by then.
-
-Reproduced in a scratch repo with `GIT_CONFIG_GLOBAL=/dev/null`:
-- `main`'s `.gitconfig` only sets `gpg.format`. `git status` on `main` created no marker file (negative control).
-- After `git switch pr`, where the PR branch's `.gitconfig` sets `core.fsmonitor = "touch …/PWNED; false"`, the next `git status` created `PWNED`.
-- With the include added after the hook (setup-repo's order), `git config --get hook.gitleaks-staged.command` returned `gitleaks git --pre-commit --staged --redact` on `main` and `true` on a branch whose `.gitconfig` overrides it. `git hook list pre-commit` printed `gitleaks-staged` in both cases.
-
-**Fix:** Drop the live include. Have `setup-repo.sh` copy the policy keys into local config once, using `.gitconfig` only as the source. Read the file from a trusted ref rather than the working tree, and allow only the keys the policy needs:
-
-```bash
-# setup-repo.sh: replace the include block (lines 72-83)
-readonly POLICY_KEYS='^(gpg\.format|commit\.gpgsign|tag\.gpgsign|gitflow\.(branch|prefix)\.[a-z]+)$'
-git config --no-includes -f .gitconfig --list | while IFS='=' read -r key value; do
-    [[ $key =~ $POLICY_KEYS ]] || { echo "error: .gitconfig sets unexpected key $key" >&2; exit 1; }
-    git config --local --replace-all "$key" "$value"
-done
-# and remove any existing include.path ../.gitconfig
-git config --local --unset-all include.path '^\.\./\.gitconfig$' || true
-```
-
-Then update CONTRIBUTING.md:51-63, `.gitconfig`:3-14 and the CLAUDE.md trap at line 45-46. Add the threat to `01-SECURITY.md`. If the include is kept on purpose, record it as an accepted risk with this scenario written out. Do not leave it unregistered.
-
-### CR-02: The pin check verifies one binary while cargo runs another (nextest and cargo-deny)
-
-**File:** `scripts/check.sh:129-132`, `scripts/check.sh:145-150` (the fix in dfa6c20); claimed closed as T-01-07 in `01-SECURITY.md`
-
-**Issue:** Both comments say "cargo finds `cargo-nextest` in $CARGO_HOME/bin before PATH". Each then runs `PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH" scripts/install-tools.sh verify …`. That premise is false whenever `$CARGO_HOME/bin` is already on `PATH`, which is the normal rustup setup.
-
-cargo puts `$CARGO_HOME/bin` first only when it is *absent* from `PATH`; otherwise it follows `PATH` order (cargo#11020). So when an earlier `PATH` directory also holds the tool, `verify` checks the pinned copy in `$CARGO_HOME/bin`, prints `==> cargo-nextest 0.9.148 OK`, and cargo then runs the earlier, unverified copy.
-
-This host is that configuration:
-- `/home/linuxbrew/.linuxbrew/bin` is PATH entry 1 and `~/.cargo/bin` is entry 5.
-- `cargo-nextest` and `cargo-deny` are brew-installed there.
-- CONTRIBUTING.md:19-24 tells contributors to install the pinned tools into cargo's `bin` directory.
-
-Following the documented setup therefore leaves brew's copy as the one that runs. Whatever version `brew upgrade` installs next runs under a printed "pinned version OK". That is the exact case run_deps' comment (lines 145-148) says it prevents.
-
-Reproduced in a `git archive` copy:
-- **Case A:** `CARGO_HOME=$S/ch`, with `$S/ch/bin/cargo-nextest` linked to the real pinned binary, and `PATH=$S/fake:$S/ch/bin:~/.cargo/bin:/usr/bin:/bin`, where `$S/fake/cargo-nextest` is a stub that prints and exits 0. Running `bash scripts/check.sh test` printed `==> cargo-nextest 0.9.148 OK`, then `FAKE cargo-nextest ran with: nextest run --locked …`, then `==> check.sh: test OK`, exit 0. Zero tests ran.
-- **Control B:** the same setup with `$S/ch/bin` removed from `PATH`. The real nextest ran 28 tests. This confirms cargo prepends `$CARGO_HOME/bin` only when it is missing from `PATH`.
-- `check.sh deps` with a stub `cargo-deny`: `==> cargo-deny 0.20.2 OK`, then `FAKE cargo-deny ran with: deny --locked check`, then `==> check.sh: deps OK`, exit 0.
-
-No test covers this. `gate_controls.rs` only checks that the tool is missing, and deleting line 132 or line 150 fails nothing.
-
-**Fix:** Check the version through cargo, so the lookup is the one the gate uses:
-
-```bash
-# install-tools.sh: add a mode, or do it in check.sh
-nextest_line="$(cargo nextest --version)"   # runs the exact binary `cargo nextest run` will run
-[[ "${nextest_line%%$'\n'*}" =~ ^cargo-nextest\ 0\.9\.148(\ |$) ]] || { echo "error: cargo nextest reports '$nextest_line'" >&2; exit 1; }
-deny_line="$(cargo deny --version)"
-```
-
-Keep the pattern in `install-tools.sh`, for example with a `verify-cargo TOOL` mode that runs `cargo "${tool#cargo-}" --version`. Add a gate_controls test in which a stub `cargo-nextest` that prints a wrong version comes earlier on `PATH`. Running `check.sh test` must then exit 1 and must not print `check.sh: test OK`. Re-open T-01-07.
-
-### CR-03: The PR cut silently drops code commits whose cherry-pick fails, and still reports success
-
-**File:** `scripts/workspace/cut-pr-branch.sh:220`, `:252-254`, `:128`, `:289-305`
-
-**Issue:** Line 220 runs `git cherry-pick "$HASH" --no-commit >/dev/null 2>&1 || true`, which swallows every cherry-pick failure. A *conflict* leaves unmerged entries, which lines 232-249 catch. But git sometimes refuses a pick outright and leaves nothing staged, for example when "untracked working tree files would be overwritten". In that case line 252 (`git diff --cached --quiet`) succeeds, and the commit is counted under "Excluded: planning/environment-only". Its code never reaches the PR branch.
-
-The checks after that cannot see the loss:
-- The forbidden-path audit only inspects what was replayed.
-- The fidelity check (289-305) builds `TOUCHED_SET` from `INCLUDED_HASHES` only and compares it with paths that changed. A dropped commit appears in neither set.
-
-The guard at line 128 (`git diff-index --quiet HEAD --`) ignores untracked files, so nothing stops the run beforehand. This checkout currently has untracked, non-ignored `.planning/state.json` and `.planning/milestone.lock`.
-
-Reproduced in a scratch repo:
-- Branch `feature/phase-9` has three commits:
-  - `feat(09-01)` adds `src/a.rs` and `.planning/state.json`
-  - `chore(09-01)` runs `git rm --cached .planning/state.json`, so the file stays untracked
-  - `feat(09-02)` adds `src/b.rs`
-- `cut-pr-branch.sh` exited 0 with `Included: 1`, `Excluded: 2`, `Audit passed`, `Fidelity: 1 path(s) differ … all from replayed commits` and `Clean PR Branch Ready`. `git diff --name-status origin/develop feature/phase-9-pr` showed only `A src/b.rs`, so `src/a.rs` was lost.
-- **Control:** with the untracked file moved aside, the same run produced `Included: 2` and both `src/a.rs` and `src/b.rs`.
-
-**Fix:** Never treat a failed pick as an empty one. Refuse untracked files up front:
-
-```bash
-# after line 131
-if [ -n "$(git ls-files --others --exclude-standard)" ]; then
-    echo "error: untracked files present; they can block a replayed commit. Move them aside first." >&2; exit 1
-fi
-# line 220
-if ! git cherry-pick "$HASH" --no-commit >/dev/null 2>"$WORK/err"; then
-    if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
-        echo "error: cherry-pick of $HASH failed without a conflict:" >&2; cat "$WORK/err" >&2
-        git reset --hard HEAD --quiet; git checkout "$ORIG_BRANCH" --quiet; exit 1
-    fi
-fi
-```
-
-Also make the fidelity check cover every commit that touched a non-forbidden path, not just the included ones. Any such commit that was "excluded" as empty should have its paths compared against `$ORIG_BRANCH`.
-
 ## Warnings
 
-### WR-01: `check.sh test` accepts several selectors, which reintroduces the documented false green
+### WR-01: `setup-repo.sh policy` aborts part-way with exit 5 when a policy key already has several local values, and `check` then points at a fix that cannot succeed
 
-**File:** `scripts/check.sh:19-25`, `:73-98`, `:134`; `CONTRIBUTING.md:81-86`; `CLAUDE.md:28-30`
+**File:** `scripts/setup-repo.sh:195-202` (also `:39`, `:77`, `:172`)
 
-**Issue:** The docs warn that `-E 'test(=a) | test(=b)'` passes when one name is wrong, and say to run one test per command. The allowlist, however, accepts any number of `-E` flags and positional name filters (usage line 25 even advertises `...`). nextest ORs them together, so the same false green comes back through a form the docs do not mention. A positional name filter is also a *substring* match, so `--no-tests=fail` is satisfied by any partial match.
+**Issue:** Line 201 runs `git config --local "$key" "$value"`. When the key already has two or more values in `.git/config`, git refuses with "cannot overwrite multiple values with a single value" and exits 5. That can come from an earlier `--add`, a hand edit, or a tool that appends. Under `set -e` the script stops there. The damage:
+- **Wrong exit code.** The header (line 39) promises exit 1 on any failure; this exits 5.
+- **Partial writes.** It has already removed the legacy include (line 196) and written every key before the failing one. The comment at line 77 ("Every refusal below happens before any config is written") holds for the script's own refusals, but not for this failure.
+- **The advice loops.** `check` then reports drift and says "Run scripts/setup-repo.sh policy to apply it" (line 172). That fails identically on every run, so following the advice gets nowhere.
 
-Reproduced in a `git archive` copy:
-- `check.sh test -E 'test(=version_flag_prints_package_version)' -E 'test(=no_such_xyz)'` ran 1 test, printed `check.sh: test OK` and exited 0.
-- `check.sh test version_flag_prints_package_version no_such_xyz` exited 0 the same way.
-- **Control:** `check.sh test -E 'test(=no_such_xyz)'` alone exited 4.
+Reproduced in a scratch repo with `GIT_CONFIG_GLOBAL=/dev/null`: local config held `commit.gpgsign=true`, `commit.gpgsign=false` and `include.path=../.gitconfig`.
+- `setup-repo.sh policy` printed `removed include.path ../.gitconfig`, then git's "cannot overwrite multiple values" error, and exited **5**.
+- Local config afterwards: the include was gone, `gpg.format=ssh` had been written, both `commit.gpgsign` values remained, and the other 8 keys were unset.
+- `check` exited 1 listing 9 drifted keys and told the user to run `policy`.
+- **Control:** after `git config --local --unset-all commit.gpgsign`, `policy` exited 0 and copied all 10 keys.
 
-**Fix:** In the argument loop, count selectors and refuse a second one:
-
-```bash
-selectors=0
-# in each accepted branch: selectors=$((selectors + 1))
-if [ "$selectors" -gt 1 ]; then
-    echo "error: check.sh test takes at most one selector; a second one hides a selector that matches nothing" >&2; exit 2
-fi
-```
-
-Alternatively, document the `-E a -E b` and multi-name forms beside the `|` trap. Add `tests/gate.rs` cases for both forms.
-
-### WR-02: The parity check passes a job that runs in an unpinned image, and two of its refusal branches have no tests
-
-**File:** `scripts/assert-image-parity.sh:169-171`, `:135`, `:59-62`, `:67-70`; `tests/image_parity.rs`
-
-**Issue:** Lines 169-171 accept an `image:` line at *any* depth below `container:`, and the last match wins. The comment at lines 91-97 says only `container.image` decides where steps run. A nested key under a sub-map of `container:` therefore overrides the real image. Reproduced with a fixture tree using the real script:
-
-```yaml
-    container:
-      image: evil/image:9.9.9-1-trixie
-      env:
-        image: mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie
-```
-
-That printed `image parity OK: … (1 job container image(s))` and exited 0. **Control:** renaming the nested key to `other:` reported the mismatch with `job 'test': evil/image:9.9.9-1-trixie` and exited 1. The trigger is contrived, since an env var would have to be named `image`, but a guard that passes on a job running elsewhere is the failure T-01-15 claims to rule out.
-
-Related: line 135 only recognises a bare `jobs:`. A workflow file whose jobs block it fails to read, for example quoted `"jobs":`, adds zero jobs and is never refused per file. Only the global `total_images -eq 0` catches it, and the other workflow files' images satisfy that.
-
-Test gaps in `tests/image_parity.rs`, where deleting the relevant line fails no test:
-- the non-exact-tag refusal (lines 59-62, e.g. `FROM …:latest`)
-- the "no workflow files" refusal (67-70)
-- the reusable-workflow `uses:` job refusal
-
-**Fix:** Read `image:` only at the first indent below `container:`:
+**Fix:** Make the write converge regardless of what is already there. Add a test that seeds a duplicate local value and expects exit 0, then `check` exit 0.
 
 ```bash
-elif [ "$container_indent" -ge 0 ] && [ "$indent" -gt "$container_indent" ]; then
-    [ "$container_child_indent" -lt 0 ] && container_child_indent="$indent"
-    if [ "$indent" -eq "$container_child_indent" ] && [[ $line =~ ^[[:space:]]*image:(.*)$ ]]; then
-        job_image="$(image_value "${BASH_REMATCH[1]}")"
-    fi
-fi
-```
-
-Reset `container_child_indent=-1` wherever `container_indent` is reset. Refuse any workflow file from which zero jobs were parsed. Add fixture tests for the nested-image case, `FROM …:latest`, an empty workflows directory and a `uses:` job.
-
-### WR-03: `check-in-container.sh` gates the repo under the current directory, not its own repo
-
-**File:** `scripts/check-in-container.sh:29-30`
-
-**Issue:** `REPO_ROOT="$(git rev-parse --show-toplevel)"` uses the caller's working directory. Every other gate script finds its repo from its own location (`check.sh:15`, `assert-image-parity.sh:32`, `setup-repo.sh:28`).
-
-In this repository's layout the linked worktrees live *inside* the main checkout (`.worktrees/phase-1`). Running `.worktrees/phase-1/scripts/check-in-container.sh` from the main checkout therefore sets `REPO_ROOT` to the main checkout. The script then mounts the main checkout and runs *its* `scripts/check.sh`. The phase-1 changes are never compiled, yet the result is green (or red) under the worktree's script name.
-
-Run from inside an unrelated repo, it gates that repo with whatever that repo's `scripts/check.sh` is. Not executed here, because Docker is out of scope. It follows directly from lines 29-30 and 134-143.
-
-**Fix:**
-
-```bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-```
-
-### WR-04: The PR cut force-resets any branch it is given, including `develop`
-
-**File:** `scripts/workspace/cut-pr-branch.sh:97-113`, `:190`
-
-**Issue:** `git branch -f "$PR_BRANCH" "$BASE_REF"` runs without checking whether `PR_BRANCH` already exists, holds commits that are not replayed, or is a shared branch. Two cases:
-- **The usage invites a mix-up:** `[TARGET_PR_BRANCH] [BASE_BRANCH]`. Running `cut-pr-branch.sh develop` (or `main`) resets local `develop` to `origin/develop`, which drops unpushed local commits from the branch; only the reflog keeps them. The script then commits the phase onto `develop` and prints `git push -u origin develop` as the next step. That breaks design constraint 2 ("never write shared branches").
-- **Re-cutting after review:** fixups made directly on `feature/phase-N-pr` are discarded without a word.
-
-Also, `git branch -f … origin/develop` sets the PR branch's upstream to `origin/develop` (the run printed "set up to track 'origin/develop'"). Under `push.default=upstream`, a bare `git push` would go to `develop`.
-
-Reproduced in a scratch repo: `develop` had an unpushed commit (`LOCAL`). `cut-pr-branch.sh develop` exited 0 with `Clean PR Branch Ready: develop`. Afterwards `develop` held only `base`, `feat(09-01)` and `feat(09-02)`, and `LOCAL` was gone from the branch.
-
-**Fix:** Before line 190:
-
-```bash
-case "$PR_BRANCH" in main|develop|master|workspace/*|personal/*|"$BASE_BRANCH")
-    echo "error: refusing to use '$PR_BRANCH' as the PR branch" >&2; exit 1;; esac
-if git show-ref --verify --quiet "refs/heads/$PR_BRANCH" &&
-   [ -n "$(git rev-list "$BASE_REF..$PR_BRANCH" --not "$CURRENT_BRANCH")" ]; then
-    echo "error: '$PR_BRANCH' has commits not on $CURRENT_BRANCH; delete it or pass a new name" >&2; exit 1
-fi
-git branch -f --no-track "$PR_BRANCH" "$BASE_REF"
+for i in "${!policy_keys[@]}"; do
+    git config --local --replace-all "${policy_keys[$i]}" "${policy_values[$i]}"
+done
 ```
 
 ## Info
 
-### IN-01: The PR cut's "next steps" and usage text are stale
+### IN-01: The IN-01 fix kept a usage example that names the wrong branch
 
-**File:** `scripts/workspace/cut-pr-branch.sh:6,25-28,320`
+**File:** `scripts/workspace/cut-pr-branch.sh:31-32` (logic at `:112-117`)
 
-**Issue:** Line 320 tells the user to test the cut branch with `./tests/sandbox.sh`. That is the frozen Python suite, which does not exercise any of the Rust gate (CONTRIBUTING.md:5-7). The usage examples also name `./scripts/cut-pr-branch.sh`, but the script lives at `scripts/workspace/cut-pr-branch.sh`.
+**Issue:** The example says that on `workspace/phase-45` the script "Creates feature/phase-45". The slug logic strips `workspace/`, then the shortest `*-` prefix, so `phase-45` becomes `45` and the branch is `feature/45`. This was confirmed by evaluating the script's own expansions in bash. The IN-01 fix rewrote this exact line (path only) without correcting it.
 
-**Fix:** Make line 320 read `git checkout $PR_BRANCH && scripts/check.sh all`, and correct the paths in lines 6 and 25-28.
+**Fix:** Change the example to `# Creates feature/45 off origin/develop`, or stop stripping the handle when the remainder starts with `phase-`.
 
-### IN-02: `wsx --version` panics with exit 101 when it cannot write to stdout
+### IN-02: `--force` re-cut keeps an upstream the branch already had
 
-**File:** `src/main.rs:17`
+**File:** `scripts/workspace/cut-pr-branch.sh:212-214`
 
-**Issue:** `println!` panics on a write error. `wsx --version >/dev/full` printed `failed printing to stdout: No space left on device` as a panic and exited 101, a code outside the documented 0/2 contract (lines 5-6). With stdout closed (`>&-`) it exited 0 and printed nothing.
+**Issue:** `git branch -f --no-track` does not remove existing tracking config. A PR branch cut by the pre-fix script tracked the base (`origin/develop`). After `--force`, it still tracks the base, so the `push.default=upstream` case that the comment at lines 212-213 describes remains for such branches.
 
-**Fix:** Use `writeln!(std::io::stdout().lock(), …)` and map an error to an `ExitCode` defined in the contract (or to 1). Add a `cli.rs` case that sends stdout to `/dev/full`.
+Reproduced: a branch created with `--track` against `develop` still reported `develop` as its upstream after `git branch -f --no-track pr develop`. Control: a freshly created branch had no upstream.
 
-### IN-03: `phase-worktree.sh` puts the phase number into a regex unescaped
+The impact is narrow. This repo's `feature/phase-1-pr` tracks `origin/feature/phase-1-pr` (set by `push -u`), and `push.default` is unset here.
 
-**File:** `scripts/workspace/phase-worktree.sh:33,45,51`
+**Fix:** Inside the `--force` path, after line 214, drop the upstream only when it is the base:
 
-**Issue:** Line 33 allows `.` in `PHASE`, and lines 45 and 51 use `PHASE` inside an ERE, where `.` matches any character. `1.1` would therefore satisfy the existence check against `### Phase 101:`. That cannot happen with today's 15 phases; it is speculative and was not reproduced.
+```bash
+if [ "$(git rev-parse --abbrev-ref "$PR_BRANCH@{upstream}" 2>/dev/null)" = "$BASE_REF" ]; then
+    git branch --unset-upstream "$PR_BRANCH"
+fi
+```
 
-**Fix:** Use `grep -qF "### Phase ${PHASE}:"` and anchor with `awk`, or escape the dots with `${PHASE//./\\.}`.
+### IN-03: An exported `CDPATH` redirects every script's repo-root resolution (pre-existing; WR-03's guarantee depends on it)
 
-### IN-04: `tests/gate.rs` tests only refusals, never an accepted form
+**File:** `scripts/check.sh:15`, `scripts/setup-repo.sh:42`, `scripts/assert-image-parity.sh:33`, `scripts/check-in-container.sh:32`
 
-**File:** `tests/gate.rs:38-63`
+**Issue:** When a script is invoked by a relative path, the root `cd` targets `scripts/..`. Bash looks that path up in `CDPATH` before the current directory. If an exported `CDPATH` holds a directory that has a `scripts/` subdirectory, the gate moves to that other tree and gates it.
 
-**Issue:** The allowlist added in dfa6c20 accepts `--filterset=<expr>` and positional name filters, but no test runs either form through check.sh. Only `-E <expr>` is exercised, indirectly, by `gate_controls.rs::no_match_filter_fails_even_when_env_allows_no_tests`. A regression that refused `--filterset=` or name filters would go unnoticed.
+Reproduced with bash: with `CDPATH=<other>` exported, `cd "$(dirname scripts/check.sh)/.."` landed in `<other>`. Control: without `CDPATH` it landed in the invoking tree.
 
-**Fix:** Add one accepted case per form, with a no-match filter, asserting exit 4 and nextest's "no tests to run" (not usage exit 2). That fits next to the existing nested-nextest control.
+In `check-in-container.sh`, the `$(cd … && pwd)` capture also picks up the path that `cd` prints. `SCRIPT_DIR` becomes two lines and `git -C` fails, so that script fails loudly rather than gating the wrong tree.
+
+The trigger depends on the environment: `CDPATH` is not exported in this environment, so it was not observed in real use. The `cd` lines in `check.sh`, `setup-repo.sh` and `assert-image-parity.sh` predate this work; the `check-in-container.sh` line is the WR-03 fix's new code.
+
+**Fix:** Clear `CDPATH` for the `cd` and silence it, or start from an absolute path:
+
+```bash
+cd -P -- "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
+```
+
+### IN-04: Several `setup-repo.sh` refusal branches have no test; one is only proven where gitleaks is absent
+
+**File:** `tests/setup_repo.rs` (branches at `scripts/setup-repo.sh:91-94,96-99,111-114,121-126,131-134`)
+
+**Issue:** `rg` over `tests/` finds none of these messages: "more than once", "has no value", "sets no keys", "not found in", "gitleaks is required" and "older than". The duplicate-key, bare-boolean, empty-policy, missing-file, missing-gitleaks and old-git branches can each be deleted without failing a test.
+
+The bare-boolean refusal matters. Without it, `[commit] gpgsign` (no `=`) would set `commit.gpgsign` to the literal string `commit.gpgsign`, because the value expansion at line 116 returns the whole entry.
+
+Separately, "policy does not need gitleaks" is implied by the `policy` tests, which use no stub. But `hermetic()` keeps the inherited `PATH`, and this host has gitleaks at `/home/linuxbrew/.linuxbrew/bin/gitleaks`. A regression that dropped `[ "$mode" = all ] &&` at line 91 would therefore pass here and fail only in an environment without gitleaks, presumably CI. That was not verified.
+
+**Fix:** Add one fixture per refusal, asserting exit 1, the message and an unchanged `local_config()`. Add a `policy` run whose `PATH` is the stub dir plus a minimal tool dir without gitleaks.
+
+### IN-05: `check` cannot see a key that was dropped from `.gitconfig`, and it prints unset and empty values alike
+
+**File:** `scripts/setup-repo.sh:154-178`
+
+**Issue:** `check` only iterates over the keys the current `.gitconfig` sets. A key removed from the policy, or renamed (for example a `gitflow.prefix.*` change), stays in every clone's local config forever, and `check` still says "matches". Drift is also shown as `local ''` whether the key is unset or set to an empty string. This is a limit of the design, not a false green on any key the policy sets.
+
+**Fix:** Document the limit beside the Undo block, or have `check` also list local keys that match `POLICY_KEYS` but are absent from `.gitconfig`. Use `--get` exit status 1 to print `unset`.
+
+### IN-06: The PR cut counts merge commits as "planning-only" and drops any content they carry (pre-existing, same class as CR-03)
+
+**File:** `scripts/workspace/cut-pr-branch.sh:205,233-240` (phase mode: `:182` `--no-merges`)
+
+**Issue:** Without `-m`, `-c` or `--cc`, `git diff-tree --no-commit-id --name-only -r <merge>` prints nothing. So in non-phase mode a merge commit gets an empty `TOUCHED_FILES` and is counted under "Excluded: planning/environment-only". Any content introduced only by the merge never reaches the PR branch: a conflict resolution, or an "evil merge" fix.
+
+Reproduced: on a merge commit with a hand-resolved conflict, `diff-tree` printed `[]`. Control: on a normal commit touching `f`, it printed `[f]`.
+
+The fidelity block (`:333-344`) reports such paths only as a `warning:` line, and the run still ends with "Clean PR Branch Ready". No end-to-end cut over a merge was run. Phase mode skips merges by design.
+
+**Fix:** In non-phase mode, refuse merge commits with content (`git rev-list --min-parents=2 "$FORK_POINT..$CURRENT_BRANCH"` that is non-empty, plus a `git diff-tree --cc` check). Or turn the fidelity `DIFFERING` warning into a failure for paths that no excluded commit explains.
+
+### IN-07: Gate accepted forms are still untested, and a positional name is still a substring match (prior IN-04, carried)
+
+**File:** `tests/gate.rs:38-90`, `scripts/check.sh:91-106`
+
+**Issue:** Only `-E <expr>` is exercised as an accepted form (by `gate_controls.rs`'s nested-nextest control). A regression in the new selector counting that refused a single `--filterset=<expr>` or a single positional name would go unnoticed. The positional form is also still a substring match: `check.sh test version` passes when any test name contains `version`, even if the intended test was deleted or renamed. The fix report flagged this as outside WR-01's scope.
+
+**Fix:** Add one accepted case per form with a no-match filter, expecting exit 4 and nextest's "no tests to run" rather than usage exit 2. Then either refuse positional names, steering users to `-E 'test(=name)'`, or document the substring semantics beside the `|` trap in CLAUDE.md and CONTRIBUTING.md.
 
 ---
 
-_Reviewed: 2026-10-23T20:23:53Z_
+_Reviewed: 2026-10-25T10:51:19Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
