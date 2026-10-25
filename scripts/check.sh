@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # Repo root from the script's own location, so the gate never depends on git.
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
 usage() {
     cat >&2 <<'EOF'
