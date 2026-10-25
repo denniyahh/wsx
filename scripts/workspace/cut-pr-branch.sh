@@ -29,7 +29,7 @@
 #   On branch feature/phase-48:
 #     scripts/workspace/cut-pr-branch.sh                # Creates feature/phase-48-pr off origin/develop
 #   On branch workspace/phase-45:
-#     scripts/workspace/cut-pr-branch.sh                # Creates feature/phase-45 off origin/develop
+#     scripts/workspace/cut-pr-branch.sh                # Creates feature/45 off origin/develop (the part after the first "-")
 #     scripts/workspace/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
 set -euo pipefail
 
