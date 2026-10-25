@@ -292,3 +292,42 @@ fn unknown_mode_is_a_usage_error() {
     assert!(stderr.contains("usage:"), "stderr: {stderr:?}");
     assert_exit(&fixture.setup(&["policy", "extra"]), USAGE_EXIT, "two args");
 }
+
+#[test]
+fn policy_replaces_a_key_that_already_has_several_local_values() {
+    let fixture = Fixture::new("multi-value", &Fixture::tracked_policy());
+    fixture.git_ok(&["config", "--local", "--add", "commit.gpgsign", "false"]);
+    fixture.git_ok(&["config", "--local", "--add", "commit.gpgsign", "false"]);
+
+    assert_exit(&fixture.setup(&["policy"]), 0, "setup-repo.sh policy");
+
+    let values = fixture.git_ok(&["config", "--local", "--get-all", "commit.gpgsign"]);
+    assert_eq!(
+        values, "true\n",
+        "the policy value must replace every local value"
+    );
+    assert_exit(&fixture.setup(&["check"]), 0, "check after policy");
+}
+
+#[test]
+fn an_exported_cdpath_does_not_move_the_script_to_another_tree() {
+    // A decoy with its own scripts/ directory: with CDPATH set, a bare
+    // `cd scripts/..` resolves against it instead of the working directory.
+    let fixture = Fixture::new("cdpath", &Fixture::tracked_policy());
+    let decoy = fixture.dir.join("decoy");
+    fs::create_dir_all(decoy.join("scripts")).expect("create decoy scripts dir");
+
+    let output = hermetic("bash", &fixture.dir, &fixture.dir.join("bin"))
+        .env("CDPATH", &decoy)
+        .arg("scripts/setup-repo.sh")
+        .arg("policy")
+        .output()
+        .expect("spawn setup-repo.sh");
+    assert_exit(&output, 0, "setup-repo.sh policy with CDPATH");
+
+    let local = fixture.local_config();
+    assert!(
+        local.contains(&"commit.gpgsign=true".to_owned()),
+        "{local:#?}"
+    );
+}
