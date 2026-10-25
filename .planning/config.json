@@ -11,7 +11,7 @@
   "perplexity": false,
   "jina": false,
   "git": {
-    "branching_strategy": "phase",
+    "branching_strategy": "none",
     "create_tag": false,
     "phase_branch_template": "feature/phase-{phase}",
     "milestone_branch_template": "gsd/{milestone}-{slug}",
@@ -53,7 +53,8 @@
     "use_worktrees": false,
     "tdd_mode": true,
     "ui_review": true,
-    "windows_enforce": true
+    "windows_enforce": true,
+    "_auto_chain_active": false
   },
   "ship": {
     "pr_body_sections": []

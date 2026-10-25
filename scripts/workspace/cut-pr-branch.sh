@@ -3,7 +3,12 @@
 # by filtering out all personal/agent planning artifacts (.planning, .agents, etc.).
 #
 # Usage:
-#   ./scripts/cut-pr-branch.sh [--phase N] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
+#   scripts/workspace/cut-pr-branch.sh [--phase N] [--force] [TARGET_PR_BRANCH] [BASE_BRANCH] [WORKSPACE_BASE]
+#
+# The PR branch is reset to BASE_BRANCH before the replay, so it is never a
+# shared or workspace branch (main, master, develop, BASE_BRANCH, workspace/*,
+# personal/*), and an existing one is re-cut only with --force, which discards
+# whatever it holds.
 #
 # Phase mode (--phase N, or automatic on a feature/phase-N branch) replays only
 # the commits in BASE_BRANCH..HEAD whose conventional-commit scope names phase N
@@ -22,13 +27,33 @@
 #
 # Examples:
 #   On branch feature/phase-48:
-#     ./scripts/cut-pr-branch.sh                # Creates feature/phase-48-pr off origin/develop
+#     scripts/workspace/cut-pr-branch.sh                # Creates feature/phase-48-pr off origin/develop
 #   On branch workspace/phase-45:
-#     ./scripts/cut-pr-branch.sh                # Creates feature/phase-45 off origin/develop
-#     ./scripts/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
+#     scripts/workspace/cut-pr-branch.sh                # Creates feature/45 off origin/develop (the part after the first "-")
+#     scripts/workspace/cut-pr-branch.sh feature/fix-ui # Explicit PR branch name
 set -euo pipefail
 
+# Raw path names from every git listing below. Under git's default
+# core.quotePath a non-ASCII name prints quoted and octal-escaped
+# (".planning/r\303\251sum\303\251.md"), which the anchored forbidden-path
+# regex never matches, so such a file passed both the strip and the audit.
+git() { command git -c core.quotePath=false "$@"; }
+
+# Names git still quotes (a `"`, `\` or control character, such as a newline)
+# cannot be matched line by line either; stop rather than classify them.
+# $1 = newline-separated git name listing, $2 = where it came from.
+refuse_quoted_paths() {
+    local quoted
+    quoted="$(printf '%s\n' "$1" | grep '^"' || true)"
+    if [ -n "$quoted" ]; then
+        echo "error: $2 touches path(s) this script cannot classify safely; cut this branch by hand:" >&2
+        printf '%s\n' "$quoted" | sed 's/^/  /' >&2
+        exit 1
+    fi
+}
+
 PHASE="${PHASE:-}"
+FORCE=0
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +64,10 @@ while [ $# -gt 0 ]; do
             ;;
         --phase=*)
             PHASE="${1#--phase=}"
+            shift
+            ;;
+        --force)
+            FORCE=1
             shift
             ;;
         *)
@@ -90,6 +119,18 @@ fi
 
 if [ "$PR_BRANCH" = "$CURRENT_BRANCH" ]; then
     echo "error: PR branch name '$PR_BRANCH' matches current branch. Specify a distinct branch name." >&2
+    exit 1
+fi
+# The cut resets PR_BRANCH to the base: on a shared or workspace branch that
+# drops its unpushed commits and then commits the phase onto it.
+case "$PR_BRANCH" in
+    main | master | develop | "$BASE_BRANCH" | workspace/* | personal/*)
+        echo "error: refusing to use '$PR_BRANCH' as the PR branch: the cut resets it to $BASE_REF. Pass a PR branch name." >&2
+        exit 1
+        ;;
+esac
+if git show-ref --verify --quiet "refs/heads/$PR_BRANCH" && [ "$FORCE" -ne 1 ]; then
+    echo "error: '$PR_BRANCH' already exists; pass --force to re-cut it, which discards its current commits." >&2
     exit 1
 fi
 
@@ -168,7 +209,9 @@ echo "==> Target clean PR branch: $PR_BRANCH (rooted at $BASE_REF)"
 
 # Create target clean branch off BASE_REF
 echo "==> Initializing clean branch '$PR_BRANCH' from $BASE_REF..."
-git branch -f "$PR_BRANCH" "$BASE_REF"
+# --no-track: an upstream of $BASE_REF would send a bare `git push` to the
+# base under push.default=upstream.
+git branch -f --no-track "$PR_BRANCH" "$BASE_REF"
 
 ORIG_BRANCH="$CURRENT_BRANCH"
 cleanup() {
@@ -188,6 +231,7 @@ INCLUDED_HASHES=()
 
 for HASH in "${COMMIT_LIST[@]}"; do
     TOUCHED_FILES=$(git diff-tree --no-commit-id --name-only -r "$HASH")
+    refuse_quoted_paths "$TOUCHED_FILES" "commit $HASH"
     NON_FORBIDDEN=$(echo "$TOUCHED_FILES" | grep -v -E "$FORBIDDEN_REGEX" | grep -v '^$' || true)
 
     if [ -z "$NON_FORBIDDEN" ]; then
@@ -196,8 +240,19 @@ for HASH in "${COMMIT_LIST[@]}"; do
         continue
     fi
 
-    # Commit contains code changes; cherry-pick without auto-commit
-    git cherry-pick "$HASH" --no-commit >/dev/null 2>&1 || true
+    # Commit contains code changes; cherry-pick without auto-commit. A
+    # conflict is handled below; any other failure (for example an untracked
+    # file the pick would overwrite) stages nothing, and treating that as an
+    # empty commit silently dropped the commit's code from the PR branch.
+    if ! PICK_ERR="$(git cherry-pick "$HASH" --no-commit 2>&1 >/dev/null)"; then
+        if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "error: cherry-pick of commit $HASH failed without a conflict; the cut is aborted:" >&2
+            printf '%s\n' "$PICK_ERR" | sed 's/^/  /' >&2
+            git cherry-pick --abort >/dev/null 2>&1 || git reset --hard HEAD --quiet
+            git checkout "$ORIG_BRANCH" --quiet
+            exit 1
+        fi
+    fi
 
     # Remove forbidden paths from the index by the same prefix rule the audit
     # below uses. (A pathspec list is not a prefix match, and one pathspec that
@@ -251,7 +306,9 @@ if [ "$INCLUDED_COUNT" -eq 0 ]; then
 fi
 
 echo "==> Verifying zero forbidden files on $PR_BRANCH (pre-push policy audit)..."
-LEAKED="$(git log --name-only --format='' "$BASE_REF..$PR_BRANCH" | grep -E "$FORBIDDEN_REGEX" || true)"
+PR_PATHS="$(git log --name-only --format='' "$BASE_REF..$PR_BRANCH")"
+refuse_quoted_paths "$PR_PATHS" "'$PR_BRANCH'"
+LEAKED="$(printf '%s\n' "$PR_PATHS" | grep -E "$FORBIDDEN_REGEX" || true)"
 if [ -n "$LEAKED" ]; then
     echo "error: forbidden files detected on clean PR branch '$PR_BRANCH':" >&2
     echo "$LEAKED" | head -10 | sed 's/^/  /' >&2
@@ -295,7 +352,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Clean PR Branch Ready: $PR_BRANCH"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Next steps:"
-echo "  1. Test:      git checkout $PR_BRANCH && ./tests/sandbox.sh"
+echo "  1. Test:      git checkout $PR_BRANCH && scripts/check.sh all"
 echo "  2. Push:      git push -u origin $PR_BRANCH"
 echo "  3. Open PR:   gh pr create --base $BASE_BRANCH --head $PR_BRANCH"
 echo ""

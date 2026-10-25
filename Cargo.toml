@@ -1,0 +1,9 @@
+[package]
+name = "wsx"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Keeps personal files off shared branches while moving work between a workspace branch and its worktrees"
+
+[dependencies]

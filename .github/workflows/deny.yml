@@ -1,0 +1,55 @@
+name: Dependency audit
+
+# ADVISORY. That means this job is not listed in any ruleset, so it never
+# blocks a merge. It does NOT mean green on failure: the job goes red on any
+# finding so the finding is seen. Never add `continue-on-error` or an exit
+# swallowing trick here, because a job that is green on findings hides them.
+#
+# `cargo deny` reads the live RustSec advisory database, so a newly published
+# advisory can turn this red on a PR that changed nothing: worth seeing, not
+# worth wedging a merge on. That is why it is not one of the required
+# contexts (`Test`, `Clippy`, `Format` in ci.yml).
+#
+# The weekly schedule runs only from `main`, the default branch, so it starts
+# once this file is released there.
+#
+# cargo-deny is not in the pinned image; scripts/install-tools.sh installs the
+# pinned, sha256-checked version first. The image is the same pin as ci.yml,
+# and scripts/assert-image-parity.sh checks this file too.
+
+on:
+  push:
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '23 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Container `run:` steps default to dash `sh -e`; see the same block in ci.yml.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deny:
+    name: cargo deny (advisory)
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # See the Test job in ci.yml: the workspace is owned by the runner user.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install pinned tools
+        run: scripts/install-tools.sh install cargo-deny
+      - run: scripts/check.sh deps
