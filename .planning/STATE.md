@@ -88,7 +88,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- [2026-10-25] [tooling] Re-check Dependabot after first merge to main — [todo file](.planning/todos/pending/2026-10-25-re-check-dependabot-after-first-merge-to-main.md)
 
 ### Blockers/Concerns
 
