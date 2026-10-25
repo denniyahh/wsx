@@ -30,7 +30,7 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
 DOCKERFILE=.devcontainer/Dockerfile
 # An exact devcontainer tag such as rust:2.1.3-1-trixie. Never a floating one:

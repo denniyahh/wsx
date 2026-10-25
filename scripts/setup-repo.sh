@@ -39,7 +39,7 @@
 # Exit 2 on a usage error, 1 on any failure or, for `check`, any drift.
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # Must not be a hook event name: `hook.pre-commit.*` is a fatal config error.
 readonly HOOK_NAME=gitleaks-staged
@@ -197,8 +197,10 @@ if [ "$legacy_include" -eq 1 ]; then
     echo "==> removed include.path $LEGACY_INCLUDE (the policy is copied now, not read live)"
 fi
 
+# --replace-all: a key that already has several local values would otherwise
+# make git refuse (exit 5) part-way through, after earlier keys were written.
 for i in "${!policy_keys[@]}"; do
-    git config --local "${policy_keys[$i]}" "${policy_values[$i]}"
+    git config --local --replace-all "${policy_keys[$i]}" "${policy_values[$i]}"
 done
 
 # Trust git's view again: read every key back.
