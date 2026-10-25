@@ -1,9 +1,9 @@
 ---
-status: partial
+status: complete
 phase: 01-development-foundation
 source: [01-VERIFICATION.md]
 started: 2026-10-23T20:48:06Z
-updated: 2026-10-25T10:42:44.389Z
+updated: 2026-10-25T10:42:59.897Z
 ---
 
 ## Current Test
@@ -20,6 +20,7 @@ resolution: decided by orchestrator 2026-10-24 — owner approved the re-cut ("R
 ### 2. Dependabot behaviour
 expected: weekly grouped update PRs against develop once the config is on main
 result: skipped
+reason: not observable before the config reaches main; Dependabot reads its config only from the default branch
 resolution: decided by orchestrator 2026-10-23 — not observable before merge to main (Dependabot reads config only from the default branch); config verified in 01-VERIFICATION.md (SUP-02) and the alerts/automatic-fix settings read back via API. Re-check the Dependabot update log after the first release merge to main.
 
 ### 3. Who performed the outward-facing GitHub actions
