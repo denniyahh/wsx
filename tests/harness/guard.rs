@@ -399,6 +399,184 @@ fn name_prefix_is_not_personal() -> Scenario {
     ))
 }
 
+// ------------------------------------------------------ fork and no-GSD repos
+
+/// The oracle's defect behind `fork_layout`'s clean control.
+const FORK_TAIL_DEFECT: &str = "the hook's divergence-check tail hard-codes origin/develop, \
+     which a fork (develop on upstream) lacks, so a workspace push from a checkout carrying \
+     .workspace-divergence fails: base ref 'origin/develop' not found";
+
+/// The oracle's defect behind `no_gsd_repo`'s counterpart.
+const FIXED_LIST_DEFECT: &str = "the hook's personal-path list is fixed and agent-specific \
+     (it includes .planning), so it refuses .planning/x.md in a repo that never declared it \
+     personal";
+
+/// The fork layout: `develop` comes from `upstream`, the workspace branch is
+/// pushed to `origin`, and `origin` holds no `develop`.
+fn fork() -> RepoConfig {
+    RepoConfig::devflow().with_remotes("upstream", "origin")
+}
+
+/// Fixture steps: the develop checkout and `feature/pr`, made from `develop`
+/// (which tracks `upstream/develop`), whose one commit adds `src/pr.txt`.
+fn pr_branch(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    branch_from_develop(fixture, "feature/pr", &[(b"src/pr.txt", b"pr\n")])
+}
+
+/// HARN-06 fork layout, GUARD-01: the range is bounded by the remote ref's old
+/// value and `<base-remote>/<integration>`, so a new `feature/pr` adding only
+/// `src/pr.txt`, pushed to `origin` from the develop checkout, passes (exit
+/// 0). Known-positive: a branch adding `.planning/x.md`, pushed the same way,
+/// is refused (exit 1). Clean control: `workspace/dev` pushed from `work`,
+/// where `origin` already holds it, passes (exit 0): GUARD-01 skips the
+/// workspace branch. The oracle was recorded passing the subject and refusing
+/// the known-positive, as wsx does, and refusing the clean control (exit 1):
+/// its divergence-check tail runs in `work` against a hard-coded
+/// `origin/develop`. Its range bound `--remotes=origin` does not over-scan
+/// here, because `origin/workspace/dev` already contains `develop`'s commits.
+fn fork_layout() -> Scenario {
+    Scenario::new(
+        "fork_layout",
+        push(fork(), pr_branch, DEVELOP_CHECKOUT, "feature/pr").expect(verdict(0)),
+    )
+    .control(
+        Role::KnownPositive,
+        push(
+            fork(),
+            branches_from_develop,
+            DEVELOP_CHECKOUT,
+            "feature/leak",
+        )
+        .expect(verdict(1)),
+    )
+    .control(
+        Role::Clean,
+        fixed(
+            push(fork(), develop_checkout, WORK, "workspace/dev"),
+            0,
+            1,
+            FORK_TAIL_DEFECT,
+        ),
+    )
+    .harn06(CaseKind::ForkLayout)
+}
+
+/// HARN-06 no-GSD repo, IF-02: in a repo with no GSD, devflow or agent files
+/// (its `.wsx.conf` declares only `notes`), the guard run from `work` for
+/// `workspace/dev`, which `origin` already holds, passes (exit 0) with the
+/// repository untouched: GUARD-01 skips the workspace branch. Counterpart: in
+/// the same repo, `feature/leak` adding `.planning/x.md`, pushed as a new ref
+/// from the develop checkout, also passes (exit 0): `.planning` is personal
+/// only where it is declared (CONF-02), and this repo does not declare it.
+/// The known-positive and clean controls are the module's shared ones, in
+/// devflow's layout, showing the hook alive in the same run. The oracle was
+/// recorded passing the subject, as wsx does (`work` carries no
+/// `.workspace-divergence`, so its tail does not run), and refusing the
+/// counterpart (exit 1).
+fn no_gsd_repo() -> Scenario {
+    with_controls(
+        Scenario::new(
+            "no_gsd_repo",
+            push(
+                RepoConfig::no_gsd(),
+                develop_checkout,
+                WORK,
+                "workspace/dev",
+            )
+            .expect(verdict(0)),
+        )
+        .control(
+            Role::Counterpart,
+            fixed(
+                push(
+                    RepoConfig::no_gsd(),
+                    branches_from_develop,
+                    DEVELOP_CHECKOUT,
+                    "feature/leak",
+                ),
+                0,
+                1,
+                FIXED_LIST_DEFECT,
+            ),
+        ),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
+/// Why the custom-personal-path cases have no oracle side.
+const HARD_CODED_PATHS: &str = "devflow's pre-push hook hard-codes its own personal paths, so a \
+     path declared in .wsx.conf has no oracle counterpart";
+
+/// `case`, which the oracle cannot run, expecting exit `exit`.
+fn rust_only(case: Case, exit: i32) -> Case {
+    case.expect(verdict(exit))
+        .oracle(OracleSide::NotImplemented {
+            why: HARD_CODED_PATHS,
+        })
+}
+
+/// Fixture steps: the develop checkout and `feature/notes`, made from
+/// `develop`, whose one commit adds `notes/x.md`.
+fn notes_branch(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    branch_from_develop(fixture, "feature/notes", &[(b"notes/x.md", b"x\n")])
+}
+
+/// Fixture steps: the develop checkout and `feature/conf`, made from
+/// `develop`, whose one commit adds `.wsx.conf`.
+fn wsx_conf_branch(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    branch_from_develop(fixture, "feature/conf", &[(b".wsx.conf", b"only notes\n")])
+}
+
+/// HARN-06 no-GSD repo with a custom personal path, Rust-only: in a repo with
+/// no GSD, devflow or agent files, whose `.wsx.conf` declares `notes`, wsx
+/// refuses a new `feature/notes` adding `notes/x.md` (exit 1): GUARD-01 reads
+/// the manifest's personal paths (CONF-02, IF-02). Known-positive: a branch
+/// adding `.wsx.conf`, a built-in personal path (CONF-02), is refused (exit
+/// 1). Clean control: `feature/clean`, touching only `src/clean.txt`, passes
+/// (exit 0).
+fn no_gsd_custom_personal_path() -> Scenario {
+    Scenario::new(
+        "no_gsd_custom_personal_path",
+        rust_only(
+            push(
+                RepoConfig::no_gsd(),
+                notes_branch,
+                DEVELOP_CHECKOUT,
+                "feature/notes",
+            ),
+            1,
+        ),
+    )
+    .control(
+        Role::KnownPositive,
+        rust_only(
+            push(
+                RepoConfig::no_gsd(),
+                wsx_conf_branch,
+                DEVELOP_CHECKOUT,
+                "feature/conf",
+            ),
+            1,
+        ),
+    )
+    .control(
+        Role::Clean,
+        rust_only(
+            push(
+                RepoConfig::no_gsd(),
+                branches_from_develop,
+                DEVELOP_CHECKOUT,
+                "feature/clean",
+            ),
+            0,
+        ),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 6";
     quoted_non_ascii_name: oracle, rust = "Rust side not enabled until phase 6";
@@ -408,4 +586,7 @@ scenarios! {
     new_branch_without_own_commits: oracle, rust = "Rust side not enabled until phase 6";
     merge_resolution_adds_personal_file: oracle, rust = "Rust side not enabled until phase 6";
     name_prefix_is_not_personal: oracle, rust = "Rust side not enabled until phase 6";
+    fork_layout: oracle, rust = "Rust side not enabled until phase 6";
+    no_gsd_repo: oracle, rust = "Rust side not enabled until phase 6";
+    no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 6";
 }
