@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-08-PLAN.md
-last_updated: "2026-10-26T18:37:18.932Z"
+stopped_at: Completed 02-09-PLAN.md
+last_updated: "2026-10-26T18:48:40.369Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: ba5d015434300ca1599fa60bf096a17d89316063
+state_head: 594198769a2497ea37ad64a9433be2864f0e0a17
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 9 of 15
+Plan: 10 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -70,6 +70,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P06 | 6 min | 2 tasks | 4 files |
 | Phase 02 P07 | 37 min | 2 tasks | 6 files |
 | Phase 02 P08 | 8min | 2 tasks | 3 files |
+| Phase 02 P09 | 9 min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -105,6 +106,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-08: names_are_observed_byte_exact declares i18n.commitEncoding=ISO-8859-1, because git itself re-encodes a non-UTF-8 message byte under the default UTF-8 encoding
 - [Phase 02]: 02-08: comparator needed no fix; all 25 single-field mutations of sync::self_test are reported as their own field
 - [Phase 02]: 02-08: signing is declared with RepoConfig::with_signing(); all three signing cases are Parity by observation
+- [Phase 02]: 02-09: the planted host config sets gpg.program to a recording script that fails, because a real gpg started a keyboxd daemon under the scenario HOME that outlived the test
+- [Phase 02]: 02-09: the planted-host proof's env-value check is the only check that catches a leaked HOME; the behavioural checks (marker, decoy, outcomes) do not in the sync, cut and guard self-tests
 
 ### Pending Todos
 
@@ -126,6 +129,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T18:37:18.814Z
-Stopped at: Completed 02-08-PLAN.md
+Last session: 2026-10-26T18:48:33.893Z
+Stopped at: Completed 02-09-PLAN.md
 Resume file: None
