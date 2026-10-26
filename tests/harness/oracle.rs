@@ -11,7 +11,7 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -144,6 +144,12 @@ pub fn run_script(
 }
 
 /// Spawns `child`, writes `stdin` to it if given, and collects its run.
+///
+/// stdin is written from its own thread while stdout and stderr are drained,
+/// so a child that fills its output pipe before reading its input cannot
+/// deadlock the run. A child that exits without reading all of its input
+/// closes the pipe; the resulting broken pipe is not an error, so its exit
+/// code and output are still reported.
 pub fn spawn_and_wait(
     mut child: std::process::Command,
     stdin: Option<&[u8]>,
@@ -152,17 +158,29 @@ pub fn spawn_and_wait(
     let fail =
         |step: &str, err: std::io::Error| AdapterError::Spawn(format!("{step} {what}: {err}"));
     let mut process = child.spawn().map_err(|err| fail("spawn", err))?;
-    if let Some(input) = stdin {
-        let mut pipe = process
-            .stdin
-            .take()
-            .ok_or_else(|| AdapterError::Spawn(format!("no stdin pipe for {what}")))?;
-        pipe.write_all(input)
-            .map_err(|err| fail("write stdin to", err))?;
-    }
+    let writer = match stdin {
+        Some(input) => {
+            let mut pipe = process
+                .stdin
+                .take()
+                .ok_or_else(|| AdapterError::Spawn(format!("no stdin pipe for {what}")))?;
+            let input = input.to_vec();
+            Some(std::thread::spawn(move || match pipe.write_all(&input) {
+                Err(err) if err.kind() != ErrorKind::BrokenPipe => Err(err),
+                _ => Ok(()),
+            }))
+        }
+        None => None,
+    };
     let output = process
         .wait_with_output()
         .map_err(|err| fail("wait for", err))?;
+    if let Some(writer) = writer {
+        writer
+            .join()
+            .map_err(|_| AdapterError::Spawn(format!("the stdin writer for {what} panicked")))?
+            .map_err(|err| fail("write stdin to", err))?;
+    }
     Ok(ActionRun {
         exit: output.status.code(),
         stdout: output.stdout,
@@ -345,4 +363,68 @@ fn run_cut(
         &with_vars(env, &vars),
         None,
     )
+}
+
+/// One MiB: more than a pipe buffer holds, so a writer blocks until the
+/// other end reads or closes.
+const MORE_THAN_A_PIPE: usize = 1 << 20;
+
+/// `bash -c <script>` in a scratch root with the hermetic environment, all
+/// three streams piped.
+fn bash_child(dirs: &ScenarioDirs, script: &str) -> std::process::Command {
+    let env = crate::env::hermetic_env(&[], dirs);
+    let mut child = command("bash", &dirs.root, &env);
+    child
+        .args(["-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    child
+}
+
+/// A child that exits without reading its input still yields its run: the
+/// exit code and both streams, not an adapter error.
+#[test]
+fn a_child_that_ignores_its_input_still_yields_its_run() {
+    let dirs = ScenarioDirs::new("oracle", "ignores_input").expect("scenario dirs");
+    let child = bash_child(&dirs, "echo out; echo err >&2; exit 3");
+    let input = vec![b'x'; MORE_THAN_A_PIPE];
+    let run = spawn_and_wait(child, Some(&input), "a child that ignores stdin")
+        .unwrap_or_else(|err| panic!("the run is reported, not lost: {err}"));
+    assert_eq!(run.exit, Some(3));
+    assert_eq!(run.stdout, b"out\n");
+    assert_eq!(run.stderr, b"err\n");
+}
+
+/// How long the run below may take; it finishes in well under a second
+/// unless it deadlocks.
+const DEADLOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A child that fills its stdout pipe before it reads its stdin finishes: the
+/// harness drains the output while it writes the input.
+#[test]
+fn a_child_that_writes_before_reading_does_not_deadlock() {
+    let dirs = ScenarioDirs::new("oracle", "writes_first").expect("scenario dirs");
+    let script = format!("head -c {MORE_THAN_A_PIPE} /dev/zero; cat >/dev/null; echo read >&2");
+    let child = bash_child(&dirs, &script);
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let input = vec![b'x'; MORE_THAN_A_PIPE];
+        let _ = send.send(spawn_and_wait(
+            child,
+            Some(&input),
+            "a child that writes first",
+        ));
+    });
+    let run = receive
+        .recv_timeout(DEADLOCK_TIMEOUT)
+        .unwrap_or_else(|_| panic!("the run deadlocked: no result within {DEADLOCK_TIMEOUT:?}"))
+        .unwrap_or_else(|err| panic!("the run is reported: {err}"));
+    assert_eq!(run.exit, Some(0), "stderr: {:?}", run.stderr);
+    assert_eq!(
+        run.stdout.len(),
+        MORE_THAN_A_PIPE,
+        "all of stdout is collected"
+    );
+    assert_eq!(run.stderr, b"read\n", "the child read all of its input");
 }
