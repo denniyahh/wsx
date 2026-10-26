@@ -170,6 +170,25 @@ pub fn spawn_and_wait(
     })
 }
 
+/// `env` plus `vars`, for one child.
+fn with_vars(env: &Env, vars: &[(&str, &str)]) -> Env {
+    let mut env = env.clone();
+    env.extend(
+        vars.iter()
+            .map(|(key, value)| ((*key).into(), (*value).into())),
+    );
+    env
+}
+
+/// Whether `text` is a phase number as the oracle scripts accept one: digits
+/// and dots only, and not empty.
+fn is_phase_number(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+}
+
 /// Runs `action` on the oracle, or says why the oracle has no counterpart.
 pub fn run(
     action: &Action,
@@ -198,10 +217,48 @@ pub fn run(
                 None,
             )
         }
-        Action::NewWorktree { .. }
-        | Action::Cut { .. }
-        | Action::Check { .. }
-        | Action::PrePush { .. } => not_implemented("mapped to its script in plan 02-07"),
+        Action::Check { checkout } => {
+            let config = &fixture.config;
+            let base_ref = format!("{}/{}", config.base_remote, config.integration);
+            run_script(
+                copy,
+                "check-workspace-divergence.sh",
+                &[OsStr::new(&base_ref)],
+                &fixture.checkout(checkout),
+                env,
+                None,
+            )
+        }
+        Action::NewWorktree {
+            checkout,
+            branch,
+            no_sync,
+        } => {
+            let Some(phase) = branch
+                .strip_prefix("feature/phase-")
+                .filter(|phase| is_phase_number(phase))
+            else {
+                return not_implemented(
+                    "phase-worktree.sh derives the branch from a phase number \
+                     (feature/phase-<N>), so a worktree for any other branch is Rust-only",
+                );
+            };
+            let mut args = vec![OsStr::new(phase)];
+            if *no_sync {
+                args.push(OsStr::new("--no-sync"));
+            }
+            run_script(
+                copy,
+                "phase-worktree.sh",
+                &args,
+                &fixture.checkout(checkout),
+                &with_vars(env, &[("WORKSPACE_BASE", &fixture.config.workspace)]),
+                None,
+            )
+        }
+        Action::Cut { .. } | Action::PrePush { .. } => {
+            not_implemented("mapped to its script in plan 02-07")
+        }
         Action::RemoveWorktree { .. } => {
             not_implemented("the oracle has no command that removes a worktree")
         }

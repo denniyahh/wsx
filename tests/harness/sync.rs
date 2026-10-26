@@ -12,13 +12,13 @@ use crate::outcome::{
 use crate::scenario::{Case, Scenario};
 
 /// A file path and its content.
-type File = (&'static [u8], &'static [u8]);
+pub type File = (&'static [u8], &'static [u8]);
 
 /// The files of fixture commit 0 on the integration branch.
-const SEED_FILES: [File; 2] = [(b"README.md", b"# Fixture\n"), (b"src/a.txt", b"a\n")];
+pub const SEED_FILES: [File; 2] = [(b"README.md", b"# Fixture\n"), (b"src/a.txt", b"a\n")];
 
 /// The files fixture commit 1 adds on the workspace branch.
-const WORKSPACE_FILES: [File; 4] = [
+pub const WORKSPACE_FILES: [File; 4] = [
     (b".planning/ROADMAP.md", b"# Roadmap\n\n### Phase 1: Example\n"),
     (b".planning/STATE.md", b"# State\n"),
     (b".workspace-divergence", b"only .wsx.conf\n"),
@@ -26,24 +26,24 @@ const WORKSPACE_FILES: [File; 4] = [
 ];
 
 /// The file fixture commit 2 adds on the remote integration branch.
-const B_FILE: File = (b"src/b.txt", b"b\n");
+pub const B_FILE: File = (b"src/b.txt", b"b\n");
 
 /// Fixture step: `origin/develop` gains commit 2, `feat: add b`.
-fn advance_develop(fixture: &mut Fixture) -> Result<(), String> {
+pub fn advance_develop(fixture: &mut Fixture) -> Result<(), String> {
     fixture.advance_remote("origin", "develop", |fixture, clone| {
         fixture.write(clone, B_FILE.0, B_FILE.1)?;
         fixture.commit(clone, b"feat: add b\n")
     })
 }
 
-fn tree(files: &[File]) -> Vec<TreeEntry> {
+pub fn tree(files: &[File]) -> Vec<TreeEntry> {
     files
         .iter()
         .map(|(path, content)| TreeEntry::file(path, content))
         .collect()
 }
 
-fn date(epoch: i64) -> String {
+pub fn date(epoch: i64) -> String {
     format!("{epoch} +0000")
 }
 
