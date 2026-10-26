@@ -14,3 +14,5 @@
   `tests/harness/*.rs`, or declare the scenario modules as plain `mod` items outside the macro
   and keep the macro for the registry only. Owner: whichever plan next
   touches `check.sh` or `main.rs` (02-15 is the phase-end rules plan).
+
+  **Resolved b3994c4 by the orchestrator:** `scripts/check.sh fmt` now also runs `rustfmt --check` on every tracked `.rs` file; WINDOWS entry 1 marked fixed.
