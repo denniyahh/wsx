@@ -358,7 +358,8 @@ fn advance_upstream_then_drop_it(fixture: &mut Fixture) -> Result<(), String> {
 /// fetched. The sync refuses with refs, commits and files unchanged. No
 /// requirement fixes the exit code of that refusal, so the expected code is
 /// the one the oracle was observed to exit with: git's own 128 from the
-/// failed fetch, passed through by `set -e`.
+/// failed fetch, passed through by `set -e`. The phase that enables the Rust
+/// side revises it under IF-01.
 fn fork_layout() -> Scenario {
     let feat_b = fixture_commit(
         b"feat: add b\n",
