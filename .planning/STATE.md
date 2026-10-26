@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-11-PLAN.md
-last_updated: "2026-10-26T19:16:40.138Z"
+stopped_at: Completed 02-12-PLAN.md
+last_updated: "2026-10-26T19:29:48.360Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 4bbf4d1f176fe88538c79deaedacff047841cd1b
+state_head: 843e68d4b17ec8158d22577df071e9613357722e
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 18
+  completed_plans: 19
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 12 of 15
+Plan: 13 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -73,6 +73,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P09 | 9 min | 2 tasks | 1 files |
 | Phase 2 P10 | 9 min | 3 tasks | 1 files |
 | Phase 02 P11 | 8 min | 2 tasks | 1 files |
+| Phase 02 P12 | 9 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,9 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-11: every cut case was classed by its first Parity run; 6 subjects fixed:, integration_merged_into_feature and all 7 counterparts Parity, all as predicted
 - [Phase 02]: 02-11: merge_resolution_adds_personal_file is fixed: only for the stray feature/topic-pr ref; the oracle refuses on an earlier replay conflict and never reaches the merge
 - [Phase 02]: 02-11: a pre-existing PR branch in a cut fixture is never left checked out in another worktree (git would refuse the oracle's branch -f and checkout)
+- [Phase 02]: 02-12: every oracle case classed by its first Parity run: 7 Parity (all 6 sync cases, the worktree re-run counterpart), 5 fixed: (the 3 worktree subjects and 2 directory-name counterparts)
+- [Phase 02]: 02-12: worktree::no_gsd_repo's oracle refusal exits 2, not RESEARCH's exit 1 (the error-path grep fails on the missing ROADMAP.md; pipefail and set -e pass 2 through); recorded as observed
+- [Phase 02]: 02-12: sync::fork_layout's counterpart (upstream removed) expects exit 128, taken from the oracle run as the plan directs; no requirement fixes that exit code, phase 7 may choose another
 
 ### Pending Todos
 
@@ -136,6 +140,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T19:16:39.944Z
-Stopped at: Completed 02-11-PLAN.md
+Last session: 2026-10-26T19:29:48.221Z
+Stopped at: Completed 02-12-PLAN.md
 Resume file: None
