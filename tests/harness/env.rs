@@ -190,3 +190,65 @@ fn scenario_dirs_carry_the_harness_prefix() {
         root.display()
     );
 }
+
+/// A child sees exactly the harness keys, in order, then the inherited
+/// `LLVM_*` pairs. A planted host environment (git repository variables, the
+/// host HOME and PATH, an SSH agent, a global config path) must not reach it.
+#[test]
+fn hermetic_env_passes_only_the_harness_keys_and_llvm() {
+    let dirs = ScenarioDirs::new("env", "key_table").expect("scenario dirs");
+    let planted: Env = [
+        ("GIT_DIR", "/host/.git"),
+        ("GIT_CONFIG_GLOBAL", "/host/.gitconfig"),
+        ("HOME", "/host/home"),
+        ("PATH", "/host/bin"),
+        ("SSH_AUTH_SOCK", "/host/agent"),
+        ("LLVM_PROFILE_FILE", "/cov/%p.profraw"),
+        ("XLLVM_NOT_A_PREFIX", "dropped"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+    .collect();
+    let env = hermetic_env(&planted, &dirs);
+    let keys: Vec<&str> = env
+        .iter()
+        .map(|(key, _)| key.to_str().expect("UTF-8 key"))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "HOME",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_NOSYSTEM",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_ALLOW_PROTOCOL",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR",
+            "GIT_SEQUENCE_EDITOR",
+            "GIT_MERGE_AUTOEDIT",
+            "LC_ALL",
+            "TZ",
+            "PATH",
+            "LLVM_PROFILE_FILE",
+        ]
+    );
+    let value = |key: &str| {
+        env.iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .expect("key present")
+    };
+    assert_eq!(value("HOME"), dirs.home.as_os_str());
+    assert_eq!(
+        value("GIT_CONFIG_GLOBAL"),
+        dirs.home.join(".gitconfig").as_os_str()
+    );
+    assert_eq!(value("GIT_CEILING_DIRECTORIES"), dirs.root.as_os_str());
+    assert_eq!(value("PATH"), HERMETIC_PATH);
+    assert_eq!(value("LLVM_PROFILE_FILE"), "/cov/%p.profraw");
+}
