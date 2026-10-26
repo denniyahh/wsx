@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-09-PLAN.md
-last_updated: "2026-10-26T18:48:40.369Z"
+stopped_at: Completed 02-10-PLAN.md
+last_updated: "2026-10-26T19:01:46.680Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 594198769a2497ea37ad64a9433be2864f0e0a17
+state_head: bf2082c767444bbbf6708b7321980f70ac5559df
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 16
+  completed_plans: 17
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 10 of 15
+Plan: 11 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -71,6 +71,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P07 | 37 min | 2 tasks | 6 files |
 | Phase 02 P08 | 8min | 2 tasks | 3 files |
 | Phase 02 P09 | 9 min | 2 tasks | 1 files |
+| Phase 2 P10 | 9 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-08: signing is declared with RepoConfig::with_signing(); all three signing cases are Parity by observation
 - [Phase 02]: 02-09: the planted host config sets gpg.program to a recording script that fails, because a real gpg started a keyboxd daemon under the scenario HOME that outlived the test
 - [Phase 02]: 02-09: the planted-host proof's env-value check is the only check that catches a leaked HOME; the behavioural checks (marker, decoy, outcomes) do not in the sync, cut and guard self-tests
+- [Phase 2]: 02-10: guard scenario classes come from the first Parity run; P1-P5 reproduced as researched. In the fork fixture --remotes=origin did not over-scan; the hook's tail refused the workspace push on a hard-coded origin/develop instead
+- [Phase 2]: cargo fmt does not reach scenario modules declared inside harness_modules!; guard.rs is formatted with rustfmt directly and the gap is logged in deferred-items.md and WINDOWS.md
 
 ### Pending Todos
 
@@ -129,6 +132,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T18:48:33.893Z
-Stopped at: Completed 02-09-PLAN.md
+Last session: 2026-10-26T19:01:46.523Z
+Stopped at: Completed 02-10-PLAN.md
 Resume file: None
