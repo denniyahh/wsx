@@ -95,7 +95,10 @@ struct DecoyState {
 /// (`hook.planted.command`), a template directory (`init.templateDir`) with
 /// its own hook, a host identity, `core.quotePath`
 /// off (which would change how a scenario's path names come out), and signing
-/// on with a key that does not exist, so a commit made under it fails.
+/// on with a key that does not exist, so a commit made under it fails. The
+/// signing program is the planted `bin/gpg`, which records the call and
+/// fails: a real gpg would start a keyboxd daemon in the scenario HOME that
+/// outlives the test.
 fn planted_config(root: &Path, marker: &Path) -> String {
     let root = root.display();
     let marker = marker.display();
@@ -115,6 +118,8 @@ fn planted_config(root: &Path, marker: &Path) -> String {
 \tsigningkey = /nonexistent
 [commit]
 \tgpgsign = true
+[gpg]
+\tprogram = {root}/bin/gpg
 "
     )
 }
@@ -127,9 +132,12 @@ fn write(path: &Path, content: &[u8]) {
     fs::write(path, content).unwrap_or_else(|err| panic!("write {}: {err}", path.display()));
 }
 
-/// Writes a hook script that appends `line` to `marker`.
-fn write_hook(path: &Path, line: &str, marker: &Path) {
-    let script = format!("#!/bin/sh\necho '{line}' >> '{}'\n", marker.display());
+/// Writes a script that appends `line` to `marker` and exits with `exit`.
+fn write_recorder(path: &Path, line: &str, marker: &Path, exit: u8) {
+    let script = format!(
+        "#!/bin/sh\necho '{line}' >> '{}'\nexit {exit}\n",
+        marker.display()
+    );
     write(path, script.as_bytes());
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
         .unwrap_or_else(|err| panic!("chmod {}: {err}", path.display()));
@@ -162,7 +170,8 @@ fn decoy_state(dirs: &ScenarioDirs, decoy: &Path) -> DecoyState {
 /// Plants a host in a `harness-hermeticity-<name>-` tree: the planted config
 /// at `host-home/.gitconfig`, at `host-xdg/git/config` (beside a `git/ignore`
 /// holding `src/`) and at `host-system.gitconfig`; the hooks under `hooks/`
-/// and the template's `post-commit` under `tmpl/hooks/`; and a decoy
+/// and the template's `post-commit` under `tmpl/hooks/`; the failing signing
+/// program at `bin/gpg`; and a decoy
 /// repository with one commit under `decoy/`. Its inherited environment points
 /// HOME, `GIT_CONFIG_GLOBAL`, `XDG_CONFIG_HOME` and `GIT_CONFIG_SYSTEM` at
 /// those files, `GIT_CONFIG_PARAMETERS` at the hooks, `GIT_DIR` and
@@ -183,17 +192,20 @@ fn plant_host(name: &str) -> PlantedHost {
     }
     write(&xdg.join("git/ignore"), b"src/\n");
     for hook in PLANTED_HOOKS {
-        write_hook(
+        write_recorder(
             &root.join("hooks").join(hook),
             &format!("hookspath:{hook}"),
             &marker,
+            0,
         );
     }
-    write_hook(
+    write_recorder(
         &root.join("tmpl/hooks/post-commit"),
         "template:post-commit",
         &marker,
+        0,
     );
+    write_recorder(&root.join("bin/gpg"), "gpg:sign", &marker, 1);
 
     let decoy = root.join("decoy");
     plant_git(&dirs, &root, &["init", "--quiet", "-b", "main", "decoy"]);
@@ -324,8 +336,12 @@ fn wired_to_planted_config_fires_hook() {
         marker.lines().any(|line| line == "hookspath:pre-commit"),
         "the planted pre-commit hook did not run: {marker:?}"
     );
+    assert!(
+        marker.lines().any(|line| line == "gpg:sign"),
+        "signing did not go through the planted gpg: {marker:?}"
+    );
     match result {
-        Err(err) => println!("the wired run failed, as the planted signing key is missing: {err}"),
+        Err(err) => println!("the wired run failed, as the planted signing fails: {err}"),
         Ok(run) => {
             let expected = case
                 .expected
