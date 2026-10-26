@@ -189,6 +189,14 @@ fn is_phase_number(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || byte == b'.')
 }
 
+/// The oracle has no counterpart for `action`, for the reason `why`.
+fn not_implemented(action: &Action, why: &'static str) -> Result<ActionRun, AdapterError> {
+    Err(AdapterError::NotImplemented(NotImplemented {
+        action: action.clone(),
+        why,
+    }))
+}
+
 /// Runs `action` on the oracle, or says why the oracle has no counterpart.
 pub fn run(
     action: &Action,
@@ -196,12 +204,6 @@ pub fn run(
     copy: &OracleCopy,
     env: &Env,
 ) -> Result<ActionRun, AdapterError> {
-    let not_implemented = |why| {
-        Err(AdapterError::NotImplemented(NotImplemented {
-            action: action.clone(),
-            why,
-        }))
-    };
     match action {
         Action::Sync { checkout } => {
             let config = &fixture.config;
@@ -239,6 +241,7 @@ pub fn run(
                 .filter(|phase| is_phase_number(phase))
             else {
                 return not_implemented(
+                    action,
                     "phase-worktree.sh derives the branch from a phase number \
                      (feature/phase-<N>), so a worktree for any other branch is Rust-only",
                 );
@@ -256,11 +259,90 @@ pub fn run(
                 None,
             )
         }
-        Action::Cut { .. } | Action::PrePush { .. } => {
-            not_implemented("mapped to its script in plan 02-07")
+        Action::Cut {
+            checkout,
+            scope,
+            pr_branch,
+        } => run_cut(
+            action,
+            fixture,
+            copy,
+            env,
+            checkout,
+            scope.as_deref(),
+            pr_branch.as_deref(),
+        ),
+        Action::PrePush {
+            checkout, remote, ..
+        } => {
+            let input = action
+                .push_input(fixture)
+                .map_err(AdapterError::Spawn)?
+                .ok_or_else(|| AdapterError::Spawn(format!("no push input for {action}")))?;
+            run_script(
+                copy,
+                "hooks/pre-push",
+                &[OsStr::new(remote), &input.url],
+                &fixture.checkout(checkout),
+                env,
+                Some(&input.stdin),
+            )
         }
         Action::RemoveWorktree { .. } => {
-            not_implemented("the oracle has no command that removes a worktree")
+            not_implemented(action, "the oracle has no command that removes a worktree")
         }
     }
+}
+
+/// Runs `cut-pr-branch.sh` for a cut in `checkout`, with `BASE_REMOTE` and
+/// `WORKSPACE_BASE` on the child. A numeric scope becomes `--phase <scope>`;
+/// a PR branch name is the first positional argument, and the integration
+/// branch the second, only then.
+///
+/// The script switches to phase mode by itself on a `feature/phase-<N>`
+/// branch, so a cut with no scope from such a branch still runs as a phase
+/// cut: a scenario that needs a plain cut uses another source branch name.
+fn run_cut(
+    action: &Action,
+    fixture: &Fixture,
+    copy: &OracleCopy,
+    env: &Env,
+    checkout: &str,
+    scope: Option<&str>,
+    pr_branch: Option<&str>,
+) -> Result<ActionRun, AdapterError> {
+    let config = &fixture.config;
+    let mut args: Vec<&OsStr> = Vec::new();
+    if let Some(scope) = scope {
+        if !is_phase_number(scope) {
+            return not_implemented(
+                action,
+                "cut-pr-branch.sh scopes a cut only by phase number (--phase <N>)",
+            );
+        }
+        args.extend([OsStr::new("--phase"), OsStr::new(scope)]);
+    }
+    match pr_branch {
+        Some(pr_branch) => args.extend([OsStr::new(pr_branch), OsStr::new(&config.integration)]),
+        None if config.integration != "develop" => {
+            return not_implemented(
+                action,
+                "cut-pr-branch.sh takes the integration branch only after a PR branch name, \
+                 so without one it cuts against develop",
+            );
+        }
+        None => {}
+    }
+    let vars = [
+        ("BASE_REMOTE", config.base_remote.as_str()),
+        ("WORKSPACE_BASE", config.workspace.as_str()),
+    ];
+    run_script(
+        copy,
+        "cut-pr-branch.sh",
+        &args,
+        &fixture.checkout(checkout),
+        &with_vars(env, &vars),
+        None,
+    )
 }
