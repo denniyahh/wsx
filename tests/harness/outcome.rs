@@ -20,7 +20,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::fixture::{Fixture, Ident, WORK};
+use crate::env::{ScenarioDirs, hermetic_env, inherited_env};
+use crate::fixture::{Fixture, Ident, RepoConfig, WORK};
 
 /// Mode bits that make a file executable for someone.
 const EXECUTABLE_BITS: u32 = 0o111;
@@ -41,6 +42,9 @@ pub struct Outcome {
 pub enum RefsExpect {
     /// Exactly these refs exist, each with the stated tip.
     Exactly(Vec<RefExpect>),
+    /// The same refs exist as before, each holding what it held before
+    /// (symbolic refs by target name).
+    Unchanged,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,6 +104,9 @@ impl TreeEntry {
 pub enum FilesExpect {
     /// Exactly these files exist, across all checkouts.
     Exactly(Vec<FileExpect>),
+    /// Every checkout holds the same files, with the same content and
+    /// executable bit, as before.
+    Unchanged,
 }
 
 #[derive(Clone, PartialEq)]
@@ -554,6 +561,17 @@ pub fn compare(
     }
     match refs {
         RefsExpect::Exactly(list) => compare_refs(list, before, after, &mut mismatches),
+        RefsExpect::Unchanged => {
+            let as_before: Vec<RefExpect> = before
+                .refs
+                .keys()
+                .map(|name| RefExpect {
+                    name: name.clone(),
+                    tip: Tip::Unchanged,
+                })
+                .collect();
+            compare_refs(&as_before, before, after, &mut mismatches);
+        }
     }
     compare_new_commits(new_commits, after, &mut mismatches);
     match files {
@@ -576,6 +594,7 @@ pub fn compare(
                 .collect();
             compare_files(&expected_files, &after.files, &mut mismatches);
         }
+        FilesExpect::Unchanged => compare_files(&before.files, &after.files, &mut mismatches),
     }
     mismatches
 }
@@ -930,4 +949,67 @@ impl fmt::Debug for FileExpect {
             .field("executable", &self.executable)
             .finish()
     }
+}
+
+/// The observer records a symbolic ref by its target name. After a fetch moves
+/// `origin/develop`, `origin/HEAD` resolves to a new object but still targets
+/// `refs/remotes/origin/develop`, so `Tip::Unchanged` holds for it. In the same
+/// run `Tip::Unchanged` must fail for `origin/develop` itself: that half rules
+/// out a check that passes only because the fetch changed nothing.
+#[test]
+fn symbolic_refs_are_recorded_by_target() {
+    let dirs = ScenarioDirs::new("outcome", "symbolic_refs").expect("scenario dirs");
+    let env = hermetic_env(&inherited_env(), &dirs);
+    let mut fixture = Fixture::new(&dirs, env, RepoConfig::devflow()).expect("devflow fixture");
+    let before = observe(&fixture, None).expect("observe before the fetch");
+    fixture
+        .advance_remote("origin", "develop", |fixture, clone| {
+            fixture.write(clone, b"src/b.txt", b"b\n")?;
+            fixture.commit(clone, b"feat: add b\n")
+        })
+        .expect("advance origin/develop");
+    fixture
+        .git_ok(WORK, ["fetch", "--quiet", "origin", "develop"])
+        .expect("fetch origin develop");
+    let after = observe(&fixture, Some(&before)).expect("observe after the fetch");
+
+    let head = "refs/remotes/origin/HEAD";
+    let develop = "refs/remotes/origin/develop";
+    let target = RefValue::Symbolic(develop.to_owned());
+    assert_eq!(
+        before.refs.get(head),
+        Some(&target),
+        "{head} before the fetch"
+    );
+    assert_eq!(
+        after.refs.get(head),
+        Some(&target),
+        "{head} after the fetch"
+    );
+
+    let every_ref_unchanged = Outcome {
+        exit: 0,
+        refs: RefsExpect::Exactly(
+            after
+                .refs
+                .keys()
+                .map(|name| RefExpect {
+                    name: name.clone(),
+                    tip: Tip::Unchanged,
+                })
+                .collect(),
+        ),
+        new_commits: Vec::new(),
+        files: FilesExpect::Unchanged,
+    };
+    let tip_mismatches: Vec<Field> = compare(&every_ref_unchanged, &before, &after, Some(0))
+        .into_iter()
+        .map(|mismatch| mismatch.field)
+        .filter(|field| matches!(field, Field::RefTip(_)))
+        .collect();
+    assert_eq!(
+        tip_mismatches,
+        vec![Field::RefTip(develop.to_owned())],
+        "only the fetched ref moved; the symbolic ref to it did not"
+    );
 }
