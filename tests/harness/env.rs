@@ -5,6 +5,11 @@
 //! `harness-<module>-<name>-` so a leftover is attributable. Inside it live the
 //! scenario's HOME, XDG dirs, global git config and an empty system config.
 //!
+//! The git ceiling is the root's parent, not the root: git applies a ceiling
+//! only to proper ancestors of its working directory, so with the ceiling at
+//! the root, a git run in the root itself (the fixture's `init` and `clone`)
+//! would still search upward into the wsx checkout around `target/`.
+//!
 //! `hermetic_env` is a pure function of the inherited environment and those
 //! dirs, so a test can feed it a planted host environment without mutating the
 //! process. `command` is the only way the harness builds a child: it clears the
@@ -48,6 +53,8 @@ pub type Env = Vec<(OsString, OsString)>;
 pub struct ScenarioDirs {
     /// The canonical TempDir path; fixtures, remotes and the oracle copy live here.
     pub root: PathBuf,
+    /// The root's parent, which `GIT_CEILING_DIRECTORIES` names.
+    pub ceiling: PathBuf,
     pub home: PathBuf,
     pub xdg_config: PathBuf,
     pub xdg_data: PathBuf,
@@ -64,14 +71,27 @@ impl ScenarioDirs {
     /// empty HOME holding the harness global config, empty XDG dirs and an
     /// empty system config file.
     pub fn new(module: &str, name: &str) -> Result<ScenarioDirs, String> {
-        let prefix = format!("harness-{module}-{name}-");
-        let temp = TempDir::with_prefix_in(&prefix, TMP_ROOT)
-            .map_err(|err| format!("create a TempDir {prefix}* under {TMP_ROOT}: {err}"))?;
+        ScenarioDirs::new_in(Path::new(TMP_ROOT), &format!("harness-{module}-{name}-"))
+    }
+
+    /// The same tree as `new`, as `<parent>/<prefix>*`.
+    fn new_in(parent: &Path, prefix: &str) -> Result<ScenarioDirs, String> {
+        let temp = TempDir::with_prefix_in(prefix, parent).map_err(|err| {
+            format!(
+                "create a TempDir {prefix}* under {}: {err}",
+                parent.display()
+            )
+        })?;
         let root = temp
             .path()
             .canonicalize()
             .map_err(|err| format!("canonicalize {}: {err}", temp.path().display()))?;
+        let ceiling = root
+            .parent()
+            .ok_or_else(|| format!("{} has no parent", root.display()))?
+            .to_path_buf();
         let dirs = ScenarioDirs {
+            ceiling,
             home: root.join("home"),
             xdg_config: root.join("xdg/config"),
             xdg_data: root.join("xdg/data"),
@@ -123,7 +143,7 @@ pub fn hermetic_env(inherited: &[(OsString, OsString)], dirs: &ScenarioDirs) -> 
         pair("XDG_DATA_HOME", dirs.xdg_data.as_os_str()),
         pair("XDG_CACHE_HOME", dirs.xdg_cache.as_os_str()),
         pair("XDG_STATE_HOME", dirs.xdg_state.as_os_str()),
-        pair("GIT_CEILING_DIRECTORIES", dirs.root.as_os_str()),
+        pair("GIT_CEILING_DIRECTORIES", dirs.ceiling.as_os_str()),
         pair("GIT_ALLOW_PROTOCOL", OsStr::new("file")),
         pair("GIT_TERMINAL_PROMPT", OsStr::new("0")),
         pair("GIT_EDITOR", OsStr::new("false")),
@@ -248,7 +268,76 @@ fn hermetic_env_passes_only_the_harness_keys_and_llvm() {
         value("GIT_CONFIG_GLOBAL"),
         dirs.home.join(".gitconfig").as_os_str()
     );
-    assert_eq!(value("GIT_CEILING_DIRECTORIES"), dirs.root.as_os_str());
+    assert_eq!(
+        Some(Path::new(&value("GIT_CEILING_DIRECTORIES"))),
+        dirs.root.parent(),
+        "the ceiling is the root's parent"
+    );
     assert_eq!(value("PATH"), HERMETIC_PATH);
     assert_eq!(value("LLVM_PROFILE_FILE"), "/cov/%p.profraw");
+}
+
+/// The root inside a git repository, as the wsx checkout around `target/`
+/// holds every scenario root: a ScenarioDirs created inside `outer`, a fresh
+/// repository, with the hermetic environment its own dirs produce.
+fn nested_in_a_repository(name: &str) -> (ScenarioDirs, ScenarioDirs) {
+    let host = ScenarioDirs::new("env", name).expect("scenario dirs");
+    let outer = host.root.join("outer");
+    let init = command("git", &host.root, &hermetic_env(&[], &host))
+        .args(["init", "--quiet", "outer"])
+        .status()
+        .expect("spawn git init");
+    assert!(init.success(), "git init outer: {init}");
+    let nested = ScenarioDirs::new_in(&outer, "harness-env-nested-").expect("nested dirs");
+    (host, nested)
+}
+
+/// `git rev-parse --show-toplevel` run in the root itself with `env`.
+fn toplevel_from_root(dirs: &ScenarioDirs, env: &Env) -> std::process::Output {
+    command("git", &dirs.root, env)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .expect("spawn git rev-parse")
+}
+
+/// git run in the scenario root does not find a repository that encloses the
+/// root: the ceiling stops discovery before it leaves the root.
+#[test]
+fn git_in_the_root_finds_no_enclosing_repository() {
+    let (_host, nested) = nested_in_a_repository("ceiling_at_parent");
+    let output = toplevel_from_root(&nested, &hermetic_env(&[], &nested));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(128), "stderr: {stderr}");
+    assert!(
+        stderr.contains("not a git repository"),
+        "git must not find the enclosing repository; stdout: {:?}, stderr: {stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// The counterpart: with the ceiling at the root itself, git run in the root
+/// finds the enclosing repository, so the test above can fail.
+#[test]
+fn a_ceiling_at_the_root_lets_git_in_the_root_find_the_enclosing_repository() {
+    let (_host, nested) = nested_in_a_repository("ceiling_at_root");
+    let env: Env = hermetic_env(&[], &nested)
+        .into_iter()
+        .map(|(key, value)| match key.to_str() {
+            Some("GIT_CEILING_DIRECTORIES") => (key, nested.root.clone().into_os_string()),
+            _ => (key, value),
+        })
+        .collect();
+    let output = toplevel_from_root(&nested, &env);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let outer = nested.ceiling.clone();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        outer.to_string_lossy(),
+        "git finds the enclosing repository"
+    );
 }

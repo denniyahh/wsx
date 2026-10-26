@@ -11,7 +11,7 @@
 //! `CARGO_TARGET_TMPDIR` named `harness-<module>-<name>-`, and every spawned
 //! process starts from an empty environment holding only the harness keys
 //! (scenario HOME, XDG dirs and git config, a fixed PATH, a git ceiling at the
-//! scratch root) plus `LLVM_*`. Nothing reads the host's git config, hooks or
+//! scratch root's parent) plus `LLVM_*`. Nothing reads the host's git config, hooks or
 //! identity, and nothing discovers the wsx checkout around `target/`.
 //!
 //! Every module is declared private, with a plain `mod`, so `clippy -D
