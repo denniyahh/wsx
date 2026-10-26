@@ -8,7 +8,13 @@
 #
 # Bumping: change the version here, then run scripts/check-in-container.sh to
 # confirm the pinned image's rustup can install it before pushing.
+#
+# llvm-tools: cargo-llvm-cov reads llvm-profdata and llvm-cov from the pinned
+# toolchain, so the component is listed here and every environment (host,
+# container, CI) installs it from this one file. Coverage commands run with
+# CARGO_LLVM_COV_SETUP=no, so a missing component fails instead of being
+# installed silently.
 [toolchain]
 channel = "1.99.1"
-components = ["clippy", "rustfmt"]
+components = ["clippy", "rustfmt", "llvm-tools"]
 profile = "minimal"

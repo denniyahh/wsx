@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Install or verify the tools and scanners the gate runs: cargo-nextest
 # (`scripts/check.sh test`), cargo-deny (`scripts/check.sh deps`) and gitleaks
-# (the pre-commit secret scan).
+# (the pre-commit secret scan). It also pins cargo-llvm-cov, which only the
+# one-time coverage proof uses: no gate runs it, and it is always invoked with
+# CARGO_LLVM_COV_SETUP=no so it never installs a toolchain component itself.
 #
 # This is the single place their versions are pinned (SUP-04). CI,
 # scripts/check-in-container.sh and contributors all install through it, so a
@@ -19,7 +21,8 @@
 #
 #   install TOOL...  download, verify and install into
 #                    ${WSX_TOOLS_DIR:-${CARGO_HOME:-$HOME/.cargo}/bin}
-#   verify TOOL...   the tool on PATH must report the pinned version
+#   verify TOOL...   the tool on PATH, run with its subcommand where it needs
+#                    one, must report the pinned version
 #   verify-cargo TOOL...
 #                    `cargo <subcommand> --version` must report the pinned
 #                    version, for cargo-* tools only. This asks cargo itself,
@@ -37,6 +40,8 @@ CARGO_DENY_VERSION=0.20.2
 CARGO_DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
 GITLEAKS_VERSION=8.30.1
 GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+CARGO_LLVM_COV_VERSION=0.9.1
+CARGO_LLVM_COV_SHA256=3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522
 
 usage() {
     cat >&2 <<'EOF'
@@ -44,21 +49,24 @@ usage: scripts/install-tools.sh install TOOL...
        scripts/install-tools.sh verify TOOL...
        scripts/install-tools.sh verify-cargo TOOL...
 
-  TOOL is one of: cargo-nextest, cargo-deny, gitleaks
+  TOOL is one of: cargo-nextest, cargo-deny, gitleaks, cargo-llvm-cov
 
   install  download the pinned release tarball, check its sha256, and install
            the binary into $WSX_TOOLS_DIR (default $CARGO_HOME/bin, else
            ~/.cargo/bin); x86_64 Linux only
-  verify   fail unless the tool on PATH reports the pinned version
+  verify   fail unless the tool on PATH, run with its subcommand where it
+           needs one, reports the pinned version
   verify-cargo
            fail unless `cargo <subcommand> --version` reports the pinned
-           version; cargo-nextest and cargo-deny only
+           version; cargo-nextest, cargo-deny and cargo-llvm-cov only
 EOF
     exit 2
 }
 
 # Set the pin, download URL, archive member, version argument and version
-# pattern for one tool. An unknown name is a usage error.
+# pattern for one tool, and direct_sub: the subcommand word the binary needs
+# before version_arg when it is run directly rather than by cargo (empty for
+# most tools). An unknown name is a usage error.
 tool_info() {
     case "$1" in
         cargo-nextest)
@@ -67,6 +75,7 @@ tool_info() {
             url="https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${version}/cargo-nextest-${version}-x86_64-unknown-linux-gnu.tar.gz"
             member="cargo-nextest"
             version_arg="--version"
+            direct_sub=""
             # Release builds append " (hash date)"; the brew build does not.
             pattern="^cargo-nextest ${version//./\\.}( |\$)"
             ;;
@@ -76,6 +85,7 @@ tool_info() {
             url="https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz"
             member="cargo-deny-${version}-x86_64-unknown-linux-musl/cargo-deny"
             version_arg="--version"
+            direct_sub=""
             pattern="^cargo-deny ${version//./\\.}\$"
             ;;
         gitleaks)
@@ -84,7 +94,19 @@ tool_info() {
             url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
             member="gitleaks"
             version_arg="version"
+            direct_sub=""
             pattern="^v?${version//./\\.}\$"
+            ;;
+        cargo-llvm-cov)
+            version="$CARGO_LLVM_COV_VERSION"
+            sha256="$CARGO_LLVM_COV_SHA256"
+            url="https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${version}/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz"
+            member="cargo-llvm-cov"
+            version_arg="--version"
+            # Run directly, the binary rejects a bare --version ("expected
+            # subcommand 'llvm-cov'"); cargo passes that word itself.
+            direct_sub="llvm-cov"
+            pattern="^cargo-llvm-cov ${version//./\\.}\$"
             ;;
         *)
             echo "error: unknown tool '$1'" >&2
@@ -117,7 +139,8 @@ cmd_verify() {
             echo "error: $tool is not on PATH; run scripts/install-tools.sh install $tool" >&2
             exit 1
         fi
-        check_version "$tool" "at $bin" "$bin"
+        tool_info "$tool"
+        check_version "$tool" "at $bin" "$bin" ${direct_sub:+"$direct_sub"}
         echo "==> $tool $version OK"
     done
 }
@@ -164,7 +187,7 @@ install_one() {
         exit 1
     fi
     install -m 0755 "$extract_dir/$member" "$DEST/$tool"
-    check_version "$tool" "at $DEST/$tool" "$DEST/$tool"
+    check_version "$tool" "at $DEST/$tool" "$DEST/$tool" ${direct_sub:+"$direct_sub"}
     echo "==> installed $tool $version to $DEST"
 }
 
