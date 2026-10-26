@@ -347,3 +347,41 @@ fn harn06_gaps_names_a_missing_oracle_action() {
     }
     assert_eq!(harn06_gaps(&entries), ["no-GSD repo: cut"]);
 }
+
+// ------------------------------------------------------ module registration
+
+/// Each scenario module whose registry lists no scenario.
+fn modules_without_scenarios(registries: &[(&'static str, Vec<Entry>)]) -> Vec<&'static str> {
+    registries
+        .iter()
+        .filter(|(_, entries)| entries.is_empty())
+        .map(|&(module, _)| module)
+        .collect()
+}
+
+/// Every scenario module declared in `harness_modules!` registers at least
+/// one scenario: a module left at `scenarios! {}` is a declared area with no
+/// coverage.
+///
+/// Control: `a_module_without_scenarios_is_named`.
+#[test]
+fn every_scenario_module_registers_a_scenario() {
+    let registries = crate::registries();
+    assert!(!registries.is_empty(), "no scenario module is declared");
+    let empty = modules_without_scenarios(&registries);
+    assert!(
+        empty.is_empty(),
+        "scenario modules registering no scenario: {empty:?}"
+    );
+}
+
+/// Beside a module that registers a scenario, a module that registers none is
+/// named, and only it.
+#[test]
+fn a_module_without_scenarios_is_named() {
+    let registries = vec![
+        ("sync", vec![synthetic("sync", "self_test", None)]),
+        ("empty", Vec::new()),
+    ];
+    assert_eq!(modules_without_scenarios(&registries), ["empty"]);
+}

@@ -726,7 +726,8 @@ pub fn run_case(
 
 /// Every registered entry names the module that declares it and the scenario
 /// its builder returns, so a later lookup by name finds the right scenario.
-/// A module may register no scenario yet (`scenarios! {}`): a scenario
+/// A scenario module must register at least one scenario
+/// (`registry::every_scenario_module_registers_a_scenario`); a scenario
 /// function it defines but leaves out of `scenarios!` is unused, which
 /// `clippy -D warnings` already rejects.
 #[test]
