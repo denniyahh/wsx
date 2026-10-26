@@ -1,6 +1,6 @@
 ---
 phase: 02-oracle-harness
-verified: 2026-10-26T17:55:00Z
+verified: 2026-10-26T18:05:00Z
 status: passed
 score: 5/5 must-haves verified
 covered_files:
@@ -71,14 +71,14 @@ covered_files:
   - "tests/oracle/oracle.patch"
   - "tests/oracle/phase-worktree.sh"
   - "tests/oracle/sync-workspace.sh"
-covered_digest: "v3:sha256:5d454a75b14985613c8439833125a8768723ced29cdcfbc1f878fa5bbb21409c"
+covered_digest: "v3:sha256:ee9b639a9fd4354af813b4d83e0e6191b6eb70c57abb26875763928a6230a4b7"
 behavior_unverified: 0
 overrides_applied: 0
 prohibitions_resolved:
   - statement: "MUST NOT change a vendored oracle file, or the patch beyond path adaptation, to make a scenario pass (02-04)"
     verdict: held
     decided_by: "gsd-verifier, on evidence (non-authoritative judgment tier; owner may overrule)"
-    basis: "All six vendored files hash to the blob and mode devflow ee6ec792 holds (independent git rev-parse against the local devflow clone). The patch changes three path references and replaces pre-push's last 18 lines (the CI-mirror tail that runs scripts/check-in-container.sh); that tail runs after the personal-path policy and divergence check and holds no policy logic. Documented in tests/oracle/README.md."
+    basis: "All six vendored files hash to the blob and mode devflow ee6ec792 holds (independent git rev-parse against the local devflow clone). The patch changes three path references and replaces pre-push's last 18 lines (the CI-mirror tail that runs scripts/check-in-container.sh); that tail runs after the personal-path policy and divergence check and holds no policy logic. Documented in tests/oracle/README.md (patch table, Rules and re-vendoring step 2 all name the tail replacement since 811227a)."
   - statement: "MUST NOT let a scenario pass on agreement with the oracle alone (02-05)"
     verdict: held
     decided_by: "gsd-verifier, on evidence"
@@ -96,7 +96,7 @@ prohibitions_resolved:
 # Phase 2: Oracle harness Verification Report
 
 **Phase Goal:** Any wsx behaviour can be pinned as a hermetic scenario that runs against the vendored shell oracle or the Rust binary, with explicit expected outcomes that outlive the oracle
-**Verified:** 2026-10-26T17:55:00Z
+**Verified:** 2026-10-26T18:05:00Z
 **Status:** passed
 **Re-verification:** No — initial verification
 
@@ -162,9 +162,10 @@ No orphans: REQUIREMENTS.md maps exactly HARN-01, -02, -03, -05 and -06 to Phase
 | File | Line | Pattern | Severity | Impact |
 |---|---|---|---|---|
 | (phase files) | – | TBD/FIXME/XXX | none | `rg -q` exit 1 over harness, oracle README/patch, check.sh and install-tools.sh. A positive control matched |
-| `tests/oracle/README.md` | "Rules" section | Says "The patch adapts paths only", but the patch also replaces pre-push's CI-mirror tail with `exit 0` (documented in the README's own patch table) | ℹ️ Info | Wording only; no effect on behaviour |
 | `tests/harness/scenario.rs` | – | No `regression:` scenario is registered; the rule is exercised by synthetic tests only | ℹ️ Info | Expected for phase 2; the rule is enforced |
 | `tests/harness/rust.rs` | header | Rust argv is "best guess" until each enabling phase | ℹ️ Info | By design; every Rust side is ignored |
+
+The README wording item raised in the first pass (the Rules section said "adapts paths only") was fixed in 811227a; `provenance::readme_records_the_pinned_commit_and_blobs` still passes.
 
 Deferred review info findings (IN-01..IN-06, IN-08..IN-10) stand as recorded in 02-REVIEW-DISPOSITION.md. None affects a success criterion.
 
@@ -191,5 +192,5 @@ None. All five success criteria are met in code and in fresh runs (host and cont
 
 ---
 
-_Verified: 2026-10-26T17:55:00Z_
+_Verified: 2026-10-26T18:05:00Z_
 _Verifier: Claude (gsd-verifier)_
