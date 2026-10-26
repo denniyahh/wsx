@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Install or verify the tools and scanners the gate runs: cargo-nextest
 # (`scripts/check.sh test`), cargo-deny (`scripts/check.sh deps`) and gitleaks
-# (the pre-commit secret scan). It also pins cargo-llvm-cov, which only the
-# one-time coverage proof uses: no gate runs it, and it is always invoked with
-# CARGO_LLVM_COV_SETUP=no so it never installs a toolchain component itself.
+# (the pre-commit secret scan). It also pins cargo-llvm-cov, which only
+# `scripts/check.sh coverage` runs (not part of `all`, and no CI job); that
+# target fails without it and sets CARGO_LLVM_COV_SETUP=no, so it never
+# installs a toolchain component itself.
 #
 # This is the single place their versions are pinned (SUP-04). CI,
 # scripts/check-in-container.sh and contributors all install through it, so a

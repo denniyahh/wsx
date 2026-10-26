@@ -9,7 +9,8 @@
 //! inherited keys are the `LLVM_` ones coverage needs.
 //!
 //! The proof itself is a one-time run of `cargo llvm-cov nextest` recorded in
-//! the 02-06 SUMMARY; no gate runs coverage. These tests are its subject and
+//! the 02-06 SUMMARY; `scripts/check.sh coverage` reruns it, and neither `all`
+//! nor CI runs coverage. These tests are its subject and
 //! its no-passthrough control, and both also hold in an ordinary test run.
 
 use std::fs;
