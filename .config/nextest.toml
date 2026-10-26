@@ -10,3 +10,10 @@
 # NEXTEST_NO_TESTS environment variable.
 [profile.default.junit]
 path = "junit.xml"
+
+# nextest hides a passing test's output. This one test's output is the list of
+# scenarios whose Rust side is still disabled, the list a later phase works
+# through, so it is shown in the final summary of every run.
+[[profile.default.overrides]]
+filter = "test(=registry::rust_sides_not_enabled)"
+success-output = "final"
