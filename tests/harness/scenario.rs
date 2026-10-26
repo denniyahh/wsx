@@ -68,8 +68,13 @@ pub struct Case {
     /// Bytes the oracle's stderr must contain: the reason it refuses. An exit
     /// code alone matches every failure with the same code, so `validate`
     /// requires one wherever the oracle side is judged against a non-zero
-    /// exit. Checked on the oracle side only: wsx words its own messages.
+    /// exit. Checked on the oracle side only: wsx words its own messages, and
+    /// `rust_stderr` pins those.
     pub oracle_stderr: Option<&'static [u8]>,
+    /// Bytes wsx's stderr must contain: its reason for refusing, checked on
+    /// the Rust side. `validate_entry` requires one for every case expecting
+    /// a non-zero exit once the scenario's Rust side is enabled.
+    pub rust_stderr: Option<&'static [u8]>,
 }
 
 impl Case {
@@ -82,6 +87,7 @@ impl Case {
             class: Class::Parity,
             oracle: OracleSide::SameAsExpected,
             oracle_stderr: None,
+            rust_stderr: None,
         }
     }
 
@@ -108,6 +114,12 @@ impl Case {
     /// States bytes the oracle's stderr must contain, byte for byte.
     pub fn oracle_stderr(mut self, reason: &'static [u8]) -> Case {
         self.oracle_stderr = Some(reason);
+        self
+    }
+
+    /// States bytes wsx's stderr must contain, byte for byte.
+    pub fn rust_stderr(mut self, reason: &'static [u8]) -> Case {
+        self.rust_stderr = Some(reason);
         self
     }
 }
@@ -266,6 +278,7 @@ pub enum Rejection {
     RustOnlyWithOracleSide(CaseRef),
     Harn06WithoutControl(CaseKind),
     OracleRefusalWithoutReason(CaseRef),
+    RustRefusalWithoutReason(CaseRef),
 }
 
 impl fmt::Display for Rejection {
@@ -336,6 +349,12 @@ impl fmt::Display for Rejection {
                 "{case}'s oracle side is judged against a non-zero exit but states no reason; \
                  an exit code matches every failure with the same code, so pin the oracle's \
                  stderr with .oracle_stderr(b\"..\")"
+            ),
+            Rejection::RustRefusalWithoutReason(case) => write!(
+                f,
+                "{case} expects a non-zero exit but states no reason for the enabled Rust \
+                 side; an exit code matches every failure with the same code, so pin wsx's \
+                 stderr with .rust_stderr(b\"..\")"
             ),
         }
     }
@@ -433,6 +452,14 @@ fn reason_rule(which: CaseRef, case: &Case) -> Option<Rejection> {
     (refuses && !pinned).then_some(Rejection::OracleRefusalWithoutReason(which))
 }
 
+/// Once the Rust side is enabled, a case expecting a non-zero exit must pin
+/// wsx's reason with a non-empty `rust_stderr`.
+fn rust_reason_rule(which: CaseRef, case: &Case) -> Option<Rejection> {
+    let refuses = case.expected.as_ref()?.exit != 0;
+    let pinned = case.rust_stderr.is_some_and(|reason| !reason.is_empty());
+    (refuses && !pinned).then_some(Rejection::RustRefusalWithoutReason(which))
+}
+
 /// A case's oracle side must match how the scenario is registered.
 fn kind_rule(kind: Kind, which: CaseRef, case: &Case) -> Option<Rejection> {
     match (kind, &case.oracle) {
@@ -476,6 +503,25 @@ pub fn validate(kind: Kind, scenario: &Scenario) -> Result<(), Vec<Rejection>> {
             .iter()
             .filter_map(|&(which, _, case)| reason_rule(which, case)),
     );
+    if rejections.is_empty() {
+        Ok(())
+    } else {
+        Err(rejections)
+    }
+}
+
+/// Checks `scenario`, registered as `entry`, against `validate`'s rules and,
+/// when `entry`'s Rust side is enabled (`rust_enabled` in `scenarios!`), the
+/// Rust side's: every case expecting a non-zero exit pins wsx's reason.
+pub fn validate_entry(entry: &Entry, scenario: &Scenario) -> Result<(), Vec<Rejection>> {
+    let mut rejections = validate(entry.kind, scenario).err().unwrap_or_default();
+    if entry.rust_disabled.is_none() {
+        rejections.extend(
+            cases_of(scenario)
+                .iter()
+                .filter_map(|&(which, _, case)| rust_reason_rule(which, case)),
+        );
+    }
     if rejections.is_empty() {
         Ok(())
     } else {
@@ -541,7 +587,8 @@ impl fmt::Display for CaseFailure {
 }
 
 /// Judges `case`'s `run` on `side`. The Rust side is compared with the
-/// expected outcome. On the oracle side a `fixed:` case's run is compared with
+/// expected outcome, and its stderr must contain the case's `rust_stderr`.
+/// On the oracle side a `fixed:` case's run is compared with
 /// the expected outcome first: if that comparison is clean the oracle already
 /// does what wsx is expected to do, and the case fails whatever its record
 /// holds. Otherwise, and for every other case, the oracle run is compared with
@@ -558,8 +605,11 @@ pub fn judge(side: Side, case: &Case, run: &CaseRun) -> Result<(), CaseFailure> 
         }
     };
     let mut mismatches = against(target);
-    if side == Side::Oracle
-        && let Some(reason) = case.oracle_stderr
+    let reason = match side {
+        Side::Oracle => case.oracle_stderr,
+        Side::Rust => case.rust_stderr,
+    };
+    if let Some(reason) = reason
         && !contains(&run.run.stderr, reason)
     {
         mismatches.push(Mismatch {
@@ -594,7 +644,9 @@ pub fn declaring_module(path: &'static str) -> &'static str {
 /// `name: oracle, rust_enabled;` generates both tests unignored, and
 /// `name: rust_only, rust = "<reason>";` generates only the ignored `rust()`.
 /// `name` must also be a `fn name() -> Scenario` in the invoking module. Every
-/// generated test validates its scenario before running it. The invocation
+/// generated test validates its scenario with `validate_entry` before running
+/// it; under `rust_enabled` that also requires a `rust_stderr` reason on every
+/// case expecting a non-zero exit. The invocation
 /// also defines `registry()`, listing every scenario it declares; `scenarios! {}`
 /// declares none.
 macro_rules! scenarios {
@@ -718,7 +770,7 @@ pub fn try_run_with_env(
             scenario.name
         ));
     }
-    validate(entry.kind, &scenario).map_err(|rejections| {
+    validate_entry(entry, &scenario).map_err(|rejections| {
         let listed: Vec<String> = rejections
             .iter()
             .map(|rejection| format!("  - {rejection}"))
@@ -1241,12 +1293,12 @@ fn fixed_record_drift() -> Scenario {
     scenario
 }
 
-/// An oracle-capable entry in module `scenario`.
+/// An oracle-capable entry in module `scenario`, run on the oracle side only.
 fn local_entry(name: &'static str, build: fn() -> Scenario) -> Entry {
     Entry {
         module: "scenario",
         name,
-        rust_disabled: None,
+        rust_disabled: Some("a synthetic scenario runs on the oracle side only"),
         kind: Kind::Oracle,
         build,
     }
@@ -1433,4 +1485,124 @@ fn oracle_refusing_for_another_reason_fails_on_its_stderr() {
         [Field::Stderr],
         "only the stderr tells the runs apart"
     );
+}
+
+// ------------------------------------------------------ wsx's refusal reason
+
+/// The scenario a synthetic entry builds: `sync::already_up_to_date`, whose
+/// subject and a counterpart control each expect wsx to refuse, the control
+/// with its reason pinned.
+fn enabled_refusal() -> Scenario {
+    let subject = registered_subject("sync", "already_up_to_date");
+    let control = registered_subject("sync", "already_up_to_date");
+    let refusal = |case: Case| {
+        let expected = case
+            .expected
+            .clone()
+            .expect("already_up_to_date states an outcome");
+        case.expect(Outcome {
+            exit: 1,
+            ..expected
+        })
+        .class(Class::Regression { reason: REGRESSION })
+        .oracle_stderr(FETCH_REPORT)
+    };
+    Scenario::new("enabled_refusal", refusal(subject))
+        .control(Role::Counterpart, refusal(control).rust_stderr(REASON))
+}
+
+/// Why `enabled_refusal` expects a refusal.
+const REGRESSION: &str = "wsx refuses here on purpose";
+
+/// `enabled_refusal` as registered with `rust_enabled` or with a disabled
+/// Rust side.
+fn refusal_entry(rust_disabled: Option<&'static str>) -> Entry {
+    Entry {
+        module: "scenario",
+        name: "enabled_refusal",
+        rust_disabled,
+        kind: Kind::Oracle,
+        build: enabled_refusal,
+    }
+}
+
+#[test]
+fn rejects_enabled_rust_refusal_without_reason() {
+    let entry = refusal_entry(None);
+    let mut scenario = (entry.build)();
+    assert_eq!(
+        validate_entry(&entry, &scenario),
+        Err(vec![Rejection::RustRefusalWithoutReason(CaseRef::Subject)])
+    );
+    scenario.subject = scenario.subject.rust_stderr(b"");
+    assert_eq!(
+        validate_entry(&entry, &scenario),
+        Err(vec![Rejection::RustRefusalWithoutReason(CaseRef::Subject)]),
+        "an empty pin matches every stderr"
+    );
+    let Err(report) = try_run_with_env(Side::Rust, &entry, &hermetic) else {
+        panic!("the runner validates the entry before running it");
+    };
+    assert!(
+        report.contains(&Rejection::RustRefusalWithoutReason(CaseRef::Subject).to_string()),
+        "{report}"
+    );
+}
+
+#[test]
+fn accepts_enabled_rust_refusal_with_reason_and_disabled_without() {
+    let entry = refusal_entry(None);
+    let mut scenario = (entry.build)();
+    scenario.subject = scenario.subject.rust_stderr(REASON);
+    assert_eq!(validate_entry(&entry, &scenario), Ok(()));
+    let disabled = refusal_entry(Some("Rust side not enabled until phase 5"));
+    assert_eq!(validate_entry(&disabled, &(disabled.build)()), Ok(()));
+}
+
+/// The Rust side is judged on `rust_stderr`, not on `oracle_stderr`. A real
+/// oracle run of `check::no_gsd_repo`'s known-positive control stands in for
+/// wsx's run: judged as the Rust side, it passes with its own stderr pinned
+/// and fails on the stderr alone with another reason pinned.
+#[test]
+fn rust_side_is_judged_on_its_own_stderr() {
+    let entry = registered_entry("check", "no_gsd_repo");
+    let pinned = registered_control_case();
+    let reason = pinned
+        .oracle_stderr
+        .expect("the known-positive control pins the oracle's reason");
+    let run = run_case(Side::Oracle, &entry, &pinned, &hermetic).expect("run the control");
+
+    let same = Case {
+        rust_stderr: Some(reason),
+        ..registered_control_case()
+    };
+    assert!(
+        judge(Side::Rust, &same, &run).is_ok(),
+        "the run's own reason, pinned for the Rust side, passes"
+    );
+    let other = Case {
+        rust_stderr: Some(b"error: no .wsx.conf"),
+        ..registered_control_case()
+    };
+    let Err(CaseFailure::Mismatches(mismatches)) = judge(Side::Rust, &other, &run) else {
+        panic!("a Rust-side run refusing for another reason must fail");
+    };
+    let fields: Vec<Field> = mismatches.into_iter().map(|m| m.field).collect();
+    assert_eq!(fields, [Field::Stderr], "only the stderr tells them apart");
+}
+
+/// The registered entry `module::name`.
+fn registered_entry(module: &str, name: &str) -> Entry {
+    crate::all_scenarios()
+        .into_iter()
+        .find(|entry| entry.module == module && entry.name == name)
+        .unwrap_or_else(|| panic!("{module}::{name} is registered"))
+}
+
+/// `check::no_gsd_repo`'s known-positive control case, freshly built.
+fn registered_control_case() -> Case {
+    let mut scenario = (registered_entry("check", "no_gsd_repo").build)();
+    let control = scenario.controls.remove(0);
+    assert_eq!(control.role, Role::KnownPositive);
+    control.case
 }
