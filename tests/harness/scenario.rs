@@ -65,6 +65,11 @@ pub struct Case {
     pub expected: Option<Outcome>,
     pub class: Class,
     pub oracle: OracleSide,
+    /// Bytes the oracle's stderr must contain: the reason it refuses. An exit
+    /// code alone matches every failure with the same code, so `validate`
+    /// requires one wherever the oracle side is judged against a non-zero
+    /// exit. Checked on the oracle side only: wsx words its own messages.
+    pub oracle_stderr: Option<&'static [u8]>,
 }
 
 impl Case {
@@ -76,6 +81,7 @@ impl Case {
             expected: None,
             class: Class::Parity,
             oracle: OracleSide::SameAsExpected,
+            oracle_stderr: None,
         }
     }
 
@@ -96,6 +102,12 @@ impl Case {
     /// SameAsExpected).
     pub fn oracle(mut self, oracle: OracleSide) -> Case {
         self.oracle = oracle;
+        self
+    }
+
+    /// States bytes the oracle's stderr must contain, byte for byte.
+    pub fn oracle_stderr(mut self, reason: &'static [u8]) -> Case {
+        self.oracle_stderr = Some(reason);
         self
     }
 }
@@ -253,6 +265,7 @@ pub enum Rejection {
     OracleKindWithoutOracleSide { case: CaseRef, why: &'static str },
     RustOnlyWithOracleSide(CaseRef),
     Harn06WithoutControl(CaseKind),
+    OracleRefusalWithoutReason(CaseRef),
 }
 
 impl fmt::Display for Rejection {
@@ -317,6 +330,12 @@ impl fmt::Display for Rejection {
                 f,
                 "the scenario covers the HARN-06 case \"{kind}\" but has no control; a HARN-06 \
                  case needs at least one"
+            ),
+            Rejection::OracleRefusalWithoutReason(case) => write!(
+                f,
+                "{case}'s oracle side is judged against a non-zero exit but states no reason; \
+                 an exit code matches every failure with the same code, so pin the oracle's \
+                 stderr with .oracle_stderr(b\"..\")"
             ),
         }
     }
@@ -403,6 +422,17 @@ fn control_direction(which: CaseRef, role: Option<Role>, case: &Case) -> Option<
     }
 }
 
+/// A case whose oracle side is judged against a non-zero exit must pin the
+/// oracle's reason with a non-empty `oracle_stderr`.
+fn reason_rule(which: CaseRef, case: &Case) -> Option<Rejection> {
+    if matches!(case.oracle, OracleSide::NotImplemented { .. }) || case.expected.is_none() {
+        return None;
+    }
+    let refuses = oracle_target(case).exit != 0;
+    let pinned = case.oracle_stderr.is_some_and(|reason| !reason.is_empty());
+    (refuses && !pinned).then_some(Rejection::OracleRefusalWithoutReason(which))
+}
+
 /// A case's oracle side must match how the scenario is registered.
 fn kind_rule(kind: Kind, which: CaseRef, case: &Case) -> Option<Rejection> {
     match (kind, &case.oracle) {
@@ -441,6 +471,11 @@ pub fn validate(kind: Kind, scenario: &Scenario) -> Result<(), Vec<Rejection>> {
     {
         rejections.push(Rejection::Harn06WithoutControl(case_kind));
     }
+    rejections.extend(
+        cases
+            .iter()
+            .filter_map(|&(which, _, case)| reason_rule(which, case)),
+    );
     if rejections.is_empty() {
         Ok(())
     } else {
@@ -510,7 +545,7 @@ impl fmt::Display for CaseFailure {
 /// the expected outcome first: if that comparison is clean the oracle already
 /// does what wsx is expected to do, and the case fails whatever its record
 /// holds. Otherwise, and for every other case, the oracle run is compared with
-/// `oracle_target`.
+/// `oracle_target`, and its stderr must contain the case's `oracle_stderr`.
 pub fn judge(side: Side, case: &Case, run: &CaseRun) -> Result<(), CaseFailure> {
     let against = |target: &Outcome| compare(target, &run.before, &run.after, run.run.exit);
     let target = match side {
@@ -522,12 +557,30 @@ pub fn judge(side: Side, case: &Case, run: &CaseRun) -> Result<(), CaseFailure> 
             oracle_target(case)
         }
     };
-    let mismatches = against(target);
+    let mut mismatches = against(target);
+    if side == Side::Oracle
+        && let Some(reason) = case.oracle_stderr
+        && !contains(&run.run.stderr, reason)
+    {
+        mismatches.push(Mismatch {
+            field: Field::Stderr,
+            expected: format!("containing \"{}\"", reason.escape_ascii()),
+            got: format!("\"{}\"", run.run.stderr.escape_ascii()),
+        });
+    }
     if mismatches.is_empty() {
         Ok(())
     } else {
         Err(CaseFailure::Mismatches(mismatches))
     }
+}
+
+/// Whether `haystack` holds `needle` as a contiguous run of bytes.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty()
+        || haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 /// The module that declares a generated scenario module, from the generated
@@ -800,6 +853,9 @@ fn passes() -> Outcome {
     }
 }
 
+/// The reason every synthetic refusal pins on its oracle side.
+const REASON: &[u8] = b"refused";
+
 /// Exit 1, nothing changed: a refusal.
 fn refuses() -> Outcome {
     Outcome {
@@ -882,6 +938,7 @@ fn rejects_regression_that_is_not_a_refusal() {
     );
     let refusal = sync_case()
         .expect(refuses())
+        .oracle_stderr(REASON)
         .class(Class::Regression { reason });
     assert_eq!(
         validate(Kind::Oracle, &Scenario::new("refusal", refusal)),
@@ -914,8 +971,10 @@ fn rejects_guard_without_known_positive() {
 
 #[test]
 fn rejects_guard_without_clean_control() {
-    let scenario = Scenario::new("guard", guard_subject())
-        .control(Role::KnownPositive, pre_push_case().expect(refuses()));
+    let scenario = Scenario::new("guard", guard_subject()).control(
+        Role::KnownPositive,
+        pre_push_case().expect(refuses()).oracle_stderr(REASON),
+    );
     assert_eq!(
         validate(Kind::Oracle, &scenario),
         Err(vec![Rejection::GuardWithoutCleanControl])
@@ -949,8 +1008,14 @@ fn rejects_known_positive_control_that_passes() {
 #[test]
 fn rejects_clean_control_that_refuses() {
     let scenario = Scenario::new("guard", guard_subject())
-        .control(Role::KnownPositive, pre_push_case().expect(refuses()))
-        .control(Role::Clean, pre_push_case().expect(refuses()));
+        .control(
+            Role::KnownPositive,
+            pre_push_case().expect(refuses()).oracle_stderr(REASON),
+        )
+        .control(
+            Role::Clean,
+            pre_push_case().expect(refuses()).oracle_stderr(REASON),
+        );
     assert_eq!(
         validate(Kind::Oracle, &scenario),
         Err(vec![Rejection::CleanControlRefused(CaseRef::Control(2))])
@@ -1015,7 +1080,10 @@ fn accepts_every_harn06_kind_with_a_counterpart() {
     for kind in kinds {
         let with_control = Scenario::new("case", sync_case().expect(passes()))
             .harn06(kind)
-            .control(Role::Counterpart, sync_case().expect(refuses()));
+            .control(
+                Role::Counterpart,
+                sync_case().expect(refuses()).oracle_stderr(REASON),
+            );
         assert_eq!(
             validate(Kind::Oracle, &with_control),
             Ok(()),
@@ -1045,10 +1113,16 @@ fn accepts_well_formed_parity_scenario() {
 fn accepts_guard_with_both_controls_in_either_order() {
     let clean_first = Scenario::new("guard", guard_subject())
         .control(Role::Clean, pre_push_case().expect(passes()))
-        .control(Role::KnownPositive, pre_push_case().expect(refuses()));
+        .control(
+            Role::KnownPositive,
+            pre_push_case().expect(refuses()).oracle_stderr(REASON),
+        );
     assert_eq!(validate(Kind::Oracle, &clean_first), Ok(()));
     let known_positive_first = Scenario::new("guard", guard_subject())
-        .control(Role::KnownPositive, pre_push_case().expect(refuses()))
+        .control(
+            Role::KnownPositive,
+            pre_push_case().expect(refuses()).oracle_stderr(REASON),
+        )
         .control(Role::Clean, pre_push_case().expect(passes()));
     assert_eq!(validate(Kind::Oracle, &known_positive_first), Ok(()));
 }
@@ -1155,8 +1229,14 @@ fn fixed_case_differing() -> Scenario {
     listed_refs_variant("fixed_case_differing", 1, 0)
 }
 
+/// What the oracle's sync prints on stderr in `sync::already_up_to_date`: its
+/// fetch's report line.
+const FETCH_REPORT: &[u8] = b"-> FETCH_HEAD\n";
+
 fn fixed_record_drift() -> Scenario {
-    listed_refs_variant("fixed_record_drift", 1, 2)
+    let mut scenario = listed_refs_variant("fixed_record_drift", 1, 2);
+    scenario.subject = scenario.subject.oracle_stderr(FETCH_REPORT);
+    scenario
 }
 
 /// An oracle-capable entry in module `scenario`.
@@ -1247,7 +1327,10 @@ fn with_failing_control() -> Scenario {
             .clone()
             .expect("already_up_to_date states an outcome")
     };
-    Scenario::new("with_failing_control", subject).control(Role::Counterpart, control.expect(wrong))
+    Scenario::new("with_failing_control", subject).control(
+        Role::Counterpart,
+        control.expect(wrong).oracle_stderr(FETCH_REPORT),
+    )
 }
 
 #[test]
@@ -1264,4 +1347,88 @@ fn runner_runs_each_control_and_names_the_failing_one() {
         "{report}"
     );
     assert!(!report.contains(", subject"), "{report}");
+}
+
+// ------------------------------------------------- the oracle's refusal reason
+
+#[test]
+fn rejects_oracle_refusal_without_reason() {
+    let parity = sync_case().expect(refuses());
+    assert_eq!(
+        validate(Kind::Oracle, &Scenario::new("parity", parity)),
+        Err(vec![Rejection::OracleRefusalWithoutReason(
+            CaseRef::Subject
+        )])
+    );
+    let recorded = sync_case()
+        .expect(passes())
+        .class(Class::Fixed { defect: DEFECT })
+        .oracle(OracleSide::Recorded(refuses()));
+    assert_eq!(
+        validate(Kind::Oracle, &Scenario::new("recorded", recorded)),
+        Err(vec![Rejection::OracleRefusalWithoutReason(
+            CaseRef::Subject
+        )])
+    );
+    let empty = sync_case().expect(refuses()).oracle_stderr(b"");
+    assert_eq!(
+        validate(Kind::Oracle, &Scenario::new("empty", empty)),
+        Err(vec![Rejection::OracleRefusalWithoutReason(
+            CaseRef::Subject
+        )])
+    );
+}
+
+#[test]
+fn accepts_oracle_refusal_with_reason_and_rust_only_refusal_without() {
+    let pinned = sync_case().expect(refuses()).oracle_stderr(REASON);
+    assert_eq!(
+        validate(Kind::Oracle, &Scenario::new("pinned", pinned)),
+        Ok(())
+    );
+    let rust_only = sync_case()
+        .expect(refuses())
+        .oracle(OracleSide::NotImplemented {
+            why: "devflow has no remove command",
+        });
+    assert_eq!(
+        validate(Kind::RustOnly, &Scenario::new("rust_only", rust_only)),
+        Ok(())
+    );
+}
+
+/// `check::no_gsd_repo`'s known-positive control: the oracle refuses that
+/// repository whether or not the planted `scratch/y.md` is there. Run without
+/// the planted file, it still exits 1 with refs, commits and checkouts
+/// unchanged, so only the pinned stderr tells the two runs apart.
+#[test]
+fn oracle_refusing_for_another_reason_fails_on_its_stderr() {
+    let entry = crate::all_scenarios()
+        .into_iter()
+        .find(|entry| entry.module == "check" && entry.name == "no_gsd_repo")
+        .expect("check::no_gsd_repo is registered");
+    let mut scenario = (entry.build)();
+    let control = scenario.controls.remove(0);
+    assert_eq!(control.role, Role::KnownPositive);
+    let planted = control.case;
+    let run = run_case(Side::Oracle, &entry, &planted, &hermetic).expect("run with the file");
+    assert!(
+        judge(Side::Oracle, &planted, &run).is_ok(),
+        "the control as registered passes on the oracle"
+    );
+
+    let unplanted = Case {
+        fixture: no_steps,
+        ..planted
+    };
+    let run = run_case(Side::Oracle, &entry, &unplanted, &hermetic).expect("run without it");
+    let Err(CaseFailure::Mismatches(mismatches)) = judge(Side::Oracle, &unplanted, &run) else {
+        panic!("a refusal for another reason must fail on the oracle");
+    };
+    let fields: Vec<Field> = mismatches.into_iter().map(|m| m.field).collect();
+    assert_eq!(
+        fields,
+        [Field::Stderr],
+        "only the stderr tells the runs apart"
+    );
 }

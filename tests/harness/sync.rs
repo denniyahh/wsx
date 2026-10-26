@@ -388,7 +388,9 @@ fn fork_layout() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        sync(advance_upstream_then_drop_it).expect(no_change(128)),
+        sync(advance_upstream_then_drop_it)
+            .expect(no_change(128))
+            .oracle_stderr(b"fatal: 'upstream' does not appear to be a git repository\n"),
     )
     .harn06(CaseKind::ForkLayout)
 }

@@ -46,6 +46,11 @@ fn verdict(exit: i32) -> Outcome {
     }
 }
 
+/// What the oracle prints refusing the undeclared `notes/todo.md` against
+/// `origin/develop`.
+const UNDECLARED_NOTE: &[u8] = b"diverges from origin/develop in ways .workspace-divergence does \
+      not declare:\n  undeclared workspace-only path: notes/todo.md (declare: only notes/todo.md)\n";
+
 /// The oracle's self-test for the divergence check (HARN-01), a guard with
 /// both controls (HARN-05). The subject declares `only notes` and carries
 /// `notes/todo.md`, so every difference from the integration branch is
@@ -63,7 +68,9 @@ fn self_test() -> Scenario {
     )
     .control(
         Role::KnownPositive,
-        check_in_work(RepoConfig::devflow(), add_note).expect(verdict(1)),
+        check_in_work(RepoConfig::devflow(), add_note)
+            .expect(verdict(1))
+            .oracle_stderr(UNDECLARED_NOTE),
     )
     .control(
         Role::Clean,
@@ -93,6 +100,15 @@ fn add_quoted_personal(fixture: &mut Fixture) -> Result<(), String> {
 const QUOTED_NAMES_DEFECT: &str = "the oracle exits 1, refusing the personal files \
      .planning/\\xC3\\xA9.md, .planning/a\\nb.md and .planning/\\xFF.md as undeclared";
 
+/// What the oracle prints refusing the three quoted names: each C-quoted, so
+/// none falls under the declared `.planning`.
+const QUOTED_NAMES_REFUSAL: &[u8] = b"undeclared workspace-only path: \".planning/a\\nb.md\" \
+      (declare: only \".planning/a\\nb.md\")\n  \
+      undeclared workspace-only path: \".planning/\\303\\251.md\" \
+      (declare: only \".planning/\\303\\251.md\")\n  \
+      undeclared workspace-only path: \".planning/\\377.md\" \
+      (declare: only \".planning/\\377.md\")\n";
+
 /// HARN-06 path names for the divergence check, a guard with both controls
 /// (HARN-05). The workspace branch adds three personal files under
 /// `.planning`, which the devflow preset declares `only`, named with the
@@ -117,11 +133,14 @@ fn quoted_personal_names() -> Scenario {
             .class(Class::Fixed {
                 defect: QUOTED_NAMES_DEFECT,
             })
-            .oracle(OracleSide::Recorded(verdict(1))),
+            .oracle(OracleSide::Recorded(verdict(1)))
+            .oracle_stderr(QUOTED_NAMES_REFUSAL),
     )
     .control(
         Role::KnownPositive,
-        check_in_work(RepoConfig::devflow(), add_note).expect(verdict(1)),
+        check_in_work(RepoConfig::devflow(), add_note)
+            .expect(verdict(1))
+            .oracle_stderr(UNDECLARED_NOTE),
     )
     .control(
         Role::Clean,
@@ -153,7 +172,13 @@ fn fork_layout() -> Scenario {
     )
     .control(
         Role::KnownPositive,
-        check_in_work(fork(), add_note).expect(verdict(1)),
+        check_in_work(fork(), add_note)
+            .expect(verdict(1))
+            .oracle_stderr(
+                b"diverges from upstream/develop in ways .workspace-divergence does not \
+                  declare:\n  undeclared workspace-only path: notes/todo.md (declare: only \
+                  notes/todo.md)\n",
+            ),
     )
     .control(
         Role::Clean,
@@ -199,6 +224,9 @@ const NO_GSD_DEFECT: &str =
 ///
 /// The known-positive control is the same repository whose workspace branch
 /// also adds an undeclared `scratch/y.md` and must be refused (Parity). The
+/// oracle refuses this repository whether or not `scratch/y.md` is there, so
+/// on the oracle side its exit code alone would not show the planted file
+/// being caught; its pinned stderr names `scratch/y.md`, which does. The
 /// clean control is the devflow preset and must pass (Parity), so the oracle
 /// is seen both refusing and passing in the same run.
 fn no_gsd_repo() -> Scenario {
@@ -209,11 +237,19 @@ fn no_gsd_repo() -> Scenario {
             .class(Class::Fixed {
                 defect: NO_GSD_DEFECT,
             })
-            .oracle(OracleSide::Recorded(verdict(1))),
+            .oracle(OracleSide::Recorded(verdict(1)))
+            .oracle_stderr(
+                b"  undeclared workspace-only path: .wsx.conf (declare: only .wsx.conf)\n  \
+                  undeclared workspace-only path: notes/todo.md (declare: only notes/todo.md)\n",
+            ),
     )
     .control(
         Role::KnownPositive,
-        check_in_work(RepoConfig::no_gsd(), add_scratch).expect(verdict(1)),
+        check_in_work(RepoConfig::no_gsd(), add_scratch)
+            .expect(verdict(1))
+            .oracle_stderr(
+                b"undeclared workspace-only path: scratch/y.md (declare: only scratch/y.md)\n",
+            ),
     )
     .control(
         Role::Clean,

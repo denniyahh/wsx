@@ -187,6 +187,10 @@ fn cut_outcome(
     }
 }
 
+/// What the oracle prints when a replayed commit conflicts; the commit id
+/// and the conflicting paths follow it.
+const UNRESOLVED_CONFLICT: &[u8] = b"error: unresolved code conflict in commit ";
+
 /// A refused cut: exit 1 with refs, commits and files unchanged.
 fn refusal() -> Outcome {
     Outcome {
@@ -622,7 +626,8 @@ fn merge_resolution_adds_personal_file() -> Scenario {
             refusal(),
             recorded,
             "the refused cut leaves a new branch feature/topic-pr behind",
-        ),
+        )
+        .oracle_stderr(UNRESOLVED_CONFLICT),
     )
     .control(
         Role::Counterpart,
@@ -878,7 +883,8 @@ fn conflict_leaves_partial_pr_branch() -> Scenario {
             recorded,
             "the refused cut leaves a new branch feature/phase-1-pr behind, holding a new commit \
              feat(1): add b",
-        ),
+        )
+        .oracle_stderr(UNRESOLVED_CONFLICT),
     )
     .control(
         Role::Counterpart,
@@ -1083,10 +1089,12 @@ fn fork_layout() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        fork_phase_cut(fork_phase_without_upstream).expect(Outcome {
-            exit: NO_BASE_REMOTE_EXIT,
-            ..refusal()
-        }),
+        fork_phase_cut(fork_phase_without_upstream)
+            .expect(Outcome {
+                exit: NO_BASE_REMOTE_EXIT,
+                ..refusal()
+            })
+            .oracle_stderr(b"fatal: 'upstream' does not appear to be a git repository\n"),
     )
     .harn06(CaseKind::ForkLayout)
 }
@@ -1242,7 +1250,12 @@ fn no_gsd_repo() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        no_gsd_topic_cut(topic_from_develop_dirty).expect(refusal()),
+        no_gsd_topic_cut(topic_from_develop_dirty)
+            .expect(refusal())
+            .oracle_stderr(
+                b"error: working tree has uncommitted changes. Commit or stash them before \
+                  cutting a PR branch.\n",
+            ),
     )
     .harn06(CaseKind::NoGsd)
 }
