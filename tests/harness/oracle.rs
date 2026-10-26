@@ -1,0 +1,430 @@
+//! The oracle adapter: devflow's vendored scripts, run from a patched scratch
+//! copy.
+//!
+//! `tests/oracle` stays byte-identical to devflow. `OracleCopy::prepare`
+//! copies it into the scenario root and applies `oracle.patch` there with the
+//! scenario environment, whose `GIT_CEILING_DIRECTORIES` stops `git apply` from
+//! discovering the wsx checkout above `target/` (where it would skip every
+//! file and still exit 0). It then refuses the copy unless every patched
+//! script carries `WSX_ORACLE_DIR`, so a silently skipped patch can never run.
+
+use std::ffi::OsStr;
+use std::fmt;
+use std::fs;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+use crate::action::Action;
+use crate::env::{Env, ScenarioDirs, command};
+use crate::fixture::Fixture;
+
+/// The vendored oracle, as committed.
+const ORACLE_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/oracle");
+
+/// The scripts `oracle.patch` changes; each must carry `WSX_ORACLE_DIR` after
+/// the apply.
+const PATCHED_SCRIPTS: [&str; 3] = [
+    "check-workspace-divergence.sh",
+    "phase-worktree.sh",
+    "hooks/pre-push",
+];
+
+/// What one run of an implementation did.
+#[derive(Clone, Debug)]
+pub struct ActionRun {
+    /// `None` when the process was killed by a signal.
+    pub exit: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// The implementation has no counterpart for this action.
+#[derive(Clone, Debug)]
+pub struct NotImplemented {
+    pub action: Action,
+    pub why: &'static str,
+}
+
+/// Why an adapter produced no run.
+#[derive(Clone, Debug)]
+pub enum AdapterError {
+    NotImplemented(NotImplemented),
+    /// The process could not be started or fed its input.
+    Spawn(String),
+}
+
+impl fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AdapterError::NotImplemented(NotImplemented { action, why }) => {
+                write!(f, "not implemented: {action}: {why}")
+            }
+            AdapterError::Spawn(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// A patched scratch copy of the oracle.
+pub struct OracleCopy {
+    pub dir: PathBuf,
+}
+
+impl OracleCopy {
+    /// Copies `tests/oracle` to `<root>/oracle`, applies `oracle.patch` there
+    /// with `env`, and checks that every patched script mentions
+    /// `WSX_ORACLE_DIR`.
+    pub fn prepare(dirs: &ScenarioDirs, env: &Env) -> Result<OracleCopy, String> {
+        let dir = dirs.root.join("oracle");
+        copy_tree(Path::new(ORACLE_SOURCE), &dir)?;
+        let output = command("git", &dir, env)
+            .args(["apply", "oracle.patch"])
+            .output()
+            .map_err(|err| format!("spawn git apply in {}: {err}", dir.display()))?;
+        if output.status.code() != Some(0) {
+            return Err(format!(
+                "git apply oracle.patch exited {:?}; stderr: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ));
+        }
+        for script in PATCHED_SCRIPTS {
+            let path = dir.join(script);
+            let text = fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+            if !text.windows(14).any(|window| window == b"WSX_ORACLE_DIR") {
+                return Err(format!(
+                    "{script} lacks WSX_ORACLE_DIR after git apply: the patch was not applied"
+                ));
+            }
+        }
+        Ok(OracleCopy { dir })
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|err| format!("create {}: {err}", to.display()))?;
+    let entries = fs::read_dir(from).map_err(|err| format!("read {}: {err}", from.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("read {}: {err}", from.display()))?;
+        let (source, target) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry
+            .file_type()
+            .map_err(|err| format!("stat {}: {err}", source.display()))?;
+        if kind.is_dir() {
+            copy_tree(&source, &target)?;
+        } else {
+            fs::copy(&source, &target)
+                .map_err(|err| format!("copy {}: {err}", source.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs `bash <copy>/<script> <args>` in `cwd` with `env`, plus
+/// `WSX_ORACLE_DIR=<copy>` for this child only, feeding `stdin` if given.
+pub fn run_script(
+    copy: &OracleCopy,
+    script: &str,
+    args: &[&OsStr],
+    cwd: &Path,
+    env: &Env,
+    stdin: Option<&[u8]>,
+) -> Result<ActionRun, AdapterError> {
+    let mut child = command("bash", cwd, env);
+    child
+        .arg(copy.dir.join(script))
+        .args(args)
+        .env("WSX_ORACLE_DIR", &copy.dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if stdin.is_some() {
+        child.stdin(Stdio::piped());
+    }
+    spawn_and_wait(child, stdin, script)
+}
+
+/// Spawns `child`, writes `stdin` to it if given, and collects its run.
+///
+/// stdin is written from its own thread while stdout and stderr are drained,
+/// so a child that fills its output pipe before reading its input cannot
+/// deadlock the run. A child that exits without reading all of its input
+/// closes the pipe; the resulting broken pipe is not an error, so its exit
+/// code and output are still reported.
+pub fn spawn_and_wait(
+    mut child: std::process::Command,
+    stdin: Option<&[u8]>,
+    what: &str,
+) -> Result<ActionRun, AdapterError> {
+    let fail =
+        |step: &str, err: std::io::Error| AdapterError::Spawn(format!("{step} {what}: {err}"));
+    let mut process = child.spawn().map_err(|err| fail("spawn", err))?;
+    let writer = match stdin {
+        Some(input) => {
+            let mut pipe = process
+                .stdin
+                .take()
+                .ok_or_else(|| AdapterError::Spawn(format!("no stdin pipe for {what}")))?;
+            let input = input.to_vec();
+            Some(std::thread::spawn(move || match pipe.write_all(&input) {
+                Err(err) if err.kind() != ErrorKind::BrokenPipe => Err(err),
+                _ => Ok(()),
+            }))
+        }
+        None => None,
+    };
+    let output = process
+        .wait_with_output()
+        .map_err(|err| fail("wait for", err))?;
+    if let Some(writer) = writer {
+        writer
+            .join()
+            .map_err(|_| AdapterError::Spawn(format!("the stdin writer for {what} panicked")))?
+            .map_err(|err| fail("write stdin to", err))?;
+    }
+    Ok(ActionRun {
+        exit: output.status.code(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
+}
+
+/// `env` plus `vars`, for one child.
+fn with_vars(env: &Env, vars: &[(&str, &str)]) -> Env {
+    let mut env = env.clone();
+    env.extend(
+        vars.iter()
+            .map(|(key, value)| ((*key).into(), (*value).into())),
+    );
+    env
+}
+
+/// Whether `text` is a phase number as the oracle scripts accept one: digits
+/// and dots only, and not empty.
+fn is_phase_number(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+}
+
+/// The oracle has no counterpart for `action`, for the reason `why`.
+fn not_implemented(action: &Action, why: &'static str) -> Result<ActionRun, AdapterError> {
+    Err(AdapterError::NotImplemented(NotImplemented {
+        action: action.clone(),
+        why,
+    }))
+}
+
+/// Runs `action` on the oracle, or says why the oracle has no counterpart.
+pub fn run(
+    action: &Action,
+    fixture: &Fixture,
+    copy: &OracleCopy,
+    env: &Env,
+) -> Result<ActionRun, AdapterError> {
+    match action {
+        Action::Sync { checkout } => {
+            let config = &fixture.config;
+            run_script(
+                copy,
+                "sync-workspace.sh",
+                &[
+                    OsStr::new(&config.base_remote),
+                    OsStr::new(&config.integration),
+                ],
+                &fixture.checkout(checkout),
+                env,
+                None,
+            )
+        }
+        Action::Check { checkout } => {
+            let config = &fixture.config;
+            let base_ref = format!("{}/{}", config.base_remote, config.integration);
+            run_script(
+                copy,
+                "check-workspace-divergence.sh",
+                &[OsStr::new(&base_ref)],
+                &fixture.checkout(checkout),
+                env,
+                None,
+            )
+        }
+        Action::NewWorktree {
+            checkout,
+            branch,
+            no_sync,
+        } => {
+            let Some(phase) = branch
+                .strip_prefix("feature/phase-")
+                .filter(|phase| is_phase_number(phase))
+            else {
+                return not_implemented(
+                    action,
+                    "phase-worktree.sh derives the branch from a phase number \
+                     (feature/phase-<N>), so a worktree for any other branch is Rust-only",
+                );
+            };
+            let mut args = vec![OsStr::new(phase)];
+            if *no_sync {
+                args.push(OsStr::new("--no-sync"));
+            }
+            run_script(
+                copy,
+                "phase-worktree.sh",
+                &args,
+                &fixture.checkout(checkout),
+                &with_vars(env, &[("WORKSPACE_BASE", &fixture.config.workspace)]),
+                None,
+            )
+        }
+        Action::Cut {
+            checkout,
+            scope,
+            pr_branch,
+        } => run_cut(
+            action,
+            fixture,
+            copy,
+            env,
+            checkout,
+            scope.as_deref(),
+            pr_branch.as_deref(),
+        ),
+        Action::PrePush {
+            checkout, remote, ..
+        } => {
+            let input = action
+                .push_input(fixture)
+                .map_err(AdapterError::Spawn)?
+                .ok_or_else(|| AdapterError::Spawn(format!("no push input for {action}")))?;
+            run_script(
+                copy,
+                "hooks/pre-push",
+                &[OsStr::new(remote), &input.url],
+                &fixture.checkout(checkout),
+                env,
+                Some(&input.stdin),
+            )
+        }
+        Action::RemoveWorktree { .. } => {
+            not_implemented(action, "the oracle has no command that removes a worktree")
+        }
+    }
+}
+
+/// Runs `cut-pr-branch.sh` for a cut in `checkout`, with `BASE_REMOTE` and
+/// `WORKSPACE_BASE` on the child. A numeric scope becomes `--phase <scope>`;
+/// a PR branch name is the first positional argument, and the integration
+/// branch the second, only then.
+///
+/// The script switches to phase mode by itself on a `feature/phase-<N>`
+/// branch, so a cut with no scope from such a branch still runs as a phase
+/// cut: a scenario that needs a plain cut uses another source branch name.
+fn run_cut(
+    action: &Action,
+    fixture: &Fixture,
+    copy: &OracleCopy,
+    env: &Env,
+    checkout: &str,
+    scope: Option<&str>,
+    pr_branch: Option<&str>,
+) -> Result<ActionRun, AdapterError> {
+    let config = &fixture.config;
+    let mut args: Vec<&OsStr> = Vec::new();
+    if let Some(scope) = scope {
+        if !is_phase_number(scope) {
+            return not_implemented(
+                action,
+                "cut-pr-branch.sh scopes a cut only by phase number (--phase <N>)",
+            );
+        }
+        args.extend([OsStr::new("--phase"), OsStr::new(scope)]);
+    }
+    match pr_branch {
+        Some(pr_branch) => args.extend([OsStr::new(pr_branch), OsStr::new(&config.integration)]),
+        None if config.integration != "develop" => {
+            return not_implemented(
+                action,
+                "cut-pr-branch.sh takes the integration branch only after a PR branch name, \
+                 so without one it cuts against develop",
+            );
+        }
+        None => {}
+    }
+    let vars = [
+        ("BASE_REMOTE", config.base_remote.as_str()),
+        ("WORKSPACE_BASE", config.workspace.as_str()),
+    ];
+    run_script(
+        copy,
+        "cut-pr-branch.sh",
+        &args,
+        &fixture.checkout(checkout),
+        &with_vars(env, &vars),
+        None,
+    )
+}
+
+/// One MiB: more than a pipe buffer holds, so a writer blocks until the
+/// other end reads or closes.
+const MORE_THAN_A_PIPE: usize = 1 << 20;
+
+/// `bash -c <script>` in a scratch root with the hermetic environment, all
+/// three streams piped.
+fn bash_child(dirs: &ScenarioDirs, script: &str) -> std::process::Command {
+    let env = crate::env::hermetic_env(&[], dirs);
+    let mut child = command("bash", &dirs.root, &env);
+    child
+        .args(["-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    child
+}
+
+/// A child that exits without reading its input still yields its run: the
+/// exit code and both streams, not an adapter error.
+#[test]
+fn a_child_that_ignores_its_input_still_yields_its_run() {
+    let dirs = ScenarioDirs::new("oracle", "ignores_input").expect("scenario dirs");
+    let child = bash_child(&dirs, "echo out; echo err >&2; exit 3");
+    let input = vec![b'x'; MORE_THAN_A_PIPE];
+    let run = spawn_and_wait(child, Some(&input), "a child that ignores stdin")
+        .unwrap_or_else(|err| panic!("the run is reported, not lost: {err}"));
+    assert_eq!(run.exit, Some(3));
+    assert_eq!(run.stdout, b"out\n");
+    assert_eq!(run.stderr, b"err\n");
+}
+
+/// How long the run below may take; it finishes in well under a second
+/// unless it deadlocks.
+const DEADLOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A child that fills its stdout pipe before it reads its stdin finishes: the
+/// harness drains the output while it writes the input.
+#[test]
+fn a_child_that_writes_before_reading_does_not_deadlock() {
+    let dirs = ScenarioDirs::new("oracle", "writes_first").expect("scenario dirs");
+    let script = format!("head -c {MORE_THAN_A_PIPE} /dev/zero; cat >/dev/null; echo read >&2");
+    let child = bash_child(&dirs, &script);
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let input = vec![b'x'; MORE_THAN_A_PIPE];
+        let _ = send.send(spawn_and_wait(
+            child,
+            Some(&input),
+            "a child that writes first",
+        ));
+    });
+    let run = receive
+        .recv_timeout(DEADLOCK_TIMEOUT)
+        .unwrap_or_else(|_| panic!("the run deadlocked: no result within {DEADLOCK_TIMEOUT:?}"))
+        .unwrap_or_else(|err| panic!("the run is reported: {err}"));
+    assert_eq!(run.exit, Some(0), "stderr: {:?}", run.stderr);
+    assert_eq!(
+        run.stdout.len(),
+        MORE_THAN_A_PIPE,
+        "all of stdout is collected"
+    );
+    assert_eq!(run.stderr, b"read\n", "the child read all of its input");
+}

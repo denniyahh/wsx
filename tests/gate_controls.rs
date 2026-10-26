@@ -2,6 +2,8 @@
 //! `scripts/check.sh` or `clippy.toml` refuses the case it exists for.
 //!
 //! - A tool missing from PATH is named on stderr and fails the gate (DEV-01).
+//! - `check.sh coverage` sets `CARGO_LLVM_COV_SETUP=no` itself, so
+//!   cargo-llvm-cov never installs a toolchain component.
 //! - The nextest pin is checked on the binary cargo runs, not on another copy
 //!   found by a different search (T-01-07).
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
@@ -139,6 +141,105 @@ fn missing_nextest_fails_test_by_name() {
 #[test]
 fn missing_cargo_deny_fails_deps_by_name() {
     assert_missing_tool_named("deps", &["dirname", "cargo"], "cargo-deny");
+}
+
+#[test]
+fn missing_cargo_llvm_cov_fails_coverage_by_name() {
+    assert_missing_tool_named("coverage", &["dirname", "cargo", "rustc"], "cargo-llvm-cov");
+}
+
+/// The cargo-llvm-cov version `scripts/install-tools.sh` pins, read from the
+/// script so the pin stays in one place.
+fn pinned_llvm_cov_version() -> String {
+    let script = Path::new(REPO_ROOT).join("scripts/install-tools.sh");
+    let text = fs::read_to_string(&script).expect("read scripts/install-tools.sh");
+    text.lines()
+        .find_map(|line| line.strip_prefix("CARGO_LLVM_COV_VERSION="))
+        .expect("install-tools.sh pins CARGO_LLVM_COV_VERSION")
+        .to_owned()
+}
+
+/// A stand-in `cargo`: `cargo llvm-cov --version` reports the pinned version,
+/// `cargo llvm-cov nextest ...` records the `CARGO_LLVM_COV_SETUP` it sees
+/// (`<unset>` if none) and its arguments in `record`, and anything else runs
+/// the real cargo.
+fn cargo_stub(real: &Path, pin: &str, record: &Path) -> String {
+    format!(
+        "#!/bin/bash\n\
+         if [ \"$1\" = llvm-cov ] && [ \"$2\" = --version ]; then\n\
+         \x20   echo 'cargo-llvm-cov {pin}'; exit 0\n\
+         fi\n\
+         if [ \"$1\" = llvm-cov ] && [ \"$2\" = nextest ]; then\n\
+         \x20   printf '%s\\n' \"${{CARGO_LLVM_COV_SETUP-<unset>}}\" \"$@\" > '{record}'; exit 0\n\
+         fi\n\
+         exec '{real}' \"$@\"\n",
+        real = real.display(),
+        record = record.display(),
+    )
+}
+
+/// `check.sh coverage` runs cargo-llvm-cov with `CARGO_LLVM_COV_SETUP=no`, set
+/// by the script itself, so a missing llvm-tools component fails instead of
+/// being installed: the variable is removed from the environment check.sh
+/// starts in, and the stub must still see `no`.
+#[test]
+fn coverage_runs_cargo_llvm_cov_with_setup_disabled() {
+    let root = fresh_dir("coverage-setup");
+    let stub_dir = root.join("stub");
+    fs::create_dir_all(&stub_dir).expect("create the stub dir");
+    let record = root.join("record");
+    let cargo = stub_dir.join("cargo");
+    fs::write(
+        &cargo,
+        cargo_stub(&on_path("cargo"), &pinned_llvm_cov_version(), &record),
+    )
+    .expect("write the cargo stub");
+    let llvm_cov = stub_dir.join("cargo-llvm-cov");
+    fs::write(&llvm_cov, "#!/bin/bash\nexit 1\n").expect("write a cargo-llvm-cov stand-in");
+    for file in [&cargo, &llvm_cov] {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    }
+    let tools = minimal_path(
+        "coverage-setup-tools",
+        &["bash", "rustc", "dirname", "cargo-nextest"],
+    );
+    let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
+
+    let output = Command::new("/bin/bash")
+        .arg(check_sh())
+        .args(["coverage", "-E", "test(=some::test)"])
+        .env("PATH", path)
+        .env_remove("CARGO_LLVM_COV_SETUP")
+        .output()
+        .expect("spawn /bin/bash scripts/check.sh coverage");
+    let stdout = text(output.stdout, "check.sh stdout");
+    let stderr = text(output.stderr, "check.sh stderr");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "check.sh coverage with the stub; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    let recorded = fs::read_to_string(&record).expect("the stub recorded its run");
+    let lines: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        lines.first(),
+        Some(&"no"),
+        "CARGO_LLVM_COV_SETUP as cargo-llvm-cov sees it; recorded: {recorded:?}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "llvm-cov",
+            "nextest",
+            "--locked",
+            "--workspace",
+            "--no-fail-fast",
+            "--no-tests=fail",
+            "-E",
+            "test(=some::test)"
+        ],
+        "the cargo-llvm-cov command line"
+    );
 }
 
 /// A stand-in `cargo-nextest`. Run directly with `--version` it hands off to
@@ -447,4 +548,120 @@ fn container_gate_mounts_its_own_checkout_not_the_callers() {
         args.lines().any(|arg| arg == own_image),
         "the image must come from the script's own Dockerfile, got docker args {args:?}"
     );
+}
+
+/// Runs git in `repo` with no inherited git environment or config, a fixed
+/// identity and no signing, and requires it to succeed.
+fn git_in(repo: &Path, args: &[&str]) {
+    let output = without_git_env("git")
+        .current_dir(repo)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .expect("spawn git");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "git {args:?} in {}; stderr: {:?}",
+        repo.display(),
+        text(output.stderr, "git stderr")
+    );
+}
+
+/// A minimal crate, rustfmt-clean, with copies of `scripts/check.sh` and
+/// `rust-toolchain.toml`, so `check.sh fmt` runs on it. With `commit`, it is
+/// a git repository holding one commit of every file.
+fn fmt_fixture(name: &str, commit: bool) -> PathBuf {
+    let repo = fresh_dir(name);
+    fs::create_dir_all(repo.join("src")).expect("create fixture src");
+    fs::create_dir_all(repo.join("scripts")).expect("create fixture scripts");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"fmt-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+         [workspace]\n",
+    )
+    .expect("write fixture Cargo.toml");
+    fs::write(repo.join("src/main.rs"), "fn main() {}\n").expect("write fixture main.rs");
+    fs::write(repo.join("src/gone.rs"), "pub fn gone() {}\n").expect("write fixture gone.rs");
+    for file in ["scripts/check.sh", "rust-toolchain.toml"] {
+        fs::copy(Path::new(REPO_ROOT).join(file), repo.join(file))
+            .unwrap_or_else(|err| panic!("copy {file} into the fixture: {err}"));
+    }
+    if commit {
+        git_in(&repo, &["init", "--quiet"]);
+        git_in(&repo, &["add", "--all"]);
+        git_in(&repo, &["commit", "--quiet", "-m", "fixture"]);
+    }
+    repo
+}
+
+/// `check.sh fmt` of the fixture at `repo`, with git stopped from searching
+/// above it, so it never finds this checkout around `target/`.
+fn fixture_fmt(repo: &Path) -> (Option<i32>, String, String) {
+    let ceiling = repo.parent().expect("the fixture has a parent");
+    let output = without_git_env("/bin/bash")
+        .arg(repo.join("scripts/check.sh"))
+        .arg("fmt")
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
+        .output()
+        .expect("spawn the fixture's check.sh fmt");
+    (
+        output.status.code(),
+        text(output.stdout, "check.sh stdout"),
+        text(output.stderr, "check.sh stderr"),
+    )
+}
+
+#[test]
+fn missing_git_fails_fmt_by_name() {
+    assert_missing_tool_named("fmt", &["dirname", "cargo", "rustc", "cargo-fmt"], "git");
+}
+
+/// Outside a git work tree, such as a `git archive` snapshot, fmt says it
+/// needs one instead of failing on git's own message.
+#[test]
+fn fmt_refuses_outside_a_git_work_tree() {
+    let repo = fmt_fixture("fmt-no-work-tree", false);
+    let (code, stdout, stderr) = fixture_fmt(&repo);
+    assert_eq!(code, Some(1), "stdout: {stdout:?}; stderr: {stderr:?}");
+    assert!(
+        stderr.contains(
+            "'check.sh fmt' lists the .rs files with git, so it must run in a git work tree"
+        ),
+        "the refusal must say fmt needs a work tree, got {stderr:?}"
+    );
+    assert!(!stdout.contains("fmt OK"), "got stdout {stdout:?}");
+}
+
+/// A tracked .rs file deleted from disk but not staged is skipped, not handed
+/// to rustfmt; the rest of the fixture is clean, so fmt passes.
+#[test]
+fn fmt_skips_a_tracked_file_deleted_from_disk() {
+    let repo = fmt_fixture("fmt-deleted-file", true);
+    fs::remove_file(repo.join("src/gone.rs")).expect("delete gone.rs from disk");
+    let (code, stdout, stderr) = fixture_fmt(&repo);
+    assert_eq!(code, Some(0), "stdout: {stdout:?}; stderr: {stderr:?}");
+    assert!(stdout.contains("check.sh: fmt OK"), "got stdout {stdout:?}");
+}
+
+/// An untracked .rs file that no `mod` reaches, as a new scenario module is
+/// before `git add`, is still checked: a misformatted one fails fmt.
+#[test]
+fn fmt_checks_an_untracked_rs_file() {
+    let repo = fmt_fixture("fmt-untracked-file", true);
+    fs::write(repo.join("src/extra.rs"), "pub fn  extra( ) {}\n").expect("write extra.rs");
+    let (code, stdout, stderr) = fixture_fmt(&repo);
+    assert_ne!(code, Some(0), "stdout: {stdout:?}; stderr: {stderr:?}");
+    assert!(
+        stdout.contains("src/extra.rs"),
+        "rustfmt's diff must name src/extra.rs; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(!stdout.contains("fmt OK"), "got stdout {stdout:?}");
 }

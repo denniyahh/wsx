@@ -15,6 +15,8 @@ not change it. It is deleted at cutover.
 
 - `scripts/check.sh all`: fmt, clippy, test. The default target and the gate for every change.
 - `scripts/check.sh fmt|clippy|test|deps`: one gate; `deps` (cargo-deny) is not part of `all`.
+- `scripts/check.sh coverage`: `cargo llvm-cov` over the suite with `CARGO_LLVM_COV_SETUP=no`;
+  needs the pinned cargo-llvm-cov, not part of `all`, no CI job.
 - `scripts/check.sh test -E 'test(=name)'`: one named test (`--no-tests=fail` is always set).
 - `scripts/check-in-container.sh [target]`: the same gate in the pinned image CI uses.
 - `scripts/assert-image-parity.sh`: every workflow image matches the devcontainer pin.

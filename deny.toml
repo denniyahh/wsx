@@ -16,6 +16,10 @@ ignore = []
 # arrives, not ahead of it.
 allow = ["MIT"]
 confidence-threshold = 0.93
+# cargo-deny 0.20.2 license-checks only normal dependencies by default; without
+# this line the gate never saw tempfile or its transitive crates (verified
+# 2026-10-26).
+include-dev = true
 
 [bans]
 multiple-versions = "warn"

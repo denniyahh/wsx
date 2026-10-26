@@ -22,7 +22,7 @@ order.
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Development foundation** - Pinned toolchain, one gate script, container parity, CI with required checks, and supply-chain scanners proven to bite (completed 2026-10-25)
-- [ ] **Phase 2: Oracle harness** - Hermetic scenario suite over the vendored shell oracle and the Rust binary, with recorded expectations and the hard-case matrix
+- [x] **Phase 2: Oracle harness** - Hermetic scenario suite over the vendored shell oracle and the Rust binary, with recorded expectations and the hard-case matrix (completed 2026-10-26)
 - [ ] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal
 - [ ] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths
 - [ ] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins
@@ -83,7 +83,39 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The runner enforces the difference classes and the guard controls. A `fixed:` scenario fails the suite if it passes on the oracle, or, once its Rust side is enabled, if it fails on Rust. A `regression:` scenario must be a refusal. A guard scenario lacking either a known-positive control or a clean control is rejected
   5. Each HARN-06 case is a scenario with a control, run against the oracle with its outcome recorded wherever the oracle implements that behaviour; a case it lacks is marked Rust-only. The cases are: merge commits (including a conflict resolved by adding a personal file), squash-merged PRs, fork remotes (base `upstream`, push `origin`, no `origin/<integration>`), scoped and unscoped commits in one cut, a repo with no GSD, devflow or agent files, non-ASCII, newline and non-UTF-8 path names, and an existing PR branch with extra commits. The runner reports by name every scenario whose Rust side is not yet enabled
 
-**Plans**: TBD
+**Plans**: 15/15 plans complete
+**Wave 1**
+- [x] 02-01-PLAN.md — Inputs: devflow oracle vendored at ee6ec792, `oracle.patch`, `tempfile` dev-dependency, `include-dev` license check
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 02-02-PLAN.md — Tracer: one sync scenario through the patched oracle in a hermetic fixture, explicit expected outcome; symrefs recorded by target
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 02-03-PLAN.md — Fixture layouts (devflow, no-GSD, fork) and the harness module tree
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 02-04-PLAN.md — Oracle provenance: vendored blobs and patch checked against devflow, with controls
+- [x] 02-05-PLAN.md — Runner rules: `validate`, `judge`, difference classes, guard controls, disabled-Rust-side report
+- [x] 02-06-PLAN.md — Coverage: `llvm-tools` component, cargo-llvm-cov 0.9.1 pin, spawned-binary coverage proof
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [x] 02-07-PLAN.md — Oracle adapters and self-tests for phase-worktree, divergence check, cut and pre-push
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [x] 02-08-PLAN.md — Per-field comparator mutation test; per-run SSH signing declared in repo config
+- [x] 02-09-PLAN.md — Hermeticity proof: planted host config and hook never reach scenarios; control fires
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [x] 02-10-PLAN.md — Guard cases: quoted names, pre-push bypasses, fork and no-GSD
+- [x] 02-11-PLAN.md — Cut cases: reproduced defects and merge cases
+- [x] 02-12-PLAN.md — Sync and worktree cases: squash-merged PRs, fork layout, no-GSD refusal
+- [x] 02-13-PLAN.md — Divergence-check cases, including no-GSD refusal and quoted names
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [x] 02-14-PLAN.md — Cut cases: fork layout, re-cut after squash merge, no-GSD
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [x] 02-15-PLAN.md — HARN-06 completeness check and phase gate (`all`, `deps`, container)
 
 ### Phase 3: Git adapter
 
@@ -189,7 +221,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Requirements**: PRCUT-04, PRCUT-05, PRCUT-08, PRCUT-09
 **Success Criteria** (what must be TRUE):
   1. After replay, an audit over every commit in the PR range reads names NUL-separated as raw bytes and must find zero personal paths. A personal path re-introduced after stripping, including a quoted non-ASCII name, is caught and the cut refuses with the target ref unchanged
-  2. A source branch with one scoped and one unscoped code commit refuses a `--scope` cut, naming the left-out commit, and `--allow-incomplete "<reason>"` lets it through and prints the reason with the gap. A `--scope` cut from a branch that also carries other landed work passes. A PR branch that changes a path no replayed commit touched fails. The oracle only warns, so these are `fixed:` scenarios
+  2. A source branch with one scoped and one unscoped code commit refuses a `--scope` cut, naming the left-out commit, and `--allow-incomplete "<reason>"` lets it through and prints the reason with the gap. A `--scope` cut from a branch that also carries other landed work passes. A PR branch that changes a path no replayed commit touched fails. The oracle drops the unscoped commit silently, with no warning (reproduced in phase 2 research), so these are `fixed:` scenarios
   3. An existing target PR branch refuses the cut, unless it is the recorded result of a previous cut of this source with no commits added since. With extra commits on it, `--force` prints the commits it would discard and keeps them under `refs/wsx/backup/` (the oracle's unconditional `git branch -f` is a `fixed:` scenario)
   4. An undeclared new path on the workspace branch makes `wsx cut` refuse before any replay, because the divergence check runs first
 
@@ -268,7 +300,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
-| 2. Oracle harness | 0/TBD | Not started | - |
+| 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 0/TBD | Not started | - |
 | 4. Repo model | 0/TBD | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
