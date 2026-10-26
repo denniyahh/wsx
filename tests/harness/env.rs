@@ -155,3 +155,38 @@ pub fn command(program: impl AsRef<OsStr>, cwd: &Path, env: &Env) -> Command {
         .stdin(Stdio::null());
     command
 }
+
+/// A live scenario TempDir sits directly under `CARGO_TARGET_TMPDIR`, carries
+/// the `harness-<module>-<name>-` prefix that makes a leftover attributable,
+/// and is gone once dropped.
+#[test]
+fn scenario_dirs_carry_the_harness_prefix() {
+    let dirs = ScenarioDirs::new("sync", "self_test").expect("scenario dirs");
+    let root = dirs.root.clone();
+    let tmp_root = Path::new(TMP_ROOT)
+        .canonicalize()
+        .expect("canonical CARGO_TARGET_TMPDIR");
+    assert_eq!(
+        root.parent(),
+        Some(tmp_root.as_path()),
+        "parent of {}",
+        root.display()
+    );
+    let name = root.file_name().expect("the root has a file name");
+    assert!(
+        name.as_bytes().starts_with(b"harness-sync-self_test-"),
+        "scratch root name {name:?} lacks the harness prefix"
+    );
+    assert!(
+        root.is_dir(),
+        "{} exists while the dirs live",
+        root.display()
+    );
+    drop(dirs);
+    let gone = fs::symlink_metadata(&root);
+    assert!(
+        matches!(&gone, Err(err) if err.kind() == std::io::ErrorKind::NotFound),
+        "{} must be removed on drop, got {gone:?}",
+        root.display()
+    );
+}

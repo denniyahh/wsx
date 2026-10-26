@@ -113,6 +113,33 @@ fn self_test() -> Scenario {
     )
 }
 
+/// No fixture steps beyond the preset.
+fn no_steps(_: &mut Fixture) -> Result<(), String> {
+    Ok(())
+}
+
+/// Sync in `work` when the workspace branch already contains the integration
+/// branch: nothing changes, and the script still exits 0.
+fn already_up_to_date() -> Scenario {
+    Scenario::new(
+        "already_up_to_date",
+        Case::new(
+            RepoConfig::devflow(),
+            no_steps,
+            Action::Sync {
+                checkout: WORK.to_owned(),
+            },
+        )
+        .expect(Outcome {
+            exit: 0,
+            refs: RefsExpect::Unchanged,
+            new_commits: Vec::new(),
+            files: FilesExpect::Unchanged,
+        }),
+    )
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 7";
+    already_up_to_date: oracle, rust = "Rust side not enabled until phase 7";
 }
