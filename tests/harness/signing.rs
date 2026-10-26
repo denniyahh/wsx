@@ -14,12 +14,14 @@
 //! validity.
 
 use crate::outcome::{CommitExpect, RefsExpect, Tip};
-use crate::scenario::{Case, Scenario};
+use crate::scenario::{Case, Role, Scenario};
 
 /// The merge commit the sync creates.
 const SYNC_MERGE: &[u8] = b"chore: sync develop into workspace/dev\n";
 /// The commit the sync fetches; it is made before any key exists.
 const FETCHED: &[u8] = b"feat: add b\n";
+/// The commit the PR cut replays onto the PR branch.
+const REPLAYED: &[u8] = b"feat(1): add b\n";
 
 /// The registered scenario `module::name`, built.
 fn registered(module: &str, name: &str) -> Scenario {
@@ -95,6 +97,36 @@ fn sync_merge_signed() -> Scenario {
     )
 }
 
+/// `cut::self_test`'s subject with signing declared: the replayed commit is
+/// signed. Its counterpart is `cut::self_test`'s subject unchanged, whose
+/// config declares no signing: the same replay is unsigned.
+fn cut_replay_signed() -> Scenario {
+    let mut subject = registered("cut", "self_test").subject;
+    subject.config = subject.config.with_signing();
+    let counterpart = registered("cut", "self_test").subject;
+    Scenario::new(
+        "cut_replay_signed",
+        with_signatures(
+            subject,
+            &[Signature {
+                message: REPLAYED,
+                signed: true,
+            }],
+        ),
+    )
+    .control(
+        Role::Counterpart,
+        with_signatures(
+            counterpart,
+            &[Signature {
+                message: REPLAYED,
+                signed: false,
+            }],
+        ),
+    )
+}
+
 scenarios! {
     sync_merge_signed: oracle, rust = "Rust side not enabled until phase 7";
+    cut_replay_signed: oracle, rust = "Rust side not enabled until phase 9";
 }
