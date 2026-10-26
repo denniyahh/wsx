@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-10-26T16:40:58.772Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-10-26T17:02:03.340Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 58813a0a3cf72d38faf013f7d6118df662a68ee3
+state_head: c456637b75e6e89b6aac8529c0fe7dd802486c8f
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 8
+  completed_plans: 9
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 2 of 15
+Plan: 3 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -63,6 +63,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 01 P04 | 4min | 2 tasks | 4 files |
 | Phase 01 P06 | 6min | 2 tasks | 2 files |
 | Phase 02 P01 | 3min | 3 tasks | 10 files |
+| Phase 02 P02 | 18min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,9 @@ Recent decisions affecting current work:
 - [Phase 1]: phase-1 fixes made after PR #2 merged (f1f1303) reach develop only through a follow-up PR; a phase-N cut replays only phase-N commits
 - [Phase 2]: the vendored oracle stays byte-identical to devflow ee6ec792; oracle.patch is its only adaptation and is applied with git apply under GIT_CEILING_DIRECTORIES (without it, git apply in a nested repo skips and exits 0)
 - [Phase 2]: deny.toml license-checks dev-dependencies (include-dev = true); cargo-deny 0.20.2 skips them by default
+- [Phase 2]: Harness fixture steps are fn(&mut Fixture) -> Result<(), String> and run_case(side, &Entry, &Case, make_env) returns fixture and adapter errors instead of panicking (02-02)
+- [Phase 2]: Adapters return Result<ActionRun, AdapterError { NotImplemented | Spawn }>; an oracle-side NotImplemented panics naming the scenario and action (02-02)
+- [Phase 2]: CommitExpect has no committer date per the 02-02 contract; only the author date is pinned to the action instant (open: add the field before many CommitExpect literals exist)
 
 ### Pending Todos
 
@@ -102,6 +106,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T16:40:58.668Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-10-26T17:01:54.083Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
