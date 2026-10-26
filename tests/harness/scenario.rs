@@ -230,12 +230,14 @@ pub fn run_case(
 
 /// Every registered entry names the module that declares it and the scenario
 /// its builder returns, so a later lookup by name finds the right scenario.
+/// A module may register no scenario yet (`scenarios! {}`): a scenario
+/// function it defines but leaves out of `scenarios!` is unused, which
+/// `clippy -D warnings` already rejects.
 #[test]
 fn registry_entries_match_their_scenarios() {
     let registries = crate::registries();
     let mut registered = 0;
     for (module, entries) in &registries {
-        assert!(!entries.is_empty(), "module {module} registers no scenario");
         for entry in entries {
             assert_eq!(
                 entry.module, *module,
