@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-13-PLAN.md
-last_updated: "2026-10-26T19:36:57.895Z"
+stopped_at: Completed 02-14-PLAN.md
+last_updated: "2026-10-26T19:51:22.427Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 720a6495b0aa1b975a68a54b48cee72902ac0ef5
+state_head: edc8e7f48ad1bbc33521224074dc11eea95f4e8c
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 20
+  completed_plans: 21
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 14 of 15
+Plan: 15 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -75,6 +75,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P11 | 8 min | 2 tasks | 1 files |
 | Phase 02 P12 | 9 min | 2 tasks | 2 files |
 | Phase 02 P13 | 4min | 2 tasks | 1 files |
+| Phase 02 P14 | 10min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -121,6 +122,9 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-12: worktree::no_gsd_repo's oracle refusal exits 2, not RESEARCH's exit 1 (the error-path grep fails on the missing ROADMAP.md; pipefail and set -e pass 2 through); recorded as observed
 - [Phase 02]: 02-12: sync::fork_layout's counterpart (upstream removed) expects exit 128, taken from the oracle run as the plan directs; no requirement fixes that exit code, phase 7 may choose another
 - [Phase 02]: 02-13: check::quoted_personal_names and check::no_gsd_repo are fixed: (oracle exit 1, refusing C-quoted .planning names and, without .workspace-divergence, .wsx.conf and notes/todo.md); check::fork_layout is Parity against upstream/develop; no_gsd_custom_personal_path is Rust-only
+- [Phase 02]: 02-14: fork_layout advances upstream/develop so the expected PR parent (feat: add d) tells upstream/develop apart from local develop
+- [Phase 02]: 02-14: merge_resolution_only_personal_file reads PRCUT-01 own resolution changes as changes against every parent (combined diff); a conflict resolved to develop's side is not one. Phase 9 should confirm
+- [Phase 02]: 02-14: all four planned cut oracle scenarios observed Parity as predicted; fork counterpart exit 128 recorded; the orchestrator-added merge counterpart is fixed:
 
 ### Pending Todos
 
@@ -142,6 +146,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T19:36:57.730Z
-Stopped at: Completed 02-13-PLAN.md
+Last session: 2026-10-26T19:51:22.275Z
+Stopped at: Completed 02-14-PLAN.md
 Resume file: None
