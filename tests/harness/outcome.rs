@@ -18,6 +18,11 @@
 //! `CHERRY_PICK_HEAD`, a rebase directory, ...). A cut that writes the PR tree
 //! into the user's index, or leaves the checkout detached, changes none of the
 //! files on disk, and only this record sees it.
+//!
+//! Refs are read in every namespace, not only branches, remote-tracking refs
+//! and tags, and so are the refs of every bare remote under `remotes/`; the
+//! work repository's local config is recorded too. A push to a ref no tracking
+//! ref follows, a backup ref, or an upstream setting is otherwise invisible.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -45,13 +50,16 @@ pub struct Outcome {
     pub files: FilesExpect,
 }
 
-/// The refs under refs/heads, refs/remotes and refs/tags after the action.
+/// The work repository's refs, in every namespace, after the action.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RefsExpect {
-    /// Exactly these refs exist, each with the stated tip.
+    /// Exactly these refs exist, each with the stated tip. The remote
+    /// repositories' refs and the local config are not compared.
     Exactly(Vec<RefExpect>),
-    /// The same refs exist as before, each holding what it held before
-    /// (symbolic refs by target name).
+    /// The repositories are untouched: the same refs exist as before, each
+    /// holding what it held before (symbolic refs by target name), every
+    /// remote repository under `remotes/` holds the same refs, and the work
+    /// repository's local config is the same.
     Unchanged,
 }
 
@@ -205,15 +213,25 @@ pub struct Snapshot {
     pub files: BTreeMap<(String, Vec<u8>), FileState>,
     /// Every checkout's HEAD, index and pending operations, keyed by checkout.
     pub checkouts: BTreeMap<String, CheckoutState>,
+    /// Every remote repository's refs, keyed by its path relative to the
+    /// scenario root (`remotes/origin.git`).
+    pub remote_refs: BTreeMap<String, BTreeMap<String, RefValue>>,
+    /// The work repository's local config entries, `key=value`, in file order.
+    pub config: Vec<Vec<u8>>,
 }
 
-/// Records the fixture's refs, commits, files and checkout states. With
-/// `before`, also the commits reachable now from some ref and from no ref in
-/// `before`.
+/// Where the fixture keeps its bare remote repositories.
+const REMOTES_DIR: &str = "remotes";
+
+/// Records the fixture's refs, commits, files, checkout states, remote
+/// repositories' refs and local config. With `before`, also the commits
+/// reachable now from some ref or detached HEAD and from none in `before`.
 pub fn observe(fixture: &Fixture, before: Option<&Snapshot>) -> Result<Snapshot, String> {
-    let refs = read_refs(fixture)?;
+    let refs = read_refs(fixture, WORK)?;
+    let checkouts = checkouts(fixture)?;
+    let states = read_checkout_states(fixture, &checkouts)?;
     let new_commits = match before {
-        Some(before) => read_new_commits(fixture, before, &refs)?,
+        Some(before) => read_new_commits(fixture, before, &refs, &states)?,
         None => Vec::new(),
     };
     let mut commits = BTreeMap::new();
@@ -226,13 +244,14 @@ pub fn observe(fixture: &Fixture, before: Option<&Snapshot>) -> Result<Snapshot,
             commits.insert(id.clone(), read_commit(fixture, id)?);
         }
     }
-    let checkouts = checkouts(fixture)?;
     Ok(Snapshot {
         refs,
         commits,
         new_commits,
         files: read_files(&checkouts)?,
-        checkouts: read_checkout_states(fixture, &checkouts)?,
+        checkouts: states,
+        remote_refs: read_remote_refs(fixture)?,
+        config: read_config(fixture)?,
     })
 }
 
@@ -240,15 +259,13 @@ fn utf8(bytes: &[u8], what: &str) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| format!("{what} is not UTF-8: {}", show(bytes)))
 }
 
-fn read_refs(fixture: &Fixture) -> Result<BTreeMap<String, RefValue>, String> {
+/// Every ref of the repository at `repo`, in every namespace.
+fn read_refs(fixture: &Fixture, repo: &str) -> Result<BTreeMap<String, RefValue>, String> {
     let listing = fixture.git_ok(
-        WORK,
+        repo,
         [
             "for-each-ref",
             "--format=%(refname)%00%(symref)%00%(objectname)",
-            "refs/heads",
-            "refs/remotes",
-            "refs/tags",
         ],
     )?;
     let mut refs = BTreeMap::new();
@@ -279,25 +296,76 @@ fn object_tips(refs: &BTreeMap<String, RefValue>) -> BTreeSet<&String> {
         .collect()
 }
 
+/// The object ids of `refs` and of every detached HEAD in `checkouts`.
+fn commit_tips<'a>(
+    refs: &'a BTreeMap<String, RefValue>,
+    checkouts: &'a BTreeMap<String, CheckoutState>,
+) -> BTreeSet<&'a String> {
+    let detached = checkouts.values().filter_map(|state| match &state.head {
+        HeadState::Detached(id) => Some(id),
+        HeadState::Branch(_) => None,
+    });
+    object_tips(refs).into_iter().chain(detached).collect()
+}
+
 fn read_new_commits(
     fixture: &Fixture,
     before: &Snapshot,
     refs: &BTreeMap<String, RefValue>,
+    checkouts: &BTreeMap<String, CheckoutState>,
 ) -> Result<Vec<String>, String> {
-    let after_tips = object_tips(refs);
+    let after_tips = commit_tips(refs, checkouts);
     if after_tips.is_empty() {
         return Ok(Vec::new());
     }
     let mut args = vec!["rev-list", "--topo-order", "--reverse"];
     args.extend(after_tips.iter().map(|id| id.as_str()));
     args.push("--not");
-    args.extend(object_tips(&before.refs).iter().map(|id| id.as_str()));
+    args.extend(
+        commit_tips(&before.refs, &before.checkouts)
+            .iter()
+            .map(|id| id.as_str()),
+    );
     let listing = fixture.git_ok(WORK, args)?;
     listing
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| utf8(line, "a commit id"))
         .collect()
+}
+
+/// Every bare repository under `remotes/`, by its path relative to the
+/// scenario root, with its refs.
+fn read_remote_refs(
+    fixture: &Fixture,
+) -> Result<BTreeMap<String, BTreeMap<String, RefValue>>, String> {
+    let dir = fixture.root.join(REMOTES_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(err) => return Err(format!("read {}: {err}", dir.display())),
+    };
+    let mut remotes = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("read {}: {err}", dir.display()))?;
+        let name = utf8(entry.file_name().as_bytes(), "a remote repository name")?;
+        let repo = format!("{REMOTES_DIR}/{name}");
+        let refs = read_refs(fixture, &repo)?;
+        remotes.insert(repo, refs);
+    }
+    Ok(remotes)
+}
+
+/// The work repository's local config, one `key=value` entry each.
+fn read_config(fixture: &Fixture) -> Result<Vec<Vec<u8>>, String> {
+    // `--list -z` ends each entry with NUL and puts a newline between key and
+    // value; the newline is kept as is, since only equality matters.
+    let listing = fixture.git_ok(WORK, ["config", "--local", "--list", "-z"])?;
+    Ok(listing
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect())
 }
 
 /// The first line of a commit's message.
@@ -626,6 +694,11 @@ pub enum Field {
     CheckoutPending(String),
     /// The oracle's stderr, against a case's `oracle_stderr`.
     Stderr,
+    /// A remote repository's refs; compared under `RefsExpect::Unchanged`, as
+    /// is the config below.
+    RemoteRefs(String),
+    /// The work repository's local config.
+    Config,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -676,6 +749,8 @@ impl fmt::Display for Field {
                 write!(f, "the operations in progress in checkout {name}")
             }
             Field::Stderr => write!(f, "the oracle's stderr"),
+            Field::RemoteRefs(repo) => write!(f, "the refs of the remote repository {repo}"),
+            Field::Config => write!(f, "the work repository's local config"),
         }
     }
 }
@@ -751,6 +826,20 @@ pub fn compare(
                 })
                 .collect();
             compare_refs(&as_before, before, after, &mut mismatches);
+            compare_remote_refs(&before.remote_refs, &after.remote_refs, &mut mismatches);
+            if before.config != after.config {
+                let (want, got) = differences(
+                    &entry_counts(&before.config),
+                    &entry_counts(&after.config),
+                    |entry| show(entry),
+                    |count| format!("{count} times"),
+                );
+                mismatches.push(Mismatch {
+                    field: Field::Config,
+                    expected: format!("unchanged: {want}"),
+                    got,
+                });
+            }
         }
     }
     compare_new_commits(new_commits, after, &mut mismatches);
@@ -780,6 +869,47 @@ pub fn compare(
         }
     }
     mismatches
+}
+
+/// How often each config entry occurs.
+fn entry_counts(entries: &[Vec<u8>]) -> BTreeMap<&Vec<u8>, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in entries {
+        *counts.entry(entry).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Each remote repository's refs against what they were.
+fn compare_remote_refs(
+    before: &BTreeMap<String, BTreeMap<String, RefValue>>,
+    after: &BTreeMap<String, BTreeMap<String, RefValue>>,
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let empty = BTreeMap::new();
+    let repos: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    for repo in repos {
+        let (was, now) = (
+            before.get(repo).unwrap_or(&empty),
+            after.get(repo).unwrap_or(&empty),
+        );
+        if was != now || before.contains_key(repo) != after.contains_key(repo) {
+            let (want, got) = differences(
+                was,
+                now,
+                |name| name.clone(),
+                |value| match value {
+                    RefValue::Object(id) => id.clone(),
+                    RefValue::Symbolic(target) => format!("symbolic ref to {target}"),
+                },
+            );
+            mismatches.push(Mismatch {
+                field: Field::RemoteRefs(repo.clone()),
+                expected: format!("unchanged: {want}"),
+                got,
+            });
+        }
+    }
 }
 
 fn describe_head(head: &HeadState) -> String {
@@ -1706,16 +1836,16 @@ fn refs_compare_as_a_set_and_commits_as_a_sequence() {
     );
 }
 
-// ------------------------------------- checkout state under files Unchanged
+// --------------------- checkout and repository state under the Unchanged forms
 
-/// The fields a `FilesExpect::Unchanged` outcome reports after `act` changes
-/// the devflow preset's `work` checkout, with refs, commits and exit as before.
-fn checkout_mismatches(name: &str, act: fn(&Fixture)) -> Vec<Field> {
+/// The fields an all-`Unchanged` outcome (exit 0, refs and files unchanged,
+/// no new commit) reports after `act` changes the devflow preset.
+fn untouched_mismatches(name: &str, act: fn(&mut Fixture)) -> Vec<Field> {
     let dirs = ScenarioDirs::new("outcome", name).expect("scenario dirs");
     let env = hermetic_env(&inherited_env(), &dirs);
-    let fixture = Fixture::new(&dirs, env, RepoConfig::devflow()).expect("devflow fixture");
+    let mut fixture = Fixture::new(&dirs, env, RepoConfig::devflow()).expect("devflow fixture");
     let before = observe(&fixture, None).expect("observe before");
-    act(&fixture);
+    act(&mut fixture);
     let after = observe(&fixture, Some(&before)).expect("observe after");
     let untouched = Outcome {
         exit: 0,
@@ -1733,14 +1863,14 @@ fn checkout_mismatches(name: &str, act: fn(&Fixture)) -> Vec<Field> {
 /// difference, so each mismatch below comes from its change.
 #[test]
 fn untouched_checkout_has_no_mismatch() {
-    assert_eq!(checkout_mismatches("untouched_checkout", |_| {}), []);
+    assert_eq!(untouched_mismatches("untouched_checkout", |_| {}), []);
 }
 
 /// `git read-tree develop` writes another tree into `work`'s index and leaves
 /// the files on disk, the refs and HEAD alone: only the index differs.
 #[test]
 fn files_unchanged_reports_an_overwritten_index() {
-    let fields = checkout_mismatches("overwritten_index", |fixture| {
+    let fields = untouched_mismatches("overwritten_index", |fixture| {
         fixture
             .git_ok(WORK, ["read-tree", "develop"])
             .expect("read develop's tree into the index");
@@ -1752,7 +1882,7 @@ fn files_unchanged_reports_an_overwritten_index() {
 /// files and index: only HEAD differs.
 #[test]
 fn files_unchanged_reports_a_detached_head() {
-    let fields = checkout_mismatches("detached_head", |fixture| {
+    let fields = untouched_mismatches("detached_head", |fixture| {
         fixture
             .git_ok(WORK, ["checkout", "--quiet", "--detach"])
             .expect("detach HEAD");
@@ -1764,7 +1894,7 @@ fn files_unchanged_reports_a_detached_head() {
 /// it: only the pending operations differ.
 #[test]
 fn files_unchanged_reports_a_pending_operation() {
-    let fields = checkout_mismatches("pending_merge", |fixture| {
+    let fields = untouched_mismatches("pending_merge", |fixture| {
         let head = fixture
             .git_ok(WORK, ["rev-parse", "HEAD"])
             .expect("read HEAD");
@@ -1772,4 +1902,64 @@ fn files_unchanged_reports_a_pending_operation() {
         fs::write(&marker, head).expect("write MERGE_HEAD");
     });
     assert_eq!(fields, [Field::CheckoutPending(WORK.to_owned())]);
+}
+
+/// A ref outside `refs/heads`, `refs/remotes` and `refs/tags`, such as a
+/// backup ref, is part of the ref set.
+#[test]
+fn refs_unchanged_reports_a_ref_in_another_namespace() {
+    let fields = untouched_mismatches("backup_ref", |fixture| {
+        fixture
+            .git_ok(WORK, ["update-ref", "refs/wsx/backup", "HEAD"])
+            .expect("write a backup ref");
+    });
+    assert_eq!(fields, [Field::RefSet]);
+}
+
+/// A push to a ref no fetch refspec tracks, such as a backup ref on
+/// `origin`, moves no tracking ref in `work`: only the remote repository's
+/// refs differ. (A push by a URL equal to a configured remote's would also
+/// update that remote's tracking ref, so it would not show this.)
+#[test]
+fn refs_unchanged_reports_a_push_to_an_untracked_remote_ref() {
+    let fields = untouched_mismatches("untracked_push", |fixture| {
+        fixture
+            .git_ok(WORK, ["push", "--quiet", "origin", "HEAD:refs/wsx/backup"])
+            .expect("push to an untracked ref");
+    });
+    assert_eq!(fields, [Field::RemoteRefs("remotes/origin.git".to_owned())]);
+}
+
+/// An upstream setting written to `work`'s local config is reported.
+#[test]
+fn refs_unchanged_reports_a_local_config_change() {
+    let fields = untouched_mismatches("config_change", |fixture| {
+        fixture
+            .git_ok(
+                WORK,
+                ["config", "branch.workspace/dev.merge", "refs/heads/other"],
+            )
+            .expect("set an upstream");
+    });
+    assert_eq!(fields, [Field::Config]);
+}
+
+/// A commit reachable only from a detached HEAD is a new commit.
+#[test]
+fn a_commit_on_a_detached_head_is_new() {
+    let fields = untouched_mismatches("detached_commit", |fixture| {
+        fixture
+            .git_ok(WORK, ["checkout", "--quiet", "--detach"])
+            .expect("detach HEAD");
+        fixture
+            .git_ok(
+                WORK,
+                ["commit", "--quiet", "--allow-empty", "-m", "detached"],
+            )
+            .expect("commit on the detached HEAD");
+    });
+    assert_eq!(
+        fields,
+        [Field::NewCommitCount, Field::CheckoutHead(WORK.to_owned())]
+    );
 }
