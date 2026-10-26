@@ -10,9 +10,7 @@
 
 use crate::action::Action;
 use crate::fixture::{ACTION_TIME, Ident, RepoConfig, T0, TICK, WORK};
-use crate::outcome::{
-    CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip,
-};
+use crate::outcome::{CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip};
 use crate::scenario::{Case, Class, OracleSide, Scenario};
 use crate::sync::{B_FILE, File, SEED_FILES, WORKSPACE_FILES, advance_develop, date, tree};
 

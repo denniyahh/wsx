@@ -85,7 +85,10 @@ fn self_test() -> Scenario {
             refs: RefsExpect::Exactly(vec![
                 unchanged("refs/heads/develop"),
                 unchanged("refs/heads/feature/phase-1"),
-                tip("refs/heads/feature/phase-1-pr", Tip::Commit(replayed.clone())),
+                tip(
+                    "refs/heads/feature/phase-1-pr",
+                    Tip::Commit(replayed.clone()),
+                ),
                 unchanged("refs/heads/workspace/dev"),
                 unchanged("refs/remotes/origin/HEAD"),
                 unchanged("refs/remotes/origin/develop"),

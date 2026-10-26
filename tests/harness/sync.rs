@@ -19,10 +19,16 @@ pub const SEED_FILES: [File; 2] = [(b"README.md", b"# Fixture\n"), (b"src/a.txt"
 
 /// The files fixture commit 1 adds on the workspace branch.
 pub const WORKSPACE_FILES: [File; 4] = [
-    (b".planning/ROADMAP.md", b"# Roadmap\n\n### Phase 1: Example\n"),
+    (
+        b".planning/ROADMAP.md",
+        b"# Roadmap\n\n### Phase 1: Example\n",
+    ),
     (b".planning/STATE.md", b"# State\n"),
     (b".workspace-divergence", b"only .wsx.conf\n"),
-    (b".wsx.conf", b"only .planning\nonly .workspace-divergence\n"),
+    (
+        b".wsx.conf",
+        b"only .planning\nonly .workspace-divergence\n",
+    ),
 ];
 
 /// The file fixture commit 2 adds on the remote integration branch.
