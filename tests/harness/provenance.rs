@@ -552,9 +552,21 @@ fn mode_mismatches(listing: &str) -> Vec<String> {
 /// run in the wsx checkout with the scenario HOME, so no host configuration
 /// is read.
 fn oracle_index_listing() -> String {
+    oracle_index_listing_with(&[])
+}
+
+/// `oracle_index_listing` with extra environment for the spawned git. The
+/// checkout is trusted with `-c safe.directory`, because the scenario HOME
+/// carries no `safe.directory` and CI's container checks out the repository
+/// under another owner, where git otherwise refuses with "dubious ownership".
+fn oracle_index_listing_with(extra_env: &[(&str, &str)]) -> String {
     let dirs = ScenarioDirs::new("provenance", "modes").expect("scenario dirs");
     let env = hermetic_env(&inherited_env(), &dirs);
-    let output = command("git", Path::new(env!("CARGO_MANIFEST_DIR")), &env)
+    let root = env!("CARGO_MANIFEST_DIR");
+    let output = command("git", Path::new(root), &env)
+        .envs(extra_env.iter().copied())
+        .arg("-c")
+        .arg(format!("safe.directory={root}"))
         .args(["ls-files", "-s", "--", "tests/oracle"])
         .output()
         .expect("spawn git ls-files");
@@ -574,6 +586,18 @@ fn oracle_index_listing() -> String {
 ///
 /// Controls: `mode_check_reports_a_flipped_mode` and
 /// `mode_check_reports_an_empty_listing`.
+#[test]
+fn index_listing_works_when_the_checkout_has_another_owner() {
+    // git's own test switch makes it treat the checkout as owned by someone
+    // else, as CI's container checkout is; without `safe.directory` this
+    // listing fails with "dubious ownership" and exit 128.
+    let listing = oracle_index_listing_with(&[("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")]);
+    assert!(
+        listing.contains("tests/oracle/sync-workspace.sh"),
+        "the listing names the vendored scripts, got {listing:?}"
+    );
+}
+
 #[test]
 fn vendored_files_have_their_recorded_modes() {
     let listing = oracle_index_listing();
