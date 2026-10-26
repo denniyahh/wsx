@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-10-26T21:58:27.953Z",
+  "phase": "3",
+  "phase_name": "Git adapter",
+  "phase_dir": ".planning/phases/03-git-adapter",
+  "plan": 0,
+  "task": 0,
+  "total_tasks": 0,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "Phase 2 oracle harness: plan, execute, secure, validate, review, verify, complete", "status": "done", "commit": "60885cc"},
+    {"id": 2, "name": "PR #4 squash-merged to develop", "status": "done", "commit": "aa7d689"},
+    {"id": 3, "name": "Phase 2 landed on workspace/denniyahh and pushed", "status": "done", "commit": "aa141d6"}
+  ],
+  "remaining_tasks": [
+    {"id": 4, "name": "Phase 3 (Git adapter) via /gsd-autonomous --only 3 in .worktrees/phase-3", "status": "not_started"}
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Decide planning granularity for phase 3 onward (standard vs fine; recommended standard)", "context": "Planning at fine took ~48 min for phase 2's planner pass", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Scenarios declare repo config; wsx is config-driven", "rationale": "Owner 2026-10-26", "phase": "2"},
+    {"decision": "PR branches are cut with no upstream", "rationale": "Oracle's tracking of develop breaks pull/push; owner 2026-10-26", "phase": "2"},
+    {"decision": "Exit 128 in fork-layout counterparts accepted until IF-01 (AR-02-02)", "rationale": "No requirement fixes the code yet; owner 2026-10-26", "phase": "2"}
+  ],
+  "uncommitted_files": ["?? .planning/state.json (phase-2 worktree, GSD runtime file)"],
+  "next_action": "Re-ask the granularity question, create .worktrees/phase-3 on feature/phase-3 from workspace/denniyahh, cd into it, run /gsd-autonomous --only 3",
+  "context_notes": "Phase 2 fully shipped. Owner wants autonomous GSD runs with approval before every push/PR/merge."
+}
