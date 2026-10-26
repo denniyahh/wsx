@@ -19,7 +19,7 @@ usage() {
 usage: scripts/check.sh [all|fmt|clippy|test [filters...]|deps]
 
   all     fmt + clippy + test   (default)
-  fmt     cargo fmt --check
+  fmt     cargo fmt --check, plus rustfmt --check on every tracked .rs file
   clippy  cargo clippy --locked --workspace --all-targets -- -D warnings
   test    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail
           [-E <filterset> | test-name filter], at most one; no other
@@ -118,6 +118,11 @@ run_fmt() {
     require_tool cargo-fmt "rustup component add rustfmt"
     echo "==> cargo fmt --check"
     cargo fmt --check
+    # cargo fmt only follows `mod` items it can see, and never one declared
+    # inside a macro (the harness's scenario modules are), so check every
+    # tracked .rs file directly as well.
+    echo "==> rustfmt --check on every tracked .rs file"
+    git ls-files -z -- '*.rs' | xargs -0 rustfmt --edition 2024 --check
 }
 
 run_clippy() {
