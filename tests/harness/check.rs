@@ -166,8 +166,101 @@ fn fork_layout() -> Scenario {
     .harn06(CaseKind::ForkLayout)
 }
 
+/// Fixture step: the workspace branch gains an undeclared `scratch/y.md` in
+/// a commit of its own, after the preset's workspace commit.
+fn add_scratch(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.write(WORK, b"scratch/y.md", b"y\n")?;
+    fixture.commit(WORK, b"chore(ws): add scratch\n")
+}
+
+/// Fixture step: the workspace branch gains `notes/x.md`, under the no-GSD
+/// preset's declared `notes`, in a commit of its own.
+fn add_custom_note(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.write(WORK, b"notes/x.md", b"x\n")?;
+    fixture.commit(WORK, b"chore(ws): add a custom note\n")
+}
+
+/// What the oracle was observed doing in the no-GSD repository.
+const NO_GSD_DEFECT: &str =
+    "the oracle exits 1, refusing .wsx.conf and notes/todo.md as undeclared";
+
+/// HARN-06 no-GSD repo for the divergence check, a guard with both controls
+/// (HARN-05), and IF-02's negative control for the check: the repository
+/// holds no GSD, devflow or agent file, and its workspace commit adds only
+/// `notes/todo.md` and `.wsx.conf`, which declares `only notes`. `.wsx.conf`
+/// is a built-in personal path and `notes` is declared (DIV-01, CONF-02), and
+/// wsx reads no file of devflow's (IF-02), so the check passes, exit 0, and
+/// changes nothing.
+///
+/// `fixed:`, by observation: devflow's check exits 1, listing `.wsx.conf`
+/// and `notes/todo.md` as undeclared workspace-only paths, and changes
+/// nothing. It reads declarations only from its own manifest file,
+/// `.workspace-divergence`, which this repository does not have.
+///
+/// The known-positive control is the same repository whose workspace branch
+/// also adds an undeclared `scratch/y.md` and must be refused (Parity). The
+/// clean control is the devflow preset and must pass (Parity), so the oracle
+/// is seen both refusing and passing in the same run.
+fn no_gsd_repo() -> Scenario {
+    Scenario::new(
+        "no_gsd_repo",
+        check_in_work(RepoConfig::no_gsd(), no_steps)
+            .expect(verdict(0))
+            .class(Class::Fixed {
+                defect: NO_GSD_DEFECT,
+            })
+            .oracle(OracleSide::Recorded(verdict(1))),
+    )
+    .control(
+        Role::KnownPositive,
+        check_in_work(RepoConfig::no_gsd(), add_scratch).expect(verdict(1)),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
+/// Why no case of `no_gsd_custom_personal_path` has an oracle side.
+const NO_ORACLE_CUSTOM_PATH: &str = "devflow's check reads only its own manifest file, \
+     .workspace-divergence, and its built-in list, not a custom personal path in .wsx.conf";
+
+/// The check in `work` of the no-GSD repository, with no oracle side.
+fn rust_only_no_gsd_check(fixture: FixtureFn) -> Case {
+    check_in_work(RepoConfig::no_gsd(), fixture).oracle(OracleSide::NotImplemented {
+        why: NO_ORACLE_CUSTOM_PATH,
+    })
+}
+
+/// HARN-06 no-GSD repo with a custom personal path, a guard with both
+/// controls (HARN-05). Rust-only: devflow's check has no custom personal
+/// path. The workspace branch adds `notes/x.md` under the declared `notes`,
+/// so every added path is declared (DIV-01, CONF-02): exit 0, nothing
+/// changes.
+///
+/// The known-positive control adds an undeclared `scratch/y.md` and must be
+/// refused; the clean control is the unmodified no-GSD preset and must pass.
+fn no_gsd_custom_personal_path() -> Scenario {
+    Scenario::new(
+        "no_gsd_custom_personal_path",
+        rust_only_no_gsd_check(add_custom_note).expect(verdict(0)),
+    )
+    .control(
+        Role::KnownPositive,
+        rust_only_no_gsd_check(add_scratch).expect(verdict(1)),
+    )
+    .control(
+        Role::Clean,
+        rust_only_no_gsd_check(no_steps).expect(verdict(0)),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 5";
     quoted_personal_names: oracle, rust = "Rust side not enabled until phase 5";
     fork_layout: oracle, rust = "Rust side not enabled until phase 5";
+    no_gsd_repo: oracle, rust = "Rust side not enabled until phase 5";
+    no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 5";
 }
