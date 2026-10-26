@@ -184,13 +184,19 @@ pub fn run(
         }))
     };
     match action {
-        Action::Sync { .. } => {
-            // Not wired yet: report what a shell reports for a missing command.
-            Ok(ActionRun {
-                exit: Some(127),
-                stdout: Vec::new(),
-                stderr: b"sync-workspace.sh is not wired into the adapter\n".to_vec(),
-            })
+        Action::Sync { checkout } => {
+            let config = &fixture.config;
+            run_script(
+                copy,
+                "sync-workspace.sh",
+                &[
+                    OsStr::new(&config.base_remote),
+                    OsStr::new(&config.integration),
+                ],
+                &fixture.checkout(checkout),
+                env,
+                None,
+            )
         }
         Action::NewWorktree { .. }
         | Action::Cut { .. }
