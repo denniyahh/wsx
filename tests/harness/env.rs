@@ -33,13 +33,17 @@ const HERMETIC_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 /// The harness's global git config, written to `<home>/.gitconfig`: the
 /// default location, so it still applies after the oracle's pre-push hook
-/// unsets `GIT_CONFIG_GLOBAL`.
+/// unsets `GIT_CONFIG_GLOBAL`. `branch.autoSetupMerge` is pinned to git's
+/// built-in default because the oracle's cut records depend on it: its
+/// `git branch -f` makes the PR branch track the base, which wsx does not.
 const GLOBAL_CONFIG: &str = "\
 [user]
 \tname = Harness
 \temail = harness@example.invalid
 [init]
 \tdefaultBranch = develop
+[branch]
+\tautoSetupMerge = true
 [commit]
 \tgpgsign = false
 [tag]
