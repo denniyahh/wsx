@@ -636,6 +636,112 @@ fn merge_resolution_adds_personal_file() -> Scenario {
     .harn06(CaseKind::Merges)
 }
 
+/// A personal file a merge resolution adds.
+const PERSONAL_NOTES: &[u8] = b".planning/MERGE-NOTES.md";
+
+/// A non-personal file a merge resolution adds.
+const CODE_NOTES: &[u8] = b"src/MERGE-NOTES.md";
+
+/// Fixture steps: `workspace/dev` gains `chore(ws): change a locally`
+/// (fixture commit 2, `src/a.txt` = `ws`); `feature/topic` from it with
+/// `feat: add b` (commit 3); `origin/develop` gains `feat: change a upstream`
+/// (commit 4, `src/a.txt` = `theirs`), fetched and merged into
+/// `feature/topic` (commit 5). The merge conflicts on `src/a.txt`, which the
+/// resolution sets to `origin/develop`'s `theirs`, and the resolution adds
+/// `notes`. The conflict's feature side comes from before the fork, so no
+/// replayed commit touches `src/a.txt`. Fails unless the merge conflicts.
+fn topic_merge_resolution_adding(fixture: &mut Fixture, notes: &[u8]) -> Result<(), String> {
+    commit_files(
+        fixture,
+        WORK,
+        &[(b"src/a.txt", b"ws\n")],
+        b"chore(ws): change a locally\n",
+    )?;
+    topic_worktree(fixture)?;
+    commit_files(fixture, TOPIC_CHECKOUT, &[B_FILE], b"feat: add b\n")?;
+    advance_and_fetch(fixture, &A_THEIRS, b"feat: change a upstream\n")?;
+    let merge = fixture.git(
+        TOPIC_CHECKOUT,
+        ["merge", "--quiet", "--no-commit", "origin/develop"],
+    )?;
+    if merge.status.code() != Some(1) {
+        return Err(format!(
+            "merging origin/develop into feature/topic exited {:?}, not 1 with a conflict",
+            merge.status.code()
+        ));
+    }
+    fixture.write(TOPIC_CHECKOUT, A_THEIRS[0].0, A_THEIRS[0].1)?;
+    fixture.write(TOPIC_CHECKOUT, notes, b"# Notes\n")?;
+    fixture.git_ok(TOPIC_CHECKOUT, ["add", "--all"])?;
+    fixture.git_tick(TOPIC_CHECKOUT, ["commit", "--quiet", "--no-edit"])?;
+    Ok(())
+}
+
+/// Fixture steps: `topic_merge_resolution_adding` the personal
+/// `.planning/MERGE-NOTES.md`.
+fn topic_merge_resolution_adding_personal(fixture: &mut Fixture) -> Result<(), String> {
+    topic_merge_resolution_adding(fixture, PERSONAL_NOTES)
+}
+
+/// Fixture steps: `topic_merge_resolution_adding` the non-personal
+/// `src/MERGE-NOTES.md`.
+fn topic_merge_resolution_adding_code(fixture: &mut Fixture) -> Result<(), String> {
+    topic_merge_resolution_adding(fixture, CODE_NOTES)
+}
+
+/// What the oracle was observed doing with a merge resolution that adds a
+/// non-personal file.
+const CODE_RESOLUTION_DEFECT: &str = "the cut exits 0 and writes feature/topic-pr with one new \
+     commit feat: add b, the merge's added src/MERGE-NOTES.md left out";
+
+/// HARN-06 merges, PRCUT-01: a merge of the integration branch is skipped
+/// when its own resolution changes touch only personal paths. Here the
+/// conflict on `src/a.txt` is resolved to `origin/develop`'s side, so the
+/// merge's only change against both parents is the personal
+/// `.planning/MERGE-NOTES.md`, and wsx cuts `feature/topic-pr` with `feat:
+/// add b` replayed onto `origin/develop`. Every replay before the merge
+/// applies cleanly, so the merge itself is reached.
+///
+/// The counterpart control flips one variable, the added file's path: the
+/// resolution adds the non-personal `src/MERGE-NOTES.md`, a resolution
+/// change of its own in a non-personal path, so wsx refuses the cut, naming
+/// the merge, with refs, commits and files unchanged.
+///
+/// Parity, by observation: devflow's cut replays `feat: add b`, replays
+/// `feat: change a upstream` (reachable through the merge) to nothing, and
+/// counts the merge as excluded, since `diff-tree` lists no files for a
+/// merge. Its counterpart is `fixed:`: the oracle does the same there and
+/// exits 0.
+fn merge_resolution_only_personal_file() -> Scenario {
+    let replayed = commit(
+        b"feat: add b\n",
+        3,
+        b"feat: change a upstream",
+        &[SEED_FILES[0], A_THEIRS[0], B_FILE],
+    );
+    let cut = cut_outcome(
+        0,
+        &["refs/heads/feature/topic"],
+        "refs/heads/feature/topic-pr",
+        replayed.clone(),
+        vec![replayed],
+    );
+    Scenario::new(
+        "merge_resolution_only_personal_file",
+        topic_cut(topic_merge_resolution_adding_personal).expect(cut.clone()),
+    )
+    .control(
+        Role::Counterpart,
+        fixed(
+            topic_cut(topic_merge_resolution_adding_code),
+            refusal(),
+            cut,
+            CODE_RESOLUTION_DEFECT,
+        ),
+    )
+    .harn06(CaseKind::Merges)
+}
+
 // ------------------------------------------------ existing PR branch
 
 /// Fixture steps: `feature/phase-1` with `feat(1): add b` (fixture commit 2).
@@ -1236,4 +1342,5 @@ scenarios! {
     recut_after_squash_merge: oracle, rust = "Rust side not enabled until phase 10";
     no_gsd_repo: oracle, rust = "Rust side not enabled until phase 9";
     no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 9";
+    merge_resolution_only_personal_file: oracle, rust = "Rust side not enabled until phase 9";
 }
