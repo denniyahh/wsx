@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
-status: executing
-stopped_at: Completed 02-14-PLAN.md
-last_updated: "2026-10-26T19:51:22.427Z"
+status: verifying
+stopped_at: Completed 02-15-PLAN.md
+last_updated: "2026-10-26T20:03:06.406Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: edc8e7f48ad1bbc33521224074dc11eea95f4e8c
+state_head: b695fff0dc9fbb339db86cd305442a863399bcac
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 21
+  completed_plans: 22
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 Phase: 2 (Oracle harness) — EXECUTING
 Plan: 15 of 15
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-26 — Phase 2 execution started
 
 Progress: [█░░░░░░░░░] 7%
@@ -76,6 +76,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P12 | 9 min | 2 tasks | 2 files |
 | Phase 02 P13 | 4min | 2 tasks | 1 files |
 | Phase 02 P14 | 10min | 2 tasks | 1 files |
+| Phase 02 P15 | 7 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-14: fork_layout advances upstream/develop so the expected PR parent (feat: add d) tells upstream/develop apart from local develop
 - [Phase 02]: 02-14: merge_resolution_only_personal_file reads PRCUT-01 own resolution changes as changes against every parent (combined diff); a conflict resolved to develop's side is not one. Phase 9 should confirm
 - [Phase 02]: 02-14: all four planned cut oracle scenarios observed Parity as predicted; fork counterpart exit 128 recorded; the orchestrator-added merge counterpart is fixed:
+- [Phase 02]: 02-15: harn06_gaps names an untagged HARN-06 kind once (not per action); ORACLE_ACTIONS lists 19 (kind, action) pairs that need an oracle-recorded scenario
+- [Phase 02]: 02-15: vendored oracle file modes are checked from the git index (git ls-files -s) in provenance.rs; every scenario module must register a scenario
 
 ### Pending Todos
 
@@ -146,6 +149,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T19:51:22.275Z
-Stopped at: Completed 02-14-PLAN.md
+Last session: 2026-10-26T20:03:06.268Z
+Stopped at: Completed 02-15-PLAN.md
 Resume file: None
