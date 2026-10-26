@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-07-PLAN.md
-last_updated: "2026-10-26T18:26:26.634Z"
+stopped_at: Completed 02-08-PLAN.md
+last_updated: "2026-10-26T18:37:18.932Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 619f17806ecbcca0b9ce91db3523abd0e385ef3c
+state_head: ba5d015434300ca1599fa60bf096a17d89316063
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 14
+  completed_plans: 15
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 8 of 15
+Plan: 9 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -69,6 +69,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 2 P05 | 11 min | 2 tasks | 3 files |
 | Phase 02 P06 | 6 min | 2 tasks | 4 files |
 | Phase 02 P07 | 37 min | 2 tasks | 6 files |
+| Phase 02 P08 | 8min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,9 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-06: llvm-tools comes only from rust-toolchain.toml (rustup toolchain install sufficed on the host; the pinned image installs it too); every cargo llvm-cov run sets CARGO_LLVM_COV_SETUP=no
 - [Phase 02]: 02-06: one-time coverage proof recorded: println! count 1 for the spawned subject, 0 for no spawn and 0 for spawn without LLVM_*; no gate or CI job runs coverage
 - [Phase 2]: 02-07: worktree::self_test is fixed: by observation (oracle dir .worktrees/phase-1 vs wsx .worktrees/feature/phase-1); cut::self_test is Parity by observation (script returns to the source branch)
+- [Phase 02]: 02-08: names_are_observed_byte_exact declares i18n.commitEncoding=ISO-8859-1, because git itself re-encodes a non-UTF-8 message byte under the default UTF-8 encoding
+- [Phase 02]: 02-08: comparator needed no fix; all 25 single-field mutations of sync::self_test are reported as their own field
+- [Phase 02]: 02-08: signing is declared with RepoConfig::with_signing(); all three signing cases are Parity by observation
 
 ### Pending Todos
 
@@ -122,6 +126,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T18:26:26.407Z
-Stopped at: Completed 02-07-PLAN.md
+Last session: 2026-10-26T18:37:18.814Z
+Stopped at: Completed 02-08-PLAN.md
 Resume file: None
