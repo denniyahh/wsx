@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-10-26T17:12:04.304Z"
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-10-26T17:22:33.705Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 2270493f8fe2c407eaa7563c84da7a6270908e8f
+state_head: 60c850745547c29a78dc68fedaa12aa8e34635df
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 10
+  completed_plans: 11
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 4 of 15
+Plan: 5 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -65,6 +65,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P01 | 3min | 3 tasks | 10 files |
 | Phase 02 P02 | 18min | 2 tasks | 9 files |
 | Phase 02 P03 | 7min | 3 tasks | 12 files |
+| Phase 02 P04 | 7 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,7 @@ Recent decisions affecting current work:
 - [Phase 2]: CommitExpect has no committer date per the 02-02 contract; only the author date is pinned to the action instant (resolved 2026-10-26 by the orchestrator: no field — HARN-03 lists commits as message + author + author date + committer name/email + tree and deliberately leaves out the committer date, which a replay or merge sets at run time and so cannot be pinned the same way for oracle and Rust)
 - [Phase 2]: Harness registry test allows a scenario module with no scenarios yet (scenarios! {}); a scenario fn left out of scenarios! is rejected by clippy as unused (02-03)
 - [Phase 2]: Fixture::commit and Fixture::git_tick take dates from one private Fixture::tick; a git_tick command must create exactly one commit, which is documented but not enforced (02-03)
+- [Phase 02]: 02-04: run_script always sets WSX_ORACLE_DIR, so the absent-variable oracle test spawns the same bash command line itself; the with-variable test also requires a stdout marker because phase-worktree.sh exits 0 when the oracle dir is wrong
 
 ### Pending Todos
 
@@ -109,6 +111,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T17:12:04.167Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-10-26T17:22:33.594Z
+Stopped at: Completed 02-04-PLAN.md
 Resume file: None
