@@ -41,12 +41,13 @@ cut that silently drops code, is the unacceptable failure.
 - ✓ Divergence manifest and check: every workspace difference declared `only`/`modified`, stale declarations and non-executable hooks fail (`check-workspace-divergence.sh`): existing (devflow)
 - ✓ Push guard over every commit's touched paths in the range, fail closed on an unreadable range (devflow `pre-push`): existing (devflow)
 
+- ✓ Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls — Phase 2 (Rust sides enabled by phases 5-10)
+
 ### Active
 
 <!-- Milestone 1: a Rust replacement that beats the shell oracle. See REQUIREMENTS.md (71). -->
 
 - [ ] Rust implementation of workspace sync, worktrees, PR cut, divergence check and guards, never worse than the shell oracle on safety, and better wherever it can be (improve-over-prior-art mandate)
-- [ ] Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls
 - [ ] One resolved personal-path list shared by guard, cut, check and status; configurable integration branch, workspace branch, base and push remotes, worktree directory
 - [ ] Hooks installed as git config-based hooks (git ≥ 2.54), coexisting with `core.hooksPath`, husky and global hooks; pre-push reads the real pushed refs
 - [ ] Oracle defects fixed: quoted-name bypass, pattern-limited push guard, hard-coded `origin`, swallowed cherry-pick errors, partial PR branch on conflict
@@ -115,6 +116,9 @@ cut that silently drops code, is the unacceptable failure.
 | Tracked `.gitconfig` is copied into local config from a key allowlist, never `include.path`d | An include is read live from whatever branch is checked out, so a branch could set a key that runs a program on `git status` (proven by test). Owner decision 2026-10-24; UDE owns the practice for all projects (UDE backlog 999.2), `scripts/setup-repo.sh` stands in | Phase 1 (DEV-05 amended) |
 | Secret scanning in the owner's clone comes from the UDE global hook only | Two scans of the same commit add nothing (owner, 2026-10-22); a fresh clone still gets the repo hook from `setup-repo.sh` | Phase 1 (AR-02) |
 | `wsx land` in milestone 1; no `wsx adopt` | Without `land`, a standalone user can't finish the new → cut → land → rm loop. `adopt` was dropped (owner, 2026-10-20): the commit guard never refused hand-made branches, so it had no job left | — Pending |
+| Oracle is devflow's original scripts at a recorded commit, not wsx's ports | The ports carry fixes, so they cannot show the defects `fixed:` scenarios must reproduce | ✓ Good (Phase 2: 9+ defects reproduced) |
+| Scenarios declare their repo config; the oracle runs wherever it implements the behaviour | wsx is config-driven (owner, 2026-10-26); devflow-shaped configs are the oracle's only reference | ✓ Good (Phase 2) |
+| PR branches are cut with no upstream | The oracle's tracking of `<base>/develop` is an accident of `git branch -f` that breaks pull/push on the PR branch (owner, 2026-10-26) | — Pending (Phase 9) |
 
 ## Evolution
 
@@ -134,4 +138,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-25 after Phase 1*
+*Last updated: 2026-10-26 after Phase 2*

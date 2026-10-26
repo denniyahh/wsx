@@ -21,10 +21,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-25)
+See: .planning/PROJECT.md (updated 2026-10-26)
 
 **Core value:** wsx must never let a personal file reach a shared branch or PR, and must never lose work while moving it between the workspace branch, feature worktrees and PR branches.
-**Current focus:** Phase 2 — Oracle harness
+**Current focus:** Phase 3 — Git adapter
 
 ## Current Position
 
@@ -134,12 +134,14 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 - [2026-10-25] [tooling] Re-check Dependabot after first merge to main — [todo file](.planning/todos/pending/2026-10-25-re-check-dependabot-after-first-merge-to-main.md)
+- [2026-10-26] [tests] Replace oracle-observed exit 128 under IF-01 (phases 7/9, accepted risk AR-02-02) — [todo file](.planning/todos/pending/2026-10-26-replace-oracle-observed-exit-128-under-if-01.md)
 
 ### Blockers/Concerns
 
 - Phase 12: MIG-03 covers the 0.1.0 projects on the owner's work PC, which are not on this machine (checked 2026-10-20); their expected results must be recorded and checked there
 - Phase 3: gix 0.89 method names are unverified against a stale crate-status item (research/SUMMARY.md, Gaps); spike at phase start
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
+- Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
 
 ## Deferred Items
 
