@@ -13,11 +13,11 @@ RESEARCH.md's "Suggested plan decomposition" (lines 760-777) was written before 
 corrected. Two CONTEXT decisions now override it:
 
 1. **`rust-toolchain.toml` gains `llvm-tools`** (CONTEXT lines 113-118). RESEARCH Open Question 2
-   recommended option B (a host-only step); CONTEXT locked option A. Plan 02-07 therefore also
+   recommended option B (a host-only step); CONTEXT locked option A. Plan 02-06 (coverage) therefore also
    modifies `rust-toolchain.toml`.
 2. **Fork layout and the no-GSD repo get oracle-recorded variants where the oracle runs them**
    (CONTEXT lines 52-59). RESEARCH Open Question 1 and its case map (lines 381, 383) still say
-   "Rust-only (locked)". Plans 02-08/09/10 must add oracle variants: cut and sync with a non-`origin`
+   "Rust-only (locked)". Plans 02-10 to 02-14 must add oracle variants: cut and sync with a non-`origin`
    base remote, and `phase-worktree.sh` refusing in a repo with no ROADMAP (a recorded refusal).
 
 Still open, not settled by CONTEXT: RESEARCH Open Question 4, adding `include-dev = true` to

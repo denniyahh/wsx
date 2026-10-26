@@ -372,15 +372,15 @@ Each was run against the **unpatched** devflow script; for pre-push, only the CI
 
 ## HARN-06 case map (question 3)
 
-Under the locked CONTEXT rule, the oracle runs devflow-shaped configs only.
+~~Under the locked CONTEXT rule, the oracle runs devflow-shaped configs only.~~ **Resolved 2026-10-26:** superseded by the CONTEXT correction (CONTEXT lines 52-59) and orchestrator decision 3: the oracle records every case wherever it can run it, the fork layout and the no-GSD repo included; only a part it lacks (a custom personal path, `rm`, a non-numeric scope) is Rust-only. The plans' per-kind table of oracle-recorded actions is `ORACLE_ACTIONS` in 02-15.
 
 | Case | Oracle implements? | Scenario disposition | Notes |
 |---|---|---|---|
 | Merge commits: integration merged into a feature branch; conflict resolved by adding a personal file | **Yes** (cut drops the merge, D2; guard misses the resolution, P4) | Oracle-recorded, `fixed:` for cut and guard | Guard scenario: known-positive = plain `.planning/x.md` commit; clean = merge with no personal file |
-| Squash-merged PRs | Partly: sync and re-cut run; there is no `rm` | Re-cut after a squash merge and sync after a squash merge: oracle-recorded. `rm` after a squash merge: **Rust-only** (no oracle `rm`) | Expected oracle re-cut: commits already applied cherry-pick to empty, so they are "excluded", and with nothing left the cut ends "PR branch is empty", exit 1 [ASSUMED from code lines 231-249; not executed] |
-| Fork layout (base `upstream`, push `origin`, no `origin/<integration>`) | Partly: sync takes `$1` remote, cut takes `BASE_REMOTE` env, check takes `BASE_REF`. But `phase-worktree` calls sync with no args, and pre-push hard-codes `origin/develop` and `--remotes=origin` | **Rust-only** (locked) | See Open Question 1: the oracle could record the cut and sync with `upstream` |
+| Squash-merged PRs | Partly: sync and re-cut run; there is no `rm` | Re-cut after a squash merge and sync after a squash merge: oracle-recorded. `rm` after a squash merge: **Rust-only** (no oracle `rm`) | Expected oracle re-cut: commits already applied cherry-pick to empty, so they are "excluded", and with nothing left the cut ends "PR branch is empty", exit 1 [ASSUMED from code lines 231-249; not executed]. **Resolved:** planned as `sync::after_squash_merged_pr` (02-12), `cut::recut_after_squash_merge` (02-14; it keeps a later commit on the branch, because no requirement fixes wsx's outcome for an all-landed re-cut, while PRCUT-05 fixes this one) and the Rust-only `worktree::rm_after_squash_merge` (02-12). |
+| Fork layout (base `upstream`, push `origin`, no `origin/<integration>`) | Partly: sync takes `$1` remote, cut takes `BASE_REMOTE` env, check takes `BASE_REF`. But `phase-worktree` calls sync with no args, and pre-push hard-codes `origin/develop` and `--remotes=origin` | ~~**Rust-only** (locked)~~ **Resolved:** oracle-recorded for sync, new worktree, cut, check and pre-push (`*::fork_layout` in 02-12, 02-14, 02-13 and 02-10); a hard-coded `origin` is recorded as `fixed:` | ~~See Open Question 1~~ Open Question 1 is resolved (orchestrator decision 3) |
 | Scoped and unscoped commits in one cut | **Yes** (D5) | Oracle-recorded, `fixed:` | The oracle supports numeric scopes only (`(N)`, `(N-PP)`, `(phase-N)`); a non-numeric `--scope` is Rust-only |
-| Repo with no GSD, devflow or agent files (IF-02) | sync, cut and guard need none of them; `phase-worktree` refuses (no ROADMAP heading) | **Rust-only** (locked) | See Open Question 1: the `new` refusal is a ready negative control |
+| Repo with no GSD, devflow or agent files (IF-02) | sync, cut and guard need none of them; `phase-worktree` refuses (no ROADMAP heading) | ~~**Rust-only** (locked)~~ **Resolved:** oracle-recorded for sync, new worktree (a refusal), cut, check (a refusal) and pre-push (`*::no_gsd_repo` in 02-12, 02-14, 02-13 and 02-10); a custom personal path stays Rust-only (`*::no_gsd_custom_personal_path`) | ~~See Open Question 1~~ Open Question 1 is resolved; the `new` refusal is recorded as `worktree::no_gsd_repo`, IF-02's negative control |
 | Non-ASCII, newline, non-UTF-8 names | **Yes** (D1, P1) | Oracle-recorded, `fixed:` for cut and guard; divergence check outcome to be recorded | Fixture writes names through `OsStr::from_bytes` |
 | Existing PR branch with extra commits | **Yes** (D3) | Oracle-recorded, `fixed:` | |
 
@@ -796,22 +796,22 @@ The tracer 02-01 is large because vendoring and the minimum harness are insepara
 | A7 | Re-cut after a squash merge ends "PR branch is empty", exit 1, on the oracle | HARN-06 map | Only the recorded value changes; the scenario records what it observes |
 | A8 | nextest `binary(=harness)` filter syntax for per-binary overrides such as `slow-timeout` (if used) | Pitfalls | A config parse error, caught at once |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Fork layout and no-GSD repo: Rust-only (locked) vs. oracle-recorded where the oracle runs.** Decision for the owner.
+1. **Fork layout and no-GSD repo: Rust-only (locked) vs. oracle-recorded where the oracle runs.** Decision for the owner. **RESOLVED 2026-10-26:** oracle-recorded wherever the oracle runs, by the CONTEXT correction (CONTEXT lines 52-59) and orchestrator decision 3; see the resolved case-map rows above. Custom personal paths stay Rust-only.
    - What we know: CONTEXT locks both as Rust-only, on the grounds that "the scripts hard-code devflow's paths and origin". The scripts do in fact accept a remote: sync `$1`, cut `BASE_REMOTE`, check `BASE_REF`. And `phase-worktree.sh` in a no-GSD repo refuses, which is precisely the defect IF-02 fixes, so it would be a ready negative control.
    - What's unclear: whether the owner wants those extra oracle recordings. Success criterion 5 says "wherever the oracle implements that behaviour".
    - Recommendation: honour the lock in phase 2 (Rust-only, labelled by name). Ask the owner whether to add oracle-recorded variants for "cut with `BASE_REMOTE=upstream`" and "`new` in a no-GSD repo (oracle refuses)".
-2. **llvm-tools for the pinned toolchain.** Decision for the owner; it blocks plan 02-07's proof.
+2. **llvm-tools for the pinned toolchain.** Decision for the owner; it blocks plan 02-07's proof. **RESOLVED 2026-10-26:** Option A, by CONTEXT (Coverage tooling) and orchestrator decision 2: `llvm-tools` joins `components` in `rust-toolchain.toml` (plan 02-06), confirmed in the pinned image with `scripts/check-in-container.sh`; cargo-llvm-cov is pinned at 0.9.1.
    - Option A: add `"llvm-tools"` (or `"llvm-tools-preview"`) to `rust-toolchain.toml` components. Reproducible, but every container toolchain install downloads it, and that file is phase-1 territory.
    - Option B (recommended for phase 2, since there is no CI coverage job): a documented one-time host step, `rustup component add llvm-tools-preview --toolchain 1.99.1-x86_64-unknown-linux-gnu`, run by the owner. The proof then always runs with `CARGO_LLVM_COV_SETUP=no`.
    - Option C: `LLVM_COV`/`LLVM_PROFDATA` pointing at the `stable` toolchain's tools (same LLVM 23.1.1). Fragile.
-3. **Rust-side expectations before their contracts exist.**
+3. **Rust-side expectations before their contracts exist.** **RESOLVED 2026-10-26:** as recommended. Rust expectations state exact outcomes now and the enabling phase revises them in the commit that enables the side; `rust::wsx_argv` holds the best-guess command lines (02-02), and the parity rule (02-05) takes the oracle's observed exit code where both sides agree on the safety outcome. Refs are compared over `refs/heads`, `refs/remotes` and `refs/tags`, with symbolic refs recorded by target name (02-02).
    - wsx's exit codes are fixed in phase 5 (IF-01), and `refs/wsx/*` records in phases 8-10.
    - Recommendation: Rust expectations state exact exit codes now (best guess; harmless while disabled), and the enabling phase revises them in the same commit that enables the side.
    - Ref-name comparison defaults to `refs/heads`, `refs/remotes` and `refs/tags`; `refs/wsx` is opted in per scenario. The planner can decide this within discretion.
-4. **`deny.toml` `[licenses] include-dev = true`?** Today tempfile's licenses are unchecked. Adding it passes with MIT-only (verified). A policy choice; recommend yes, as a one-line change in plan 02-01.
-5. **Requirement text drift** (awareness, not blocking):
+4. **`deny.toml` `[licenses] include-dev = true`?** Today tempfile's licenses are unchecked. Adding it passes with MIT-only (verified). A policy choice; recommend yes, as a one-line change in plan 02-01. **RESOLVED 2026-10-26:** yes, by orchestrator decision 1 (plan 02-01, with a control showing the setting is what brings tempfile under the license gate).
+5. **Requirement text drift** (awareness, not blocking): **RESOLVED 2026-10-26:** both texts were corrected before planning: REQUIREMENTS PRCUT-05 and ROADMAP phase 10 criterion 2 now say the oracle drops the commit silently, with no warning, and the REQUIREMENTS milestone summary names devflow's scripts as the oracle. No plan changes either document.
    - PRCUT-05 claims the oracle "warns" about left-out commits; it does not (D5).
    - REQUIREMENTS line 35 still names `scripts/workspace/{...}` as the oracle; CONTEXT supersedes it with devflow's originals.
 
