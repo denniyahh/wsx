@@ -7,5 +7,94 @@
 //! Isolation: every scenario builds its fixture, and any signing key it
 //! needs, in its own `harness-signing-<name>-` tree under
 //! `CARGO_TARGET_TMPDIR`, in the hermetic environment.
+//!
+//! Each scenario reuses a registered case, looked up in `all_scenarios()`,
+//! declares signing on its repo config and changes only the `signed` field of
+//! the commits the action creates. Signature presence is asserted, not
+//! validity.
 
-scenarios! {}
+use crate::outcome::{CommitExpect, RefsExpect, Tip};
+use crate::scenario::{Case, Scenario};
+
+/// The merge commit the sync creates.
+const SYNC_MERGE: &[u8] = b"chore: sync develop into workspace/dev\n";
+/// The commit the sync fetches; it is made before any key exists.
+const FETCHED: &[u8] = b"feat: add b\n";
+
+/// The registered scenario `module::name`, built.
+fn registered(module: &str, name: &str) -> Scenario {
+    let entry = crate::all_scenarios()
+        .into_iter()
+        .find(|entry| entry.module == module && entry.name == name)
+        .unwrap_or_else(|| panic!("{module}::{name} is not registered"));
+    (entry.build)()
+}
+
+/// Whether every expected commit with exactly this message is signed.
+struct Signature {
+    message: &'static [u8],
+    signed: bool,
+}
+
+/// `case` with each signature applied to every expected commit, ref tip or
+/// new commit, carrying that message. A message no commit carries panics, so
+/// a stale message cannot leave a signature unasserted.
+fn with_signatures(mut case: Case, signatures: &[Signature]) -> Case {
+    let mut expected = case
+        .expected
+        .take()
+        .expect("the registered case states an outcome");
+    for Signature { message, signed } in signatures {
+        let tips: Vec<&mut CommitExpect> = match &mut expected.refs {
+            RefsExpect::Exactly(list) => list
+                .iter_mut()
+                .filter_map(|entry| match &mut entry.tip {
+                    Tip::Commit(commit) => Some(commit),
+                    Tip::Unchanged => None,
+                })
+                .collect(),
+            RefsExpect::Unchanged => Vec::new(),
+        };
+        let mut found = 0;
+        for commit in tips.into_iter().chain(expected.new_commits.iter_mut()) {
+            if commit.message == *message {
+                commit.signed = *signed;
+                found += 1;
+            }
+        }
+        assert!(
+            found > 0,
+            "no expected commit has the message \"{}\"",
+            message.escape_ascii()
+        );
+    }
+    case.expect(expected)
+}
+
+/// `sync::self_test`'s subject with signing declared: the merge the sync
+/// creates is signed, while `feat: add b`, made in a scratch clone with no
+/// signing config and only fetched by the sync, is not.
+fn sync_merge_signed() -> Scenario {
+    let mut subject = registered("sync", "self_test").subject;
+    subject.config = subject.config.with_signing();
+    Scenario::new(
+        "sync_merge_signed",
+        with_signatures(
+            subject,
+            &[
+                Signature {
+                    message: SYNC_MERGE,
+                    signed: true,
+                },
+                Signature {
+                    message: FETCHED,
+                    signed: false,
+                },
+            ],
+        ),
+    )
+}
+
+scenarios! {
+    sync_merge_signed: oracle, rust = "Rust side not enabled until phase 7";
+}
