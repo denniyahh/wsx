@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-05-PLAN.md
-last_updated: "2026-10-26T17:37:36.795Z"
+stopped_at: Completed 02-06-PLAN.md
+last_updated: "2026-10-26T17:46:31.455Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: db12777e4a9f568b5e7a6f18271c31ade9d85816
+state_head: f40820521adb561137e566738c13ba5e626cf0a6
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 12
+  completed_plans: 13
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 6 of 15
+Plan: 7 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -67,6 +67,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P03 | 7min | 3 tasks | 12 files |
 | Phase 02 P04 | 7 min | 2 tasks | 2 files |
 | Phase 2 P05 | 11 min | 2 tasks | 3 files |
+| Phase 02 P06 | 6 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -95,6 +96,9 @@ Recent decisions affecting current work:
 - [Phase 2]: 02-05: a rust_only scenario's cases must all use OracleSide::NotImplemented; SameAsExpected counts as claiming an oracle side
 - [Phase 2]: 02-05: guard control direction is judged by expected exit only (known-positive non-zero, clean 0); a regression: refusal is exit != 0, RefsExpect::Unchanged and no new commits
 - [Phase 2]: 02-05: validate runs inside try_run_with_env, so every generated test validates before any fixture is built; reports are '<module>::<name>, <case><class>: <failure>'
+- [Phase 02]: 02-06: cargo-llvm-cov is pinned in install-tools.sh with direct_sub=llvm-cov (the binary rejects a bare --version when run directly); install and verify pass that word, verify-cargo does not; its release binary prints exactly 'cargo-llvm-cov 0.9.1', so the pattern keeps the $ anchor
+- [Phase 02]: 02-06: llvm-tools comes only from rust-toolchain.toml (rustup toolchain install sufficed on the host; the pinned image installs it too); every cargo llvm-cov run sets CARGO_LLVM_COV_SETUP=no
+- [Phase 02]: 02-06: one-time coverage proof recorded: println! count 1 for the spawned subject, 0 for no spawn and 0 for spawn without LLVM_*; no gate or CI job runs coverage
 
 ### Pending Todos
 
@@ -116,6 +120,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T17:37:36.680Z
-Stopped at: Completed 02-05-PLAN.md
+Last session: 2026-10-26T17:46:23.986Z
+Stopped at: Completed 02-06-PLAN.md
 Resume file: None
