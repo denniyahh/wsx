@@ -79,8 +79,8 @@ Messages the scripts print are not changed, so some still name `scripts/...` pat
 - The patch adapts paths only. It leaves `origin`, `origin/develop` and `cut-pr-branch.sh`'s
   `FORBIDDEN_PATHS` line alone, because those are oracle behaviour, not paths.
 - The harness applies the patch with `git apply` to the scratch copy, with
-  `GIT_CEILING_DIRECTORIES` set to the scenario's scratch directory. Without it, `git apply` run
-  inside a git work tree skips every file and still exits 0
+  `GIT_CEILING_DIRECTORIES` set to the scenario root's parent, so git never searches above the
+  root. Without it, `git apply` run inside a git work tree skips every file and still exits 0
   (`provenance::patch_apply_without_ceiling_is_a_silent_no_op` shows this). The harness then
   refuses any copy whose patched scripts do not mention `WSX_ORACLE_DIR`.
 

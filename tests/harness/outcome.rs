@@ -45,8 +45,8 @@ const EXECUTABLE_BITS: u32 = 0o111;
 pub struct Outcome {
     pub exit: i32,
     pub refs: RefsExpect,
-    /// Commits reachable afterwards from some ref and from no ref before, in
-    /// topological order, oldest first.
+    /// Commits reachable afterwards from some ref or detached HEAD and from
+    /// none before, in topological order, oldest first.
     pub new_commits: Vec<CommitExpect>,
     pub files: FilesExpect,
 }
