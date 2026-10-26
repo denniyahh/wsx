@@ -9,7 +9,8 @@
 use crate::action::Action;
 use crate::fixture::{ACTION_TIME, Fixture, Ident, RepoConfig, T0, TICK, WORK};
 use crate::outcome::{
-    CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip, TreeEntry,
+    CheckoutExpect, CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip,
+    TreeEntry,
 };
 use crate::scenario::{Case, CaseKind, FixtureFn, Role, Scenario};
 
@@ -32,6 +33,14 @@ pub const WORKSPACE_FILES: [File; 4] = [
         b"only .planning\nonly .workspace-divergence\n",
     ),
 ];
+
+/// The ref of the workspace branch every preset checks out in `work`.
+pub const WORKSPACE_REF: &str = "refs/heads/workspace/dev";
+
+/// `work` on the workspace branch, the only checkout a sync leaves.
+pub fn work_on_workspace() -> Vec<CheckoutExpect> {
+    vec![CheckoutExpect::on(WORK, WORKSPACE_REF)]
+}
 
 /// The file fixture commit 2 adds on the remote integration branch.
 pub const B_FILE: File = (b"src/b.txt", b"b\n");
@@ -103,7 +112,7 @@ fn self_test() -> Scenario {
         )
         .expect(Outcome {
             exit: 0,
-            refs: RefsExpect::Exactly(vec![
+            refs: RefsExpect::exactly(vec![
                 tip("refs/heads/develop", Tip::Commit(feat_b.clone())),
                 tip("refs/heads/workspace/dev", Tip::Commit(merge.clone())),
                 tip("refs/remotes/origin/HEAD", Tip::Unchanged),
@@ -111,12 +120,13 @@ fn self_test() -> Scenario {
                 tip("refs/remotes/origin/workspace/dev", Tip::Unchanged),
             ]),
             new_commits: vec![feat_b, merge],
-            files: FilesExpect::Exactly(
-                all_files
+            files: FilesExpect::Exactly {
+                files: all_files
                     .iter()
                     .map(|(path, content)| FileExpect::plain(WORK, path, content))
                     .collect(),
-            ),
+                checkouts: work_on_workspace(),
+            },
         }),
     )
 }
@@ -229,14 +239,15 @@ pub fn synced(
     refs.extend(unchanged.iter().map(|name| tip(name, Tip::Unchanged)));
     Outcome {
         exit: 0,
-        refs: RefsExpect::Exactly(refs),
+        refs: RefsExpect::exactly(refs),
         new_commits: vec![theirs, merge],
-        files: FilesExpect::Exactly(
-            all_files
+        files: FilesExpect::Exactly {
+            files: all_files
                 .iter()
                 .map(|(path, content)| FileExpect::plain(WORK, path, content))
                 .collect(),
-        ),
+            checkouts: work_on_workspace(),
+        },
     }
 }
 

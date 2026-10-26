@@ -33,8 +33,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::env::{ScenarioDirs, hermetic_env, inherited_env};
-use crate::fixture::{Fixture, Ident, RepoConfig, WORK};
-use crate::scenario::{CaseRun, Entry, Side, run_case};
+use crate::fixture::{ACTION_TIME, Fixture, Ident, RepoConfig, WORK, dated};
+use crate::oracle::{self, OracleCopy};
+use crate::scenario::{CaseRun, Entry, Side, oracle_target, run_case};
 
 /// Mode bits that make a file executable for someone.
 const EXECUTABLE_BITS: u32 = 0o111;
@@ -50,17 +51,39 @@ pub struct Outcome {
     pub files: FilesExpect,
 }
 
-/// The work repository's refs, in every namespace, after the action.
+/// The repositories after the action: the work repository's refs, in every
+/// namespace, and its local config. Under both forms every remote repository
+/// under `remotes/` holds the same refs as before; no scenario expects a push.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RefsExpect {
-    /// Exactly these refs exist, each with the stated tip. The remote
-    /// repositories' refs and the local config are not compared.
-    Exactly(Vec<RefExpect>),
+    /// Exactly these refs exist, each with the stated tip, and the local
+    /// config is what it was plus exactly `config_added`.
+    Exactly {
+        refs: Vec<RefExpect>,
+        /// The local config entries the action adds, each `key\nvalue` as
+        /// `config --list -z` prints it (`config_entry` builds one). Their
+        /// order is not compared.
+        config_added: Vec<Vec<u8>>,
+    },
     /// The repositories are untouched: the same refs exist as before, each
-    /// holding what it held before (symbolic refs by target name), every
-    /// remote repository under `remotes/` holds the same refs, and the work
-    /// repository's local config is the same.
+    /// holding what it held before (symbolic refs by target name), and the
+    /// work repository's local config is the same.
     Unchanged,
+}
+
+impl RefsExpect {
+    /// Exactly these refs, with the local config unchanged.
+    pub fn exactly(refs: Vec<RefExpect>) -> RefsExpect {
+        RefsExpect::Exactly {
+            refs,
+            config_added: Vec::new(),
+        }
+    }
+}
+
+/// A local config entry as `config --list -z` records it: `key\nvalue`.
+pub fn config_entry(key: &str, value: &str) -> Vec<u8> {
+    format!("{key}\n{value}").into_bytes()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,12 +138,18 @@ impl TreeEntry {
     }
 }
 
-/// The files on disk in every checkout after the action.
+/// The checkouts after the action: their files on disk, HEADs, indexes and
+/// operations in progress.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FilesExpect {
-    /// Exactly these files exist, across all checkouts. Checkout state beyond
-    /// the files (HEAD, index, pending operations) is not compared.
-    Exactly(Vec<FileExpect>),
+    /// Exactly these files exist, across all checkouts, and exactly these
+    /// checkouts exist, each on its stated branch. Every checkout's index
+    /// also holds exactly its HEAD commit's tree (nothing staged, no
+    /// conflict), and no checkout has an operation in progress.
+    Exactly {
+        files: Vec<FileExpect>,
+        checkouts: Vec<CheckoutExpect>,
+    },
     /// The checkouts are untouched: the same checkouts exist, each holds the
     /// same files, with the same content and executable bit, as before, and
     /// each has the same HEAD, the same index and the same pending operations.
@@ -134,6 +163,25 @@ pub struct FileExpect {
     pub path: Vec<u8>,
     pub content: Vec<u8>,
     pub executable: bool,
+}
+
+/// A checkout that exists after the action, and the branch its HEAD is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckoutExpect {
+    /// The checkout, relative to the scenario root.
+    pub checkout: String,
+    /// The branch, by its full ref name.
+    pub branch: String,
+}
+
+impl CheckoutExpect {
+    /// `checkout`, with its HEAD on `branch` (a full ref name).
+    pub fn on(checkout: &str, branch: &str) -> CheckoutExpect {
+        CheckoutExpect {
+            checkout: checkout.to_owned(),
+            branch: branch.to_owned(),
+        }
+    }
 }
 
 impl FileExpect {
@@ -185,6 +233,9 @@ pub struct CheckoutState {
     pub head: HeadState,
     /// Every index entry, keyed by (path, stage).
     pub index: BTreeMap<(Vec<u8>, u8), IndexEntry>,
+    /// The index HEAD's tree gives: each of its entries at stage 0. The
+    /// index of a checkout with nothing staged equals it.
+    pub head_tree: BTreeMap<(Vec<u8>, u8), IndexEntry>,
     /// The markers of operations in progress that exist, from
     /// `PENDING_MARKERS`.
     pub pending: BTreeSet<&'static str>,
@@ -557,6 +608,7 @@ fn read_checkout_states(
         let state = CheckoutState {
             head: checkout.head.clone(),
             index: read_index(fixture, &checkout.name)?,
+            head_tree: read_head_tree(fixture, &checkout.name)?,
             pending: read_pending(fixture, checkout)?,
         };
         states.insert(checkout.name.clone(), state);
@@ -591,6 +643,33 @@ fn read_index(
         index.insert((record[tab + 1..].to_vec(), stage - b'0'), entry);
     }
     Ok(index)
+}
+
+/// Parses `ls-tree -r -z --full-tree HEAD`, `<mode> <type> <object>\t<path>`
+/// records, into the stage-0 index entries HEAD's tree gives.
+fn read_head_tree(
+    fixture: &Fixture,
+    checkout: &str,
+) -> Result<BTreeMap<(Vec<u8>, u8), IndexEntry>, String> {
+    let listing = fixture.git_ok(checkout, ["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?;
+    let mut tree = BTreeMap::new();
+    for record in listing.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
+        let malformed = || format!("unexpected ls-tree record {}", show(record));
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(malformed)?;
+        let fields: Vec<&[u8]> = record[..tab].split(|byte| *byte == b' ').collect();
+        let [mode, _kind, object] = fields[..] else {
+            return Err(malformed());
+        };
+        let entry = IndexEntry {
+            mode: utf8(mode, "a tree entry mode")?,
+            object: utf8(object, "an object id")?,
+        };
+        tree.insert((record[tab + 1..].to_vec(), 0), entry);
+    }
+    Ok(tree)
 }
 
 /// The `PENDING_MARKERS` present in `checkout`'s git dir.
@@ -683,7 +762,7 @@ pub enum Field {
         part: CommitPart,
     },
     Files,
-    /// The checkouts that exist; compared under `FilesExpect::Unchanged`, as
+    /// The checkouts that exist; compared under both `FilesExpect` forms, as
     /// are the three below.
     CheckoutSet,
     /// What a checkout's HEAD holds.
@@ -694,7 +773,7 @@ pub enum Field {
     CheckoutPending(String),
     /// The oracle's stderr, against a case's `oracle_stderr`.
     Stderr,
-    /// A remote repository's refs; compared under `RefsExpect::Unchanged`, as
+    /// A remote repository's refs; compared under both `RefsExpect` forms, as
     /// is the config below.
     RemoteRefs(String),
     /// The work repository's local config.
@@ -814,8 +893,11 @@ pub fn compare(
             got: describe_exit(exit),
         });
     }
-    match refs {
-        RefsExpect::Exactly(list) => compare_refs(list, before, after, &mut mismatches),
+    let config_added: &[Vec<u8>] = match refs {
+        RefsExpect::Exactly { refs, config_added } => {
+            compare_refs(refs, before, after, &mut mismatches);
+            config_added
+        }
         RefsExpect::Unchanged => {
             let as_before: Vec<RefExpect> = before
                 .refs
@@ -826,26 +908,15 @@ pub fn compare(
                 })
                 .collect();
             compare_refs(&as_before, before, after, &mut mismatches);
-            compare_remote_refs(&before.remote_refs, &after.remote_refs, &mut mismatches);
-            if before.config != after.config {
-                let (want, got) = differences(
-                    &entry_counts(&before.config),
-                    &entry_counts(&after.config),
-                    |entry| show(entry),
-                    |count| format!("{count} times"),
-                );
-                mismatches.push(Mismatch {
-                    field: Field::Config,
-                    expected: format!("unchanged: {want}"),
-                    got,
-                });
-            }
+            &[]
         }
-    }
+    };
+    compare_remote_refs(&before.remote_refs, &after.remote_refs, &mut mismatches);
+    compare_config(&before.config, config_added, &after.config, &mut mismatches);
     compare_new_commits(new_commits, after, &mut mismatches);
     match files {
-        FilesExpect::Exactly(list) => {
-            let expected_files = list
+        FilesExpect::Exactly { files, checkouts } => {
+            let expected_files = files
                 .iter()
                 .map(|file| {
                     let FileExpect {
@@ -862,6 +933,7 @@ pub fn compare(
                 })
                 .collect();
             compare_files(&expected_files, &after.files, &mut mismatches);
+            compare_listed_checkouts(checkouts, &after.checkouts, &mut mismatches);
         }
         FilesExpect::Unchanged => {
             compare_files(&before.files, &after.files, &mut mismatches);
@@ -869,6 +941,107 @@ pub fn compare(
         }
     }
     mismatches
+}
+
+/// The local config against what it was plus `added`. With nothing added,
+/// the entries must also keep their order.
+fn compare_config<'a>(
+    before: &'a [Vec<u8>],
+    added: &'a [Vec<u8>],
+    after: &'a [Vec<u8>],
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let mut want = entry_counts(before);
+    for entry in added {
+        *want.entry(entry).or_insert(0) += 1;
+    }
+    let got = entry_counts(after);
+    if want == got && (!added.is_empty() || before == after) {
+        return;
+    }
+    let (want_entries, got_entries) = differences(
+        &want,
+        &got,
+        |entry| show(entry),
+        |count| format!("{count} times"),
+    );
+    let expected = if added.is_empty() {
+        format!("unchanged: {want_entries}")
+    } else {
+        format!("as before plus {}: {want_entries}", show_list(added))
+    };
+    mismatches.push(Mismatch {
+        field: Field::Config,
+        expected,
+        got: got_entries,
+    });
+}
+
+/// Under `FilesExpect::Exactly`: exactly the `listed` checkouts exist, each
+/// on its branch, and every checkout's index holds its HEAD's tree with no
+/// operation in progress.
+fn compare_listed_checkouts(
+    listed: &[CheckoutExpect],
+    after: &BTreeMap<String, CheckoutState>,
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let expected_names: BTreeSet<&String> = listed.iter().map(|c| &c.checkout).collect();
+    let got_names: BTreeSet<&String> = after.keys().collect();
+    if expected_names != got_names {
+        let join = |names: &BTreeSet<&String>| {
+            names
+                .iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        mismatches.push(Mismatch {
+            field: Field::CheckoutSet,
+            expected: join(&expected_names),
+            got: join(&got_names),
+        });
+    }
+    for (name, state) in after {
+        let CheckoutState {
+            head,
+            index,
+            head_tree,
+            pending,
+        } = state;
+        let listed_branch = listed
+            .iter()
+            .find(|c| c.checkout == *name)
+            .map(|c| HeadState::Branch(c.branch.clone()));
+        if let Some(want) = listed_branch
+            && *head != want
+        {
+            mismatches.push(Mismatch {
+                field: Field::CheckoutHead(name.clone()),
+                expected: describe_head(&want),
+                got: describe_head(head),
+            });
+        }
+        if index != head_tree {
+            let (want, got) = differences(
+                head_tree,
+                index,
+                |(path, stage)| format!("{} stage {stage}", show(path)),
+                |entry| format!("mode {}, object {}", entry.mode, entry.object),
+            );
+            mismatches.push(Mismatch {
+                field: Field::CheckoutIndex(name.clone()),
+                expected: format!("HEAD's tree: {want}"),
+                got,
+            });
+        }
+        if !pending.is_empty() {
+            mismatches.push(Mismatch {
+                field: Field::CheckoutPending(name.clone()),
+                expected: "none".to_owned(),
+                got: format!("{pending:?}"),
+            });
+        }
+    }
 }
 
 /// How often each config entry occurs.
@@ -942,6 +1115,9 @@ fn compare_checkouts(
         let CheckoutState {
             head,
             index,
+            // Not compared: HEAD is, and its branch's tip is stated by the
+            // refs expectation.
+            head_tree: _,
             pending,
         } = was;
         if *head != now.head {
@@ -1227,9 +1403,10 @@ fn compare_files(
 }
 
 /// The observed outcome in the expectation types, for transcribing a recorded
-/// outcome from a real run. A symbolic ref that changed has no expectation
-/// form yet and is left out, and a run killed by a signal shows exit -1; the
-/// comparison still reports both.
+/// outcome from a real run. A symbolic ref that changed, a removed config
+/// entry and a detached checkout have no expectation form yet and are left
+/// out, and a run killed by a signal shows exit -1; the comparison still
+/// reports each of them.
 pub fn observed(before: &Snapshot, after: &Snapshot, exit: Option<i32>) -> Outcome {
     let refs = after
         .refs
@@ -1272,11 +1449,27 @@ pub fn observed(before: &Snapshot, after: &Snapshot, exit: Option<i32>) -> Outco
             },
         )
         .collect();
+    let mut config_added = Vec::new();
+    let mut before_counts = entry_counts(&before.config);
+    for entry in &after.config {
+        match before_counts.get_mut(entry) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => config_added.push(entry.clone()),
+        }
+    }
+    let checkouts = after
+        .checkouts
+        .iter()
+        .filter_map(|(checkout, state)| match &state.head {
+            HeadState::Branch(branch) => Some(CheckoutExpect::on(checkout, branch)),
+            HeadState::Detached(_) => None,
+        })
+        .collect();
     Outcome {
         exit: exit.unwrap_or(-1),
-        refs: RefsExpect::Exactly(refs),
+        refs: RefsExpect::Exactly { refs, config_added },
         new_commits,
-        files: FilesExpect::Exactly(files),
+        files: FilesExpect::Exactly { files, checkouts },
     }
 }
 
@@ -1365,7 +1558,7 @@ fn symbolic_refs_are_recorded_by_target() {
 
     let every_ref_unchanged = Outcome {
         exit: 0,
-        refs: RefsExpect::Exactly(
+        refs: RefsExpect::exactly(
             after
                 .refs
                 .keys()
@@ -1427,7 +1620,7 @@ fn mismatched_fields(expected: &Outcome, run: &CaseRun) -> Vec<Field> {
 /// An expectation's listed refs.
 fn listed_refs(outcome: &mut Outcome) -> &mut Vec<RefExpect> {
     match &mut outcome.refs {
-        RefsExpect::Exactly(list) => list,
+        RefsExpect::Exactly { refs, .. } => refs,
         RefsExpect::Unchanged => panic!("the expectation lists its refs"),
     }
 }
@@ -1435,7 +1628,7 @@ fn listed_refs(outcome: &mut Outcome) -> &mut Vec<RefExpect> {
 /// An expectation's listed files.
 fn listed_files(outcome: &mut Outcome) -> &mut Vec<FileExpect> {
     match &mut outcome.files {
-        FilesExpect::Exactly(list) => list,
+        FilesExpect::Exactly { files, .. } => files,
         FilesExpect::Unchanged => panic!("the expectation lists its files"),
     }
 }
@@ -1962,4 +2155,148 @@ fn a_commit_on_a_detached_head_is_new() {
         fields,
         [Field::NewCommitCount, Field::CheckoutHead(WORK.to_owned())]
     );
+}
+
+// ----------------------- checkout and repository state under the Exactly forms
+
+/// The fields the oracle target of `module::name`'s subject reports when the
+/// oracle runs it and `act` then changes the fixture, as a later step of the
+/// same action would.
+fn oracle_run_then(module: &str, name: &str, act: fn(&mut Fixture)) -> Vec<Field> {
+    let entry = registered(module, name);
+    let case = (entry.build)().subject;
+    let dirs = ScenarioDirs::new("outcome", name).expect("scenario dirs");
+    let env = hermetic_env(&inherited_env(), &dirs);
+    let mut fixture = Fixture::new(&dirs, env.clone(), case.config.clone()).expect("fixture");
+    (case.fixture)(&mut fixture).expect("fixture steps");
+    let copy = OracleCopy::prepare(&dirs, &env).expect("oracle copy");
+    let before = observe(&fixture, None).expect("observe before");
+    let run = oracle::run(&case.action, &fixture, &copy, &dated(&env, ACTION_TIME))
+        .expect("the oracle runs the action");
+    act(&mut fixture);
+    let after = observe(&fixture, Some(&before)).expect("observe after");
+    compare(oracle_target(&case), &before, &after, run.exit)
+        .into_iter()
+        .map(|mismatch| mismatch.field)
+        .collect()
+}
+
+/// The clean direction: the sync as the oracle runs it meets
+/// `sync::self_test`'s exact expectation, so each mismatch below comes from
+/// its change.
+#[test]
+fn exactly_reports_nothing_for_the_sync_as_run() {
+    assert_eq!(oracle_run_then("sync", "self_test", |_| {}), []);
+}
+
+/// A sync that leaves `work` detached at the merge it made changes no ref,
+/// file or commit the expectation lists: only HEAD differs.
+#[test]
+fn files_exactly_reports_a_checkout_left_detached() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        fixture
+            .git_ok(WORK, ["checkout", "--quiet", "--detach"])
+            .expect("detach HEAD");
+    });
+    assert_eq!(fields, [Field::CheckoutHead(WORK.to_owned())]);
+}
+
+/// A new worktree created detached, with its files in place, is reported:
+/// the scenario's checkout must be on `feature/phase-1`.
+#[test]
+fn files_exactly_reports_a_new_checkout_left_detached() {
+    let fields = oracle_run_then("worktree", "self_test", |fixture| {
+        fixture
+            .git_ok(
+                "work/.worktrees/phase-1",
+                ["checkout", "--quiet", "--detach"],
+            )
+            .expect("detach the new checkout's HEAD");
+    });
+    assert_eq!(
+        fields,
+        [Field::CheckoutHead("work/.worktrees/phase-1".to_owned())]
+    );
+}
+
+/// `git read-tree develop` after the sync stages another tree in `work` and
+/// leaves its files and HEAD alone: only the index differs.
+#[test]
+fn files_exactly_reports_an_index_that_differs_from_head() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        fixture
+            .git_ok(WORK, ["read-tree", "develop"])
+            .expect("read develop's tree into the index");
+    });
+    assert_eq!(fields, [Field::CheckoutIndex(WORK.to_owned())]);
+}
+
+/// A `MERGE_HEAD` left behind by a merge that otherwise succeeded is
+/// reported as a pending operation only.
+#[test]
+fn files_exactly_reports_a_merge_left_in_progress() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        let head = fixture
+            .git_ok(WORK, ["rev-parse", "HEAD"])
+            .expect("read HEAD");
+        let marker = fixture.checkout(WORK).join(".git/MERGE_HEAD");
+        fs::write(&marker, head).expect("write MERGE_HEAD");
+    });
+    assert_eq!(fields, [Field::CheckoutPending(WORK.to_owned())]);
+}
+
+/// A checkout the expectation does not list is reported, beside its files.
+#[test]
+fn files_exactly_reports_an_unlisted_checkout() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        fixture
+            .git_ok(
+                WORK,
+                ["worktree", "add", "--quiet", ".worktrees/extra", "develop"],
+            )
+            .expect("add a worktree");
+    });
+    assert_eq!(fields, [Field::Files, Field::CheckoutSet]);
+}
+
+/// An upstream setting the sync writes is reported: the exact refs form
+/// expects the local config unchanged unless it lists the entries added.
+#[test]
+fn refs_exactly_reports_a_local_config_change() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        fixture
+            .git_ok(
+                WORK,
+                ["config", "branch.workspace/dev.merge", "refs/heads/other"],
+            )
+            .expect("set an upstream");
+    });
+    assert_eq!(fields, [Field::Config]);
+}
+
+/// A push to a ref no fetch refspec tracks is reported under the exact refs
+/// form too, though the work repository's refs all match.
+#[test]
+fn refs_exactly_reports_a_push_to_an_untracked_remote_ref() {
+    let fields = oracle_run_then("sync", "self_test", |fixture| {
+        fixture
+            .git_ok(WORK, ["push", "--quiet", "origin", "HEAD:refs/wsx/backup"])
+            .expect("push to an untracked ref");
+    });
+    assert_eq!(fields, [Field::RemoteRefs("remotes/origin.git".to_owned())]);
+}
+
+/// `cut::self_test` states the upstream the oracle's cut writes for the PR
+/// branch. The same expectation without those entries fails on the config
+/// alone, so the stated entries are compared, not ignored.
+#[test]
+fn refs_exactly_compares_the_config_entries_it_lists() {
+    let (mut expected, run) = oracle_run("cut", "self_test");
+    assert_eq!(mismatched_fields(&expected, &run), Vec::<Field>::new());
+    let RefsExpect::Exactly { config_added, .. } = &mut expected.refs else {
+        panic!("cut::self_test lists its refs");
+    };
+    assert!(!config_added.is_empty(), "the cut adds config entries");
+    config_added.clear();
+    assert_eq!(mismatched_fields(&expected, &run), [Field::Config]);
 }
