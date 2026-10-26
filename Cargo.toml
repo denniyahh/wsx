@@ -7,3 +7,11 @@ publish = false
 description = "Keeps personal files off shared branches while moving work between a workspace branch and its worktrees"
 
 [dependencies]
+
+[dev-dependencies]
+# Scenario tests build scratch git trees. tempfile's TempDir removes them even
+# when a test panics, and `TempDir::new_in` keeps them under
+# CARGO_TARGET_TMPDIR rather than the RAM-backed /tmp. Dev-only, so nothing
+# ships in the binary; MIT OR Apache-2.0, and every crate in its graph offers
+# MIT. Legitimacy checked in phase 2 research (Package Legitimacy Audit: OK).
+tempfile = "3.27.0"

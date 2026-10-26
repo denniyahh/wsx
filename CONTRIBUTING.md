@@ -25,6 +25,12 @@ required.
    them, `scripts/install-tools.sh verify cargo-nextest cargo-deny gitleaks`
    fails unless each one is the pinned version. The versions are pinned in
    that script and nowhere else.
+
+   `cargo-llvm-cov` is pinned in the same script. Only `scripts/check.sh
+   coverage` runs it, which fails when it is missing or not the pinned
+   version; `all` and CI do not run coverage yet, so install it
+   (`scripts/install-tools.sh install cargo-llvm-cov`) when you run that
+   target.
 3. Run the one-time repository setup:
 
    ```bash
