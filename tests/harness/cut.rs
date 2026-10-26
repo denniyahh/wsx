@@ -61,7 +61,8 @@ fn phase_branch(fixture: &mut Fixture) -> Result<(), String> {
 /// Parity, by observation: devflow's script checks `feature/phase-1-pr` out
 /// in the source worktree only while it replays, and returns to
 /// `feature/phase-1` before it exits, so the transient checkout leaves no
-/// observable trace in refs, commits or files.
+/// observable trace in refs, commits, files, HEAD, index or operations in
+/// progress.
 fn self_test() -> Scenario {
     let harness = Ident::harness();
     let replayed = CommitExpect {
@@ -853,8 +854,8 @@ fn phase_b_after_upstream_change(fixture: &mut Fixture) -> Result<(), String> {
 /// `fixed:`, by observation: devflow's cut replays `feat(1): add b`, then
 /// stops on `unresolved code conflict` in `feat(1): change a` and exits 1,
 /// leaving `feature/phase-1-pr` created at the first replay. The source
-/// checkout is back on `feature/phase-1` with its files unchanged. Its
-/// counterpart is Parity.
+/// checkout is back on `feature/phase-1` with its files and index unchanged
+/// and no operation left in progress. Its counterpart is Parity.
 fn conflict_leaves_partial_pr_branch() -> Scenario {
     let replayed = commit(
         b"feat(1): add b\n",

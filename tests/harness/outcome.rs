@@ -11,6 +11,13 @@
 //! A symbolic ref is recorded by its target name, never by the object it
 //! resolves to: a fetch that moves `origin/develop` leaves `origin/HEAD`
 //! unchanged.
+//!
+//! Each checkout is also recorded beyond its files: what its HEAD holds (a
+//! branch, or a detached commit), its index (`ls-files -s -z`, staged content
+//! without stat data) and any operation left in progress (`MERGE_HEAD`,
+//! `CHERRY_PICK_HEAD`, a rebase directory, ...). A cut that writes the PR tree
+//! into the user's index, or leaves the checkout detached, changes none of the
+//! files on disk, and only this record sees it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -103,10 +110,12 @@ impl TreeEntry {
 /// The files on disk in every checkout after the action.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FilesExpect {
-    /// Exactly these files exist, across all checkouts.
+    /// Exactly these files exist, across all checkouts. Checkout state beyond
+    /// the files (HEAD, index, pending operations) is not compared.
     Exactly(Vec<FileExpect>),
-    /// Every checkout holds the same files, with the same content and
-    /// executable bit, as before.
+    /// The checkouts are untouched: the same checkouts exist, each holds the
+    /// same files, with the same content and executable bit, as before, and
+    /// each has the same HEAD, the same index and the same pending operations.
     Unchanged,
 }
 
@@ -146,6 +155,45 @@ pub struct FileState {
     pub executable: bool,
 }
 
+/// What a checkout's HEAD holds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HeadState {
+    /// A branch, by its full ref name.
+    Branch(String),
+    /// A detached HEAD, by object id.
+    Detached(String),
+}
+
+/// One staged index entry: git's octal mode and the blob's object id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexEntry {
+    pub mode: String,
+    pub object: String,
+}
+
+/// A checkout's state beyond its files.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckoutState {
+    pub head: HeadState,
+    /// Every index entry, keyed by (path, stage).
+    pub index: BTreeMap<(Vec<u8>, u8), IndexEntry>,
+    /// The markers of operations in progress that exist, from
+    /// `PENDING_MARKERS`.
+    pub pending: BTreeSet<&'static str>,
+}
+
+/// The files and directories git leaves in a checkout's git dir while an
+/// operation is in progress.
+const PENDING_MARKERS: [&str; 7] = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "REBASE_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
+];
+
 /// The observable state of a fixture at one moment.
 pub struct Snapshot {
     pub refs: BTreeMap<String, RefValue>,
@@ -155,10 +203,13 @@ pub struct Snapshot {
     pub new_commits: Vec<String>,
     /// Every file in every checkout, keyed by (checkout, path).
     pub files: BTreeMap<(String, Vec<u8>), FileState>,
+    /// Every checkout's HEAD, index and pending operations, keyed by checkout.
+    pub checkouts: BTreeMap<String, CheckoutState>,
 }
 
-/// Records the fixture's refs, commits and files. With `before`, also the
-/// commits reachable now from some ref and from no ref in `before`.
+/// Records the fixture's refs, commits, files and checkout states. With
+/// `before`, also the commits reachable now from some ref and from no ref in
+/// `before`.
 pub fn observe(fixture: &Fixture, before: Option<&Snapshot>) -> Result<Snapshot, String> {
     let refs = read_refs(fixture)?;
     let new_commits = match before {
@@ -175,11 +226,13 @@ pub fn observe(fixture: &Fixture, before: Option<&Snapshot>) -> Result<Snapshot,
             commits.insert(id.clone(), read_commit(fixture, id)?);
         }
     }
+    let checkouts = checkouts(fixture)?;
     Ok(Snapshot {
         refs,
         commits,
         new_commits,
-        files: read_files(fixture)?,
+        files: read_files(&checkouts)?,
+        checkouts: read_checkout_states(fixture, &checkouts)?,
     })
 }
 
@@ -370,34 +423,139 @@ fn read_tree(fixture: &Fixture, commit: &str) -> Result<Vec<TreeEntry>, String> 
     Ok(tree)
 }
 
-/// Every checkout of the work repository, as absolute paths.
-fn checkouts(fixture: &Fixture) -> Result<Vec<PathBuf>, String> {
-    let listing = fixture.git_ok(WORK, ["worktree", "list", "--porcelain", "-z"])?;
-    Ok(listing
-        .split(|byte| *byte == 0)
-        .filter_map(|field| field.strip_prefix(b"worktree "))
-        .map(|path| PathBuf::from(OsStr::from_bytes(path)))
-        .collect())
+/// One checkout of the work repository, as `worktree list` reports it.
+struct Checkout {
+    /// The absolute path.
+    path: PathBuf,
+    /// The path relative to the scenario root.
+    name: String,
+    head: HeadState,
 }
 
-fn read_files(fixture: &Fixture) -> Result<BTreeMap<(String, Vec<u8>), FileState>, String> {
-    let checkouts = checkouts(fixture)?;
-    let mut files = BTreeMap::new();
-    for checkout in &checkouts {
-        let name = checkout.strip_prefix(&fixture.root).map_err(|_| {
-            format!(
-                "checkout {} is outside the scenario root",
-                checkout.display()
-            )
-        })?;
+/// Every checkout of the work repository.
+fn checkouts(fixture: &Fixture) -> Result<Vec<Checkout>, String> {
+    let listing = fixture.git_ok(WORK, ["worktree", "list", "--porcelain", "-z"])?;
+    // Records are runs of NUL-terminated fields, each run ended by an empty
+    // field: `worktree <path>`, `HEAD <id>`, then `branch <ref>` or `detached`.
+    let mut found = Vec::new();
+    for record in listing
+        .split(|byte| *byte == 0)
+        .collect::<Vec<_>>()
+        .split(|f| f.is_empty())
+    {
+        if record.is_empty() {
+            continue;
+        }
+        let malformed = || format!("unexpected worktree list record {record:?}");
+        let field = |prefix: &[u8]| record.iter().find_map(|f| f.strip_prefix(prefix));
+        let path = PathBuf::from(OsStr::from_bytes(
+            field(b"worktree ").ok_or_else(malformed)?,
+        ));
+        let head = match (field(b"branch "), field(b"HEAD ")) {
+            (Some(branch), _) => HeadState::Branch(utf8(branch, "a branch name")?),
+            (None, Some(id)) if record.contains(&&b"detached"[..]) => {
+                HeadState::Detached(utf8(id, "an object id")?)
+            }
+            _ => return Err(malformed()),
+        };
+        let name = path
+            .strip_prefix(&fixture.root)
+            .map_err(|_| format!("checkout {} is outside the scenario root", path.display()))?;
         let name = utf8(name.as_os_str().as_bytes(), "a checkout name")?;
+        found.push(Checkout { path, name, head });
+    }
+    Ok(found)
+}
+
+fn read_files(checkouts: &[Checkout]) -> Result<BTreeMap<(String, Vec<u8>), FileState>, String> {
+    let paths: Vec<PathBuf> = checkouts.iter().map(|c| c.path.clone()).collect();
+    let mut files = BTreeMap::new();
+    for checkout in checkouts {
         let mut found = Vec::new();
-        walk(checkout, &[], &checkouts, &mut found)?;
+        walk(&checkout.path, &[], &paths, &mut found)?;
         for (path, state) in found {
-            files.insert((name.clone(), path), state);
+            files.insert((checkout.name.clone(), path), state);
         }
     }
     Ok(files)
+}
+
+fn read_checkout_states(
+    fixture: &Fixture,
+    checkouts: &[Checkout],
+) -> Result<BTreeMap<String, CheckoutState>, String> {
+    let mut states = BTreeMap::new();
+    for checkout in checkouts {
+        let state = CheckoutState {
+            head: checkout.head.clone(),
+            index: read_index(fixture, &checkout.name)?,
+            pending: read_pending(fixture, checkout)?,
+        };
+        states.insert(checkout.name.clone(), state);
+    }
+    Ok(states)
+}
+
+/// Parses `ls-files -s -z`: `<mode> <object> <stage>\t<path>` records.
+fn read_index(
+    fixture: &Fixture,
+    checkout: &str,
+) -> Result<BTreeMap<(Vec<u8>, u8), IndexEntry>, String> {
+    let listing = fixture.git_ok(checkout, ["ls-files", "-s", "-z"])?;
+    let mut index = BTreeMap::new();
+    for record in listing.split(|byte| *byte == 0).filter(|r| !r.is_empty()) {
+        let malformed = || format!("unexpected ls-files record {}", show(record));
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(malformed)?;
+        let fields: Vec<&[u8]> = record[..tab].split(|byte| *byte == b' ').collect();
+        let [mode, object, stage] = fields[..] else {
+            return Err(malformed());
+        };
+        let [stage @ b'0'..=b'3'] = stage else {
+            return Err(malformed());
+        };
+        let entry = IndexEntry {
+            mode: utf8(mode, "an index entry mode")?,
+            object: utf8(object, "an object id")?,
+        };
+        index.insert((record[tab + 1..].to_vec(), stage - b'0'), entry);
+    }
+    Ok(index)
+}
+
+/// The `PENDING_MARKERS` present in `checkout`'s git dir.
+fn read_pending(fixture: &Fixture, checkout: &Checkout) -> Result<BTreeSet<&'static str>, String> {
+    let mut args = vec!["rev-parse"];
+    for marker in PENDING_MARKERS {
+        args.extend(["--git-path", marker]);
+    }
+    let listing = fixture.git_ok(&checkout.name, args)?;
+    let paths: Vec<&[u8]> = listing
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
+    if paths.len() != PENDING_MARKERS.len() {
+        return Err(format!(
+            "rev-parse --git-path printed {} paths for {} markers",
+            paths.len(),
+            PENDING_MARKERS.len()
+        ));
+    }
+    let mut pending = BTreeSet::new();
+    for (marker, path) in PENDING_MARKERS.into_iter().zip(paths) {
+        // A relative path is relative to the checkout; join keeps an absolute one.
+        let path = checkout.path.join(OsStr::from_bytes(path));
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                pending.insert(marker);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("stat {}: {err}", path.display())),
+        }
+    }
+    Ok(pending)
 }
 
 /// Records every file under `dir`, skipping `.git` and nested checkouts.
@@ -452,8 +610,20 @@ pub enum Field {
     RefSet,
     RefTip(String),
     NewCommitCount,
-    Commit { which: String, part: CommitPart },
+    Commit {
+        which: String,
+        part: CommitPart,
+    },
     Files,
+    /// The checkouts that exist; compared under `FilesExpect::Unchanged`, as
+    /// are the three below.
+    CheckoutSet,
+    /// What a checkout's HEAD holds.
+    CheckoutHead(String),
+    /// A checkout's staged entries.
+    CheckoutIndex(String),
+    /// The operations left in progress in a checkout.
+    CheckoutPending(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -497,6 +667,12 @@ impl fmt::Display for Field {
                 write!(f, "{which}: {part}")
             }
             Field::Files => write!(f, "files on disk"),
+            Field::CheckoutSet => write!(f, "the set of checkouts"),
+            Field::CheckoutHead(name) => write!(f, "the HEAD of checkout {name}"),
+            Field::CheckoutIndex(name) => write!(f, "the index of checkout {name}"),
+            Field::CheckoutPending(name) => {
+                write!(f, "the operations in progress in checkout {name}")
+            }
         }
     }
 }
@@ -595,9 +771,75 @@ pub fn compare(
                 .collect();
             compare_files(&expected_files, &after.files, &mut mismatches);
         }
-        FilesExpect::Unchanged => compare_files(&before.files, &after.files, &mut mismatches),
+        FilesExpect::Unchanged => {
+            compare_files(&before.files, &after.files, &mut mismatches);
+            compare_checkouts(&before.checkouts, &after.checkouts, &mut mismatches);
+        }
     }
     mismatches
+}
+
+fn describe_head(head: &HeadState) -> String {
+    match head {
+        HeadState::Branch(name) => format!("on branch {name}"),
+        HeadState::Detached(id) => format!("detached at {id}"),
+    }
+}
+
+/// Each checkout's HEAD, index and pending operations against what they were.
+fn compare_checkouts(
+    before: &BTreeMap<String, CheckoutState>,
+    after: &BTreeMap<String, CheckoutState>,
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let names = |states: &BTreeMap<String, CheckoutState>| {
+        states.keys().cloned().collect::<Vec<_>>().join(", ")
+    };
+    if before.keys().ne(after.keys()) {
+        mismatches.push(Mismatch {
+            field: Field::CheckoutSet,
+            expected: names(before),
+            got: names(after),
+        });
+    }
+    for (name, was) in before {
+        let Some(now) = after.get(name) else {
+            continue; // already reported as a difference in the checkout set
+        };
+        let CheckoutState {
+            head,
+            index,
+            pending,
+        } = was;
+        if *head != now.head {
+            mismatches.push(Mismatch {
+                field: Field::CheckoutHead(name.clone()),
+                expected: format!("unchanged ({})", describe_head(head)),
+                got: describe_head(&now.head),
+            });
+        }
+        if *index != now.index {
+            let (want, got) = differences(
+                index,
+                &now.index,
+                |(path, stage)| format!("{} stage {stage}", show(path)),
+                |entry| format!("mode {}, object {}", entry.mode, entry.object),
+            );
+            mismatches.push(Mismatch {
+                field: Field::CheckoutIndex(name.clone()),
+                expected: format!("unchanged: {want}"),
+                got,
+            });
+        }
+        if *pending != now.pending {
+            let list = |set: &BTreeSet<&str>| format!("{set:?}");
+            mismatches.push(Mismatch {
+                field: Field::CheckoutPending(name.clone()),
+                expected: format!("unchanged: {}", list(pending)),
+                got: list(&now.pending),
+            });
+        }
+    }
 }
 
 fn compare_refs(
@@ -1459,4 +1701,72 @@ fn refs_compare_as_a_set_and_commits_as_a_sequence() {
         Vec::<Field>::new(),
         "new commits listed in reverse order"
     );
+}
+
+// ------------------------------------- checkout state under files Unchanged
+
+/// The fields a `FilesExpect::Unchanged` outcome reports after `act` changes
+/// the devflow preset's `work` checkout, with refs, commits and exit as before.
+fn checkout_mismatches(name: &str, act: fn(&Fixture)) -> Vec<Field> {
+    let dirs = ScenarioDirs::new("outcome", name).expect("scenario dirs");
+    let env = hermetic_env(&inherited_env(), &dirs);
+    let fixture = Fixture::new(&dirs, env, RepoConfig::devflow()).expect("devflow fixture");
+    let before = observe(&fixture, None).expect("observe before");
+    act(&fixture);
+    let after = observe(&fixture, Some(&before)).expect("observe after");
+    let untouched = Outcome {
+        exit: 0,
+        refs: RefsExpect::Unchanged,
+        new_commits: Vec::new(),
+        files: FilesExpect::Unchanged,
+    };
+    compare(&untouched, &before, &after, Some(0))
+        .into_iter()
+        .map(|mismatch| mismatch.field)
+        .collect()
+}
+
+/// The clean direction: observing twice with nothing in between reports no
+/// difference, so each mismatch below comes from its change.
+#[test]
+fn untouched_checkout_has_no_mismatch() {
+    assert_eq!(checkout_mismatches("untouched_checkout", |_| {}), []);
+}
+
+/// `git read-tree develop` writes another tree into `work`'s index and leaves
+/// the files on disk, the refs and HEAD alone: only the index differs.
+#[test]
+fn files_unchanged_reports_an_overwritten_index() {
+    let fields = checkout_mismatches("overwritten_index", |fixture| {
+        fixture
+            .git_ok(WORK, ["read-tree", "develop"])
+            .expect("read develop's tree into the index");
+    });
+    assert_eq!(fields, [Field::CheckoutIndex(WORK.to_owned())]);
+}
+
+/// `git checkout --detach` leaves `work` at the same commit with the same
+/// files and index: only HEAD differs.
+#[test]
+fn files_unchanged_reports_a_detached_head() {
+    let fields = checkout_mismatches("detached_head", |fixture| {
+        fixture
+            .git_ok(WORK, ["checkout", "--quiet", "--detach"])
+            .expect("detach HEAD");
+    });
+    assert_eq!(fields, [Field::CheckoutHead(WORK.to_owned())]);
+}
+
+/// A `MERGE_HEAD` left in `work`'s git dir, as an interrupted merge leaves
+/// it: only the pending operations differ.
+#[test]
+fn files_unchanged_reports_a_pending_operation() {
+    let fields = checkout_mismatches("pending_merge", |fixture| {
+        let head = fixture
+            .git_ok(WORK, ["rev-parse", "HEAD"])
+            .expect("read HEAD");
+        let marker = fixture.checkout(WORK).join(".git/MERGE_HEAD");
+        fs::write(&marker, head).expect("write MERGE_HEAD");
+    });
+    assert_eq!(fields, [Field::CheckoutPending(WORK.to_owned())]);
 }
