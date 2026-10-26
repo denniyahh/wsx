@@ -877,6 +877,189 @@ fn scoped_and_unscoped_commits() -> Scenario {
     .harn06(CaseKind::ScopedAndUnscoped)
 }
 
+// ----------------------------------------------------------- fork layout
+
+/// The fork layout: `develop` comes from the base remote `upstream`, and the
+/// push remote `origin` holds only the workspace branch.
+fn fork() -> RepoConfig {
+    RepoConfig::devflow().with_remotes("upstream", "origin")
+}
+
+/// The refs the fork preset holds: no `origin/develop` and no `origin/HEAD`.
+const FORK_REFS: [&str; 5] = [
+    "refs/heads/develop",
+    "refs/heads/workspace/dev",
+    "refs/remotes/origin/workspace/dev",
+    "refs/remotes/upstream/HEAD",
+    "refs/remotes/upstream/develop",
+];
+
+/// Fixture steps: `phase_with_b` (fixture commit 2); `upstream/develop`
+/// gains `feat: add d` (commit 3, `src/d.txt`), fetched into `work`, so the
+/// cut's own fetch changes nothing and local `develop` stays behind it.
+fn fork_phase_with_b(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b(fixture)?;
+    fixture.advance_remote("upstream", "develop", |fixture, clone| {
+        commit_files(fixture, clone, &DEVELOP_D, b"feat: add d\n")
+    })?;
+    fixture.git_ok(WORK, ["fetch", "--quiet", "upstream"])?;
+    Ok(())
+}
+
+/// Fixture steps: `fork_phase_with_b`, then the `upstream` remote removed
+/// from `work`, taking its remote-tracking refs with it.
+fn fork_phase_without_upstream(fixture: &mut Fixture) -> Result<(), String> {
+    fork_phase_with_b(fixture)?;
+    fixture.git_ok(WORK, ["remote", "remove", "upstream"])?;
+    Ok(())
+}
+
+/// A phase-1 cut in the fork layout, built by `steps`.
+fn fork_phase_cut(steps: FixtureFn) -> Case {
+    Case::new(
+        fork(),
+        steps,
+        Action::Cut {
+            checkout: PHASE_CHECKOUT.to_owned(),
+            scope: Some("1".to_owned()),
+            pr_branch: None,
+        },
+    )
+}
+
+/// The exit code devflow's cut was observed returning when the base remote
+/// is gone: `git fetch upstream develop` fails under `set -e`.
+const NO_BASE_REMOTE_EXIT: i32 = 128;
+
+/// HARN-06 fork layout, PRCUT-01 and CONF-04: the PR branch is made from the
+/// freshly fetched `<base-remote>/<integration>`, and the base remote is
+/// configured apart from the push remote, so wsx cuts `feature/phase-1-pr`
+/// with `feat(1): add b` replayed onto `upstream/develop`'s tip `feat: add
+/// d`, which local `develop` and the push remote `origin` lack.
+///
+/// The counterpart control removes the `upstream` remote, so the base remote
+/// cannot be fetched: a refusal with refs, commits and files unchanged. Its
+/// exit code is the oracle's observed one; the phase that enables the Rust
+/// side revises it under IF-01.
+///
+/// Parity, by observation, subject and counterpart: devflow's cut takes its
+/// base remote from `BASE_REMOTE`, so it fetches and cuts from `upstream`;
+/// without the remote, `git fetch upstream develop` fails before anything is
+/// created.
+fn fork_layout() -> Scenario {
+    let replayed = commit(
+        b"feat(1): add b\n",
+        2,
+        b"feat: add d",
+        &seed_plus(&[D_FILE, B_FILE]),
+    );
+    let mut refs: Vec<RefExpect> = FORK_REFS
+        .iter()
+        .chain(&["refs/heads/feature/phase-1"])
+        .map(|name| RefExpect {
+            name: (*name).to_owned(),
+            tip: Tip::Unchanged,
+        })
+        .collect();
+    refs.push(RefExpect {
+        name: "refs/heads/feature/phase-1-pr".to_owned(),
+        tip: Tip::Commit(replayed.clone()),
+    });
+    Scenario::new(
+        "fork_layout",
+        fork_phase_cut(fork_phase_with_b).expect(Outcome {
+            exit: 0,
+            refs: RefsExpect::Exactly(refs),
+            new_commits: vec![replayed],
+            files: FilesExpect::Unchanged,
+        }),
+    )
+    .control(
+        Role::Counterpart,
+        fork_phase_cut(fork_phase_without_upstream).expect(Outcome {
+            exit: NO_BASE_REMOTE_EXIT,
+            ..refusal()
+        }),
+    )
+    .harn06(CaseKind::ForkLayout)
+}
+
+// ------------------------------------------- re-cut after a squash merge
+
+/// Fixture steps: `phase_with_b` (fixture commit 2), then `feat(1): add c`
+/// (commit 3, `src/c.txt`).
+fn phase_with_b_and_c(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b(fixture)?;
+    commit_files(fixture, PHASE_CHECKOUT, &[C_FILE], b"feat(1): add c\n")
+}
+
+/// Fixture steps: `phase_with_b_and_c`; `origin/develop` gains `feat: add b
+/// (#1)` (fixture commit 4) adding the same `src/b.txt`, as a squash merge of
+/// the first PR would, fetched. No `feature/phase-1-pr` exists: the merged
+/// PR's branch was deleted.
+fn phase_after_squash_merge(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b_and_c(fixture)?;
+    advance_and_fetch(fixture, &[B_FILE], b"feat: add b (#1)\n")
+}
+
+/// HARN-06 squash-merged PRs, PRCUT-01 and PRCUT-05: a re-cut after the
+/// first commit `feat(1): add b` landed on `develop` as the squash commit
+/// `feat: add b (#1)` replays the rest onto the fetched base, and a commit
+/// whose change has already landed is not a left-out commit, so wsx cuts
+/// `feature/phase-1-pr` at one new commit `feat(1): add c` whose parent is
+/// `feat: add b (#1)`. The counterpart control is the same branch before the
+/// squash lands, and wsx replays both commits.
+///
+/// The subject keeps a later commit on the branch on purpose: a re-cut where
+/// every commit has landed (RESEARCH assumption A7; devflow ends it with "PR
+/// branch is empty", exit 1) has no requirement fixing wsx's outcome, while
+/// PRCUT-05 fixes this one.
+///
+/// Parity, by observation, subject and counterpart: devflow's cut
+/// cherry-picks `feat(1): add b` to an empty change and counts it excluded,
+/// then replays `feat(1): add c`.
+fn recut_after_squash_merge() -> Scenario {
+    let feat_c = commit(
+        b"feat(1): add c\n",
+        3,
+        b"feat: add b (#1)",
+        &seed_plus(&[B_FILE, C_FILE]),
+    );
+    let feat_b = commit(
+        b"feat(1): add b\n",
+        2,
+        b"chore: initial commit",
+        &seed_plus(&[B_FILE]),
+    );
+    let feat_c_on_b = commit(
+        b"feat(1): add c\n",
+        3,
+        b"feat(1): add b",
+        &seed_plus(&[B_FILE, C_FILE]),
+    );
+    Scenario::new(
+        "recut_after_squash_merge",
+        phase_cut(phase_after_squash_merge).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            feat_c.clone(),
+            vec![feat_c],
+        )),
+    )
+    .control(
+        Role::Counterpart,
+        phase_cut(phase_with_b_and_c).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            feat_c_on_b.clone(),
+            vec![feat_b, feat_c_on_b],
+        )),
+    )
+    .harn06(CaseKind::SquashMerged)
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 9";
     quoted_personal_names: oracle, rust = "Rust side not enabled until phase 9";
@@ -886,4 +1069,6 @@ scenarios! {
     existing_pr_branch_with_extra_commits: oracle, rust = "Rust side not enabled until phase 10";
     conflict_leaves_partial_pr_branch: oracle, rust = "Rust side not enabled until phase 9";
     scoped_and_unscoped_commits: oracle, rust = "Rust side not enabled until phase 10";
+    fork_layout: oracle, rust = "Rust side not enabled until phase 9";
+    recut_after_squash_merge: oracle, rust = "Rust side not enabled until phase 10";
 }
