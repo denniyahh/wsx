@@ -270,7 +270,8 @@ fn rerun_with_own_commits() -> Scenario {
             .class(Class::Fixed {
                 defect: "the oracle exits 1 when feature/phase-1 has a commit of its own",
             })
-            .oracle(OracleSide::Recorded(untouched(1))),
+            .oracle(OracleSide::Recorded(untouched(1)))
+            .oracle_stderr(b"not a fast-forward -- the branch has its own commits.\n"),
     )
     .control(
         Role::Counterpart,
@@ -309,7 +310,8 @@ fn no_gsd_repo() -> Scenario {
                          .planning/ROADMAP.md and creates nothing: no sync merge, no \
                          feature/phase-1, no worktree",
             })
-            .oracle(OracleSide::Recorded(no_change(2))),
+            .oracle(OracleSide::Recorded(no_change(2)))
+            .oracle_stderr(b"error: no '### Phase 1:' heading in .planning/ROADMAP.md.\n"),
     )
     .control(
         Role::Counterpart,
@@ -397,7 +399,8 @@ fn fork_layout() -> Scenario {
                          upstream, exits 128 and creates nothing: no sync merge, no \
                          feature/phase-1, no worktree",
             })
-            .oracle(OracleSide::Recorded(no_change(128))),
+            .oracle(OracleSide::Recorded(no_change(128)))
+            .oracle_stderr(b"fatal: couldn't find remote ref develop\n"),
     )
     .control(
         Role::Counterpart,

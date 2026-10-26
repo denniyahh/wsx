@@ -624,6 +624,8 @@ pub enum Field {
     CheckoutIndex(String),
     /// The operations left in progress in a checkout.
     CheckoutPending(String),
+    /// The oracle's stderr, against a case's `oracle_stderr`.
+    Stderr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -673,6 +675,7 @@ impl fmt::Display for Field {
             Field::CheckoutPending(name) => {
                 write!(f, "the operations in progress in checkout {name}")
             }
+            Field::Stderr => write!(f, "the oracle's stderr"),
         }
     }
 }

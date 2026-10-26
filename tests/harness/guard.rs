@@ -110,8 +110,15 @@ fn verdict(exit: i32) -> Outcome {
 /// `feature/leak`, whose one commit adds `.planning/x.md`, pushed as a new
 /// ref from the develop checkout. Both devflow and wsx refuse it (GUARD-01).
 fn known_positive() -> Case {
-    push_from(DEVELOP_CHECKOUT, "feature/leak").expect(verdict(1))
+    push_from(DEVELOP_CHECKOUT, "feature/leak")
+        .expect(verdict(1))
+        .oracle_stderr(LEAK_REFUSAL)
 }
+
+/// What the oracle prints refusing `feature/leak` for `.planning/x.md`.
+const LEAK_REFUSAL: &[u8] =
+    b"pre-push: REFUSING to push personal/agent artifacts to 'refs/heads/feature/leak':\n  \
+      .planning/x.md\n";
 
 /// The clean control every guard scenario carries (HARN-05):
 /// `feature/clean`, whose one commit touches only `src/clean.txt`, pushed as
@@ -395,6 +402,10 @@ fn name_prefix_is_not_personal() -> Scenario {
             0,
             1,
             NAME_PREFIX_DEFECT,
+        )
+        .oracle_stderr(
+            b"pre-push: REFUSING to push personal/agent artifacts to 'refs/heads/feature/prefix':\n  \
+              .planningX/z.md\n",
         ),
     ))
 }
@@ -448,7 +459,8 @@ fn fork_layout() -> Scenario {
             DEVELOP_CHECKOUT,
             "feature/leak",
         )
-        .expect(verdict(1)),
+        .expect(verdict(1))
+        .oracle_stderr(LEAK_REFUSAL),
     )
     .control(
         Role::Clean,
@@ -457,7 +469,8 @@ fn fork_layout() -> Scenario {
             0,
             1,
             FORK_TAIL_DEFECT,
-        ),
+        )
+        .oracle_stderr(b"check-workspace-divergence: base ref 'origin/develop' not found.\n"),
     )
     .harn06(CaseKind::ForkLayout)
 }
@@ -498,7 +511,8 @@ fn no_gsd_repo() -> Scenario {
                 0,
                 1,
                 FIXED_LIST_DEFECT,
-            ),
+            )
+            .oracle_stderr(LEAK_REFUSAL),
         ),
     )
     .harn06(CaseKind::NoGsd)
