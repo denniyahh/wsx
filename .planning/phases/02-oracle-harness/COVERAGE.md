@@ -1,0 +1,1 @@
+No external API integration: the phase builds a local test harness over vendored shell scripts and git fixtures; GitHub's API was only read once, during planning, to re-verify the cargo-llvm-cov release checksum, and no code or test calls an external API (fixture remotes are local paths and `GIT_ALLOW_PROTOCOL=file` blocks the network).
