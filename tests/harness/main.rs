@@ -52,4 +52,4 @@ macro_rules! harness_modules {
     };
 }
 
-harness_modules!(sync);
+harness_modules!(sync, worktree, check, cut, guard, signing);
