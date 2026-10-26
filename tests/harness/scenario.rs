@@ -1232,3 +1232,34 @@ fn fixed_record_drift_fails_on_oracle() {
         "the exit code is reported as expected 2, observed 0: {mismatches:#?}"
     );
 }
+
+/// `sync::already_up_to_date` with a counterpart control that runs the same
+/// sync but wrongly expects exit 1.
+fn with_failing_control() -> Scenario {
+    let subject = registered_subject("sync", "already_up_to_date");
+    let control = registered_subject("sync", "already_up_to_date");
+    let wrong = Outcome {
+        exit: 1,
+        ..control
+            .expected
+            .clone()
+            .expect("already_up_to_date states an outcome")
+    };
+    Scenario::new("with_failing_control", subject).control(Role::Counterpart, control.expect(wrong))
+}
+
+#[test]
+fn runner_runs_each_control_and_names_the_failing_one() {
+    let entry = local_entry("with_failing_control", with_failing_control);
+    let Err(report) = try_run_with_env(Side::Oracle, &entry, &hermetic) else {
+        panic!("a scenario whose control fails must fail");
+    };
+    assert!(
+        report.starts_with(
+            "scenario::with_failing_control, counterpart control 1: the run differs from the \
+             outcome it is judged against (1 differences):\n  1. exit code\n"
+        ),
+        "{report}"
+    );
+    assert!(!report.contains(", subject"), "{report}");
+}
