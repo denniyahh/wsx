@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-06-PLAN.md
-last_updated: "2026-10-26T17:46:31.455Z"
+stopped_at: Completed 02-07-PLAN.md
+last_updated: "2026-10-26T18:26:26.634Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: f40820521adb561137e566738c13ba5e626cf0a6
+state_head: 619f17806ecbcca0b9ce91db3523abd0e385ef3c
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 13
+  completed_plans: 14
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 7 of 15
+Plan: 8 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -68,6 +68,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P04 | 7 min | 2 tasks | 2 files |
 | Phase 2 P05 | 11 min | 2 tasks | 3 files |
 | Phase 02 P06 | 6 min | 2 tasks | 4 files |
+| Phase 02 P07 | 37 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -99,6 +100,7 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-06: cargo-llvm-cov is pinned in install-tools.sh with direct_sub=llvm-cov (the binary rejects a bare --version when run directly); install and verify pass that word, verify-cargo does not; its release binary prints exactly 'cargo-llvm-cov 0.9.1', so the pattern keeps the $ anchor
 - [Phase 02]: 02-06: llvm-tools comes only from rust-toolchain.toml (rustup toolchain install sufficed on the host; the pinned image installs it too); every cargo llvm-cov run sets CARGO_LLVM_COV_SETUP=no
 - [Phase 02]: 02-06: one-time coverage proof recorded: println! count 1 for the spawned subject, 0 for no spawn and 0 for spawn without LLVM_*; no gate or CI job runs coverage
+- [Phase 2]: 02-07: worktree::self_test is fixed: by observation (oracle dir .worktrees/phase-1 vs wsx .worktrees/feature/phase-1); cut::self_test is Parity by observation (script returns to the source branch)
 
 ### Pending Todos
 
@@ -120,6 +122,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T17:46:23.986Z
-Stopped at: Completed 02-06-PLAN.md
+Last session: 2026-10-26T18:26:26.407Z
+Stopped at: Completed 02-07-PLAN.md
 Resume file: None

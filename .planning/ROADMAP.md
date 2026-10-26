@@ -83,7 +83,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The runner enforces the difference classes and the guard controls. A `fixed:` scenario fails the suite if it passes on the oracle, or, once its Rust side is enabled, if it fails on Rust. A `regression:` scenario must be a refusal. A guard scenario lacking either a known-positive control or a clean control is rejected
   5. Each HARN-06 case is a scenario with a control, run against the oracle with its outcome recorded wherever the oracle implements that behaviour; a case it lacks is marked Rust-only. The cases are: merge commits (including a conflict resolved by adding a personal file), squash-merged PRs, fork remotes (base `upstream`, push `origin`, no `origin/<integration>`), scoped and unscoped commits in one cut, a repo with no GSD, devflow or agent files, non-ASCII, newline and non-UTF-8 path names, and an existing PR branch with extra commits. The runner reports by name every scenario whose Rust side is not yet enabled
 
-**Plans**: 6/15 plans executed
+**Plans**: 7/15 plans executed
 **Wave 1**
 - [x] 02-01-PLAN.md — Inputs: devflow oracle vendored at ee6ec792, `oracle.patch`, `tempfile` dev-dependency, `include-dev` license check
 
@@ -99,7 +99,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 02-06-PLAN.md — Coverage: `llvm-tools` component, cargo-llvm-cov 0.9.1 pin, spawned-binary coverage proof
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 02-07-PLAN.md — Oracle adapters and self-tests for phase-worktree, divergence check, cut and pre-push
+- [x] 02-07-PLAN.md — Oracle adapters and self-tests for phase-worktree, divergence check, cut and pre-push
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 02-08-PLAN.md — Per-field comparator mutation test; per-run SSH signing declared in repo config
@@ -300,7 +300,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
-| 2. Oracle harness | 6/15 | In Progress | - |
+| 2. Oracle harness | 7/15 | In Progress | - |
 | 3. Git adapter | 0/TBD | Not started | - |
 | 4. Repo model | 0/TBD | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |

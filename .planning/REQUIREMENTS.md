@@ -46,7 +46,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Harness (black-box parity suite)
 
-- [ ] **HARN-01**: The same scenario suite runs against the shell oracle and the Rust binary, selected per scenario. The oracle (devflow's `sync-workspace.sh`, `phase-worktree.sh`, `cut-pr-branch.sh`, `check-workspace-divergence.sh`, and the personal-path policy from `scripts/hooks/pre-push`) is vendored under `tests/oracle/` on `develop` at a recorded devflow commit, MIT-attributed. Every path it hard-codes is adapted by one documented patch, and each script has a self-test scenario proving it runs unmodified against a fixture
+- [x] **HARN-01**: The same scenario suite runs against the shell oracle and the Rust binary, selected per scenario. The oracle (devflow's `sync-workspace.sh`, `phase-worktree.sh`, `cut-pr-branch.sh`, `check-workspace-divergence.sh`, and the personal-path policy from `scripts/hooks/pre-push`) is vendored under `tests/oracle/` on `develop` at a recorded devflow commit, MIT-attributed. Every path it hard-codes is adapted by one documented patch, and each script has a self-test scenario proving it runs unmodified against a fixture
 - [ ] **HARN-02**: Every scenario is hermetic: HOME, XDG, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` and hooks are isolated, signing is pinned locally, and the host's global hooks never fire. `LLVM_*` passes through so coverage sees the spawned binary
 - [ ] **HARN-03**: Every scenario asserts explicit expected outcomes, never only "same as the oracle": exit code, ref names, commits compared as full message (body and trailers included) + author + author date + committer name/email + tree (SHAs aren't reproducible under signing), and files on disk. Signature presence is asserted separately. The oracle's outcome is recorded in the scenario, so the evidence survives the oracle's removal. Two classes of deliberate difference:
   - `fixed:` scenarios (oracle defects and improvements) pass on Rust and fail on the oracle
@@ -223,7 +223,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HARN-01 | Phase 2 | Pending |
+| HARN-01 | Phase 2 | Complete |
 | HARN-02 | Phase 2 | Pending |
 | HARN-03 | Phase 2 | Pending |
 | HARN-04 | Phase 1 | Complete |
