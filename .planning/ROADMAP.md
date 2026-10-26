@@ -83,7 +83,39 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The runner enforces the difference classes and the guard controls. A `fixed:` scenario fails the suite if it passes on the oracle, or, once its Rust side is enabled, if it fails on Rust. A `regression:` scenario must be a refusal. A guard scenario lacking either a known-positive control or a clean control is rejected
   5. Each HARN-06 case is a scenario with a control, run against the oracle with its outcome recorded wherever the oracle implements that behaviour; a case it lacks is marked Rust-only. The cases are: merge commits (including a conflict resolved by adding a personal file), squash-merged PRs, fork remotes (base `upstream`, push `origin`, no `origin/<integration>`), scoped and unscoped commits in one cut, a repo with no GSD, devflow or agent files, non-ASCII, newline and non-UTF-8 path names, and an existing PR branch with extra commits. The runner reports by name every scenario whose Rust side is not yet enabled
 
-**Plans**: TBD
+**Plans**: 0/15 plans complete
+**Wave 1**
+- [ ] 02-01-PLAN.md — Inputs: devflow oracle vendored at ee6ec792, `oracle.patch`, `tempfile` dev-dependency, `include-dev` license check
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 02-02-PLAN.md — Tracer: one sync scenario through the patched oracle in a hermetic fixture, explicit expected outcome; symrefs recorded by target
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 02-03-PLAN.md — Fixture layouts (devflow, no-GSD, fork) and the harness module tree
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 02-04-PLAN.md — Oracle provenance: vendored blobs and patch checked against devflow, with controls
+- [ ] 02-05-PLAN.md — Runner rules: `validate`, `judge`, difference classes, guard controls, disabled-Rust-side report
+- [ ] 02-06-PLAN.md — Coverage: `llvm-tools` component, cargo-llvm-cov 0.9.1 pin, spawned-binary coverage proof
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 02-07-PLAN.md — Oracle adapters and self-tests for phase-worktree, divergence check, cut and pre-push
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 02-08-PLAN.md — Per-field comparator mutation test; per-run SSH signing declared in repo config
+- [ ] 02-09-PLAN.md — Hermeticity proof: planted host config and hook never reach scenarios; control fires
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 02-10-PLAN.md — Guard cases: quoted names, pre-push bypasses, fork and no-GSD
+- [ ] 02-11-PLAN.md — Cut cases: reproduced defects and merge cases
+- [ ] 02-12-PLAN.md — Sync and worktree cases: squash-merged PRs, fork layout, no-GSD refusal
+- [ ] 02-13-PLAN.md — Divergence-check cases, including no-GSD refusal and quoted names
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 02-14-PLAN.md — Cut cases: fork layout, re-cut after squash merge, no-GSD
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 02-15-PLAN.md — HARN-06 completeness check and phase gate (`all`, `deps`, container)
 
 ### Phase 3: Git adapter
 
