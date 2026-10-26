@@ -500,3 +500,120 @@ fn readme_check_reports_a_missing_blob() {
     let edited = readme.replace(pre_push, "<blob removed>");
     assert_eq!(readme_missing_records(&edited), [pre_push]);
 }
+
+/// The files under `tests/oracle` that are not vendored from devflow, with the
+/// mode each is committed with.
+const LOCAL_MODES: [(&str, &str); 2] = [("README.md", "100644"), ("oracle.patch", "100644")];
+
+/// Each way `listing`, the output of `git ls-files -s -- tests/oracle`,
+/// differs from the modes the oracle files must be committed with (each
+/// vendored file's mode in devflow, from `VENDORED_BLOBS`, and `LOCAL_MODES`),
+/// as `<path>: <reason>`. A file missing from the listing, a listed file with
+/// no recorded mode and a line that does not parse are each reported, so a
+/// listing that names nothing never reads as a match.
+fn mode_mismatches(listing: &str) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    let mut listed = Vec::new();
+    for line in listing.lines() {
+        let parsed = line.split_once('\t').and_then(|(meta, path)| {
+            let mode = meta.split(' ').next()?;
+            Some((path.strip_prefix("tests/oracle/")?, mode))
+        });
+        match parsed {
+            Some(entry) => listed.push(entry),
+            None => mismatches.push(format!("{line:?}: not a tests/oracle index entry")),
+        }
+    }
+    let expected: Vec<(&str, &str)> = VENDORED_BLOBS
+        .iter()
+        .map(|&(path, _, mode, _)| (path, mode))
+        .chain(LOCAL_MODES)
+        .collect();
+    for &(path, mode) in &expected {
+        match listed.iter().find(|&&(listed_path, _)| listed_path == path) {
+            None => mismatches.push(format!("{path}: not in the index")),
+            Some(&(_, actual)) if actual != mode => {
+                mismatches.push(format!("{path}: mode {actual}, must be {mode}"));
+            }
+            Some(_) => {}
+        }
+    }
+    for &(path, actual) in &listed {
+        if !expected.iter().any(|&(known, _)| known == path) {
+            mismatches.push(format!(
+                "{path}: mode {actual}, but no mode is recorded for it"
+            ));
+        }
+    }
+    mismatches
+}
+
+/// The checkout's index entries under `tests/oracle`, from `git ls-files -s`
+/// run in the wsx checkout with the scenario HOME, so no host configuration
+/// is read.
+fn oracle_index_listing() -> String {
+    let dirs = ScenarioDirs::new("provenance", "modes").expect("scenario dirs");
+    let env = hermetic_env(&inherited_env(), &dirs);
+    let output = command("git", Path::new(env!("CARGO_MANIFEST_DIR")), &env)
+        .args(["ls-files", "-s", "--", "tests/oracle"])
+        .output()
+        .expect("spawn git ls-files");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "git ls-files -s -- tests/oracle failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim_end()
+    );
+    String::from_utf8(output.stdout).expect("the tests/oracle index listing is UTF-8")
+}
+
+/// The index records each vendored script, `hooks/pre-push` included, as
+/// 100755, and `LICENSE`, `README.md` and `oracle.patch` as 100644. The blob
+/// check covers content only; a lost executable bit changes how the scratch
+/// copy runs.
+///
+/// Controls: `mode_check_reports_a_flipped_mode` and
+/// `mode_check_reports_an_empty_listing`.
+#[test]
+fn vendored_files_have_their_recorded_modes() {
+    let listing = oracle_index_listing();
+    let mismatches = mode_mismatches(&listing);
+    assert!(
+        mismatches.is_empty(),
+        "tests/oracle modes differ from the recorded ones: {mismatches:?}\nlisting:\n{listing}"
+    );
+}
+
+/// The real listing with `hooks/pre-push` changed to 100644, in memory only,
+/// is reported as exactly that file's mode.
+#[test]
+fn mode_check_reports_a_flipped_mode() {
+    let listing = oracle_index_listing();
+    let entry = "100755 67ef847ecf98dfaa1b124be5b10179b7a0134dc9 0\ttests/oracle/hooks/pre-push";
+    assert!(
+        listing.lines().any(|line| line == entry),
+        "the listing must carry the pre-push entry for this control to flip it:\n{listing}"
+    );
+    let flipped = listing.replace(entry, &entry.replacen("100755", "100644", 1));
+    assert_eq!(
+        mode_mismatches(&flipped),
+        ["hooks/pre-push: mode 100644, must be 100755"]
+    );
+}
+
+/// An empty listing reports every oracle file as missing, not a match.
+#[test]
+fn mode_check_reports_an_empty_listing() {
+    let mismatches = mode_mismatches("");
+    assert_eq!(
+        mismatches.len(),
+        VENDORED_BLOBS.len() + LOCAL_MODES.len(),
+        "{mismatches:?}"
+    );
+    assert!(
+        mismatches
+            .iter()
+            .all(|line| line.ends_with(": not in the index")),
+        "{mismatches:?}"
+    );
+}
