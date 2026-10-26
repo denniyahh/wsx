@@ -46,11 +46,17 @@ implements it (5-10) turns it on.
 
   This keeps wsx config-driven (owner, 2026-10-26: "not hardcoded to treat every project the
   same").
-  - **The oracle runs only scenarios whose config is devflow-shaped.** The scripts hard-code
-    devflow's paths and `origin`.
-  - **Any other config is Rust-only:** a custom personal path, a repo with no agent files
-    (IF-02), or a fork layout without `origin/<integration>`. The runner labels these scenarios
-    Rust-only by name.
+  - **The oracle runs a scenario only where it implements that behaviour** (success criterion 5).
+    The scripts hard-code devflow's personal paths, so a custom personal path is Rust-only. The
+    runner labels Rust-only scenarios by name.
+  - **Corrected 2026-10-26 after research.** This bullet first said every non-devflow config was
+    Rust-only, which contradicted criterion 5. Research found the oracle partly implements two
+    such cases, so each gets an oracle-recorded variant where the oracle can run it:
+    - **Fork layout.** sync, cut and the divergence check take a remote argument.
+    - **A repo with no GSD files.** `phase-worktree.sh` refuses there, a recorded refusal that
+      doubles as IF-02's negative control.
+
+    A part the oracle lacks stays Rust-only.
   - Phase 2 only lets a scenario *state* a config; wsx's config reader is phase 4 (CONF-01..05,
     -07).
 - **In phase 2, every scenario's Rust side is disabled.** The runner reports each disabled
@@ -104,6 +110,13 @@ implements it (5-10) turns it on.
 ### Coverage tooling
 - **`cargo-llvm-cov` is pinned in `scripts/install-tools.sh`** at the host's version, and its
   absence is a hard failure, as for the other tools.
+- **`llvm-tools` is added to `components` in `rust-toolchain.toml`.**
+  - **Why:** research, confirmed 2026-10-26 with `rustup component list --installed`, found that
+    the pinned 1.99.1 lacks the component, so `cargo llvm-cov` fails.
+  - A one-time `rustup component add` on the host would not reach the container. The toolchain
+    file is read by every environment.
+  - Runs set `CARGO_LLVM_COV_SETUP=no`, so a missing component fails loudly instead of being
+    installed silently.
 - **A one-time proof shows coverage sees code that only the spawned binary executes** (success
   criterion 2). The proof records a negative control: the same line is uncovered when the binary
   is not spawned.

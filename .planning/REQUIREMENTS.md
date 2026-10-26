@@ -32,7 +32,8 @@ worse behaviour is never kept just to match it.
 **Milestone 1 = a Rust replacement that beats the shell oracle**, minus the oracle's
 devflow/GSD-specific parts (the ROADMAP lookup in `phase-worktree.sh`, phase auto-detection in
 `cut-pr-branch.sh`). The oracle is:
-- `scripts/workspace/{sync-workspace,phase-worktree,cut-pr-branch}.sh`
+- devflow's `scripts/{sync-workspace,phase-worktree,cut-pr-branch}.sh`, vendored unmodified (wsx's
+  `scripts/workspace/` ports already carry phase-1 fixes, so they cannot show the defects)
 - devflow's `check-workspace-divergence.sh`
 - the personal-path policy in devflow's `scripts/hooks/pre-push`
 
@@ -105,7 +106,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - Every commit the source branch made since its fork from the workspace branch that touches a non-personal path is replayed. One left out (usually a commit with the wrong scope) fails the cut, naming it. `--allow-incomplete "<reason>"` overrides and prints the reason with the gap.
   - The PR branch changes no path that no replayed commit touched (the oracle's check, kept).
 
-  A scenario with one scoped and one unscoped code commit on the source branch must refuse, and a `--scope` cut from a branch that also carries other landed work must pass. This is a deliberate difference: the oracle only warns about left-out commits
+  A scenario with one scoped and one unscoped code commit on the source branch must refuse, and a `--scope` cut from a branch that also carries other landed work must pass. This is a deliberate difference: the oracle drops left-out commits silently, with no warning (reproduced in phase 2 research, defect D5)
 - [ ] **PRCUT-06**: `wsx cut` never pushes, and never touches the user's checkout: branch, index and uncommitted changes stay as they were (PRCUT-03). It still refuses when the source branch's worktree has uncommitted tracked changes, since those would be silently missing from the PR; `--allow-dirty` overrides and lists them. This is an improvement: the oracle checks the PR branch out in the user's tree
 - [ ] **PRCUT-07**: Cut errors are never swallowed. A failed cherry-pick aborts with git's error shown (fixes the oracle's `cherry-pick … || true`)
 - [ ] **PRCUT-08**: If the target PR branch already exists, the cut refuses, unless it's the recorded result of a previous cut of this source with no commits added since. `--force` prints the commits it would discard and keeps them under `refs/wsx/backup/` (fixes the oracle's unconditional `git branch -f`)
