@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-10-PLAN.md
-last_updated: "2026-10-26T19:01:46.680Z"
+stopped_at: Completed 02-11-PLAN.md
+last_updated: "2026-10-26T19:16:40.138Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: bf2082c767444bbbf6708b7321980f70ac5559df
+state_head: 4bbf4d1f176fe88538c79deaedacff047841cd1b
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 17
+  completed_plans: 18
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 11 of 15
+Plan: 12 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -72,6 +72,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P08 | 8min | 2 tasks | 3 files |
 | Phase 02 P09 | 9 min | 2 tasks | 1 files |
 | Phase 2 P10 | 9 min | 3 tasks | 1 files |
+| Phase 02 P11 | 8 min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-09: the planted-host proof's env-value check is the only check that catches a leaked HOME; the behavioural checks (marker, decoy, outcomes) do not in the sync, cut and guard self-tests
 - [Phase 2]: 02-10: guard scenario classes come from the first Parity run; P1-P5 reproduced as researched. In the fork fixture --remotes=origin did not over-scan; the hook's tail refused the workspace push on a hard-coded origin/develop instead
 - [Phase 2]: cargo fmt does not reach scenario modules declared inside harness_modules!; guard.rs is formatted with rustfmt directly and the gap is logged in deferred-items.md and WINDOWS.md
+- [Phase 02]: 02-11: every cut case was classed by its first Parity run; 6 subjects fixed:, integration_merged_into_feature and all 7 counterparts Parity, all as predicted
+- [Phase 02]: 02-11: merge_resolution_adds_personal_file is fixed: only for the stray feature/topic-pr ref; the oracle refuses on an earlier replay conflict and never reaches the merge
+- [Phase 02]: 02-11: a pre-existing PR branch in a cut fixture is never left checked out in another worktree (git would refuse the oracle's branch -f and checkout)
 
 ### Pending Todos
 
@@ -132,6 +136,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T19:01:46.523Z
-Stopped at: Completed 02-10-PLAN.md
+Last session: 2026-10-26T19:16:39.944Z
+Stopped at: Completed 02-11-PLAN.md
 Resume file: None
