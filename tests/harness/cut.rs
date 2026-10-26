@@ -58,16 +58,16 @@ fn phase_branch(fixture: &mut Fixture) -> Result<(), String> {
 /// PRCUT-02 (the planning-only commit is dropped; the replayed commit keeps
 /// its author, author date and message, and is committed by the config
 /// identity) and PRCUT-06, the source of the files-unchanged expectation (the
-/// cut never touches the user's checkout).
+/// cut never touches the user's checkout) and of the unchanged config (the PR
+/// branch is created with no upstream).
 ///
-/// Parity, by observation: devflow's script checks `feature/phase-1-pr` out
+/// `fixed:`, by observation: devflow's script checks `feature/phase-1-pr` out
 /// in the source worktree only while it replays, and returns to
 /// `feature/phase-1` before it exits, so the transient checkout leaves no
 /// observable trace in refs, commits, files, HEAD, index or operations in
-/// progress. Its `git checkout -b feature/phase-1-pr origin/develop` also
-/// sets the new branch's upstream to `origin/develop` in the local config
-/// (`tracking`), and the expectation states that too, by the same
-/// observation: no requirement says whether wsx sets an upstream.
+/// progress. Its `git branch -f feature/phase-1-pr origin/develop` also sets
+/// the branch's upstream to `origin/develop` in the local config
+/// (`tracking`), the one way its run differs from the expectation.
 fn self_test() -> Scenario {
     let harness = Ident::harness();
     let replayed = CommitExpect {
@@ -85,37 +85,37 @@ fn self_test() -> Scenario {
         tip,
     };
     let unchanged = |name: &str| tip(name, Tip::Unchanged);
+    let expected = Outcome {
+        exit: 0,
+        refs: RefsExpect::exactly(vec![
+            unchanged("refs/heads/develop"),
+            unchanged("refs/heads/feature/phase-1"),
+            tip(
+                "refs/heads/feature/phase-1-pr",
+                Tip::Commit(replayed.clone()),
+            ),
+            unchanged("refs/heads/workspace/dev"),
+            unchanged("refs/remotes/origin/HEAD"),
+            unchanged("refs/remotes/origin/develop"),
+            unchanged("refs/remotes/origin/workspace/dev"),
+        ]),
+        new_commits: vec![replayed],
+        files: FilesExpect::Unchanged,
+    };
     Scenario::new(
         "self_test",
-        Case::new(
-            RepoConfig::devflow(),
-            phase_branch,
-            Action::Cut {
-                checkout: PHASE_CHECKOUT.to_owned(),
-                scope: Some("1".to_owned()),
-                pr_branch: None,
-            },
-        )
-        .expect(Outcome {
-            exit: 0,
-            refs: RefsExpect::Exactly {
-                refs: vec![
-                    unchanged("refs/heads/develop"),
-                    unchanged("refs/heads/feature/phase-1"),
-                    tip(
-                        "refs/heads/feature/phase-1-pr",
-                        Tip::Commit(replayed.clone()),
-                    ),
-                    unchanged("refs/heads/workspace/dev"),
-                    unchanged("refs/remotes/origin/HEAD"),
-                    unchanged("refs/remotes/origin/develop"),
-                    unchanged("refs/remotes/origin/workspace/dev"),
-                ],
-                config_added: tracking("refs/heads/feature/phase-1-pr", "origin"),
-            },
-            new_commits: vec![replayed],
-            files: FilesExpect::Unchanged,
-        }),
+        phase_upstream_fixed(
+            Case::new(
+                RepoConfig::devflow(),
+                phase_branch,
+                Action::Cut {
+                    checkout: PHASE_CHECKOUT.to_owned(),
+                    scope: Some("1".to_owned()),
+                    pr_branch: None,
+                },
+            ),
+            expected,
+        ),
     )
 }
 
@@ -133,8 +133,9 @@ const PRESET_REFS: [&str; 5] = [
 
 /// The local config entries that make the branch `pr_ref` (a full ref name)
 /// track `remote`'s `develop`: what the oracle's
-/// `git checkout -b <pr branch> <remote>/develop` writes, since git sets an
-/// upstream for a branch started from a remote-tracking ref.
+/// `git branch -f <pr branch> <remote>/develop` writes, whether or not the
+/// branch exists, since git sets an upstream for a branch started from a
+/// remote-tracking ref. wsx writes neither (PRCUT-06).
 fn tracking(pr_ref: &str, remote: &str) -> Vec<Vec<u8>> {
     let branch = pr_ref
         .strip_prefix("refs/heads/")
@@ -143,6 +144,63 @@ fn tracking(pr_ref: &str, remote: &str) -> Vec<Vec<u8>> {
         config_entry(&format!("branch.{branch}.remote"), remote),
         config_entry(&format!("branch.{branch}.merge"), "refs/heads/develop"),
     ]
+}
+
+/// `outcome` with the PR branch `pr_ref` also tracking `remote`'s `develop`
+/// (`tracking`): how the oracle's run of a cut that writes `pr_ref` differs.
+fn tracked(mut outcome: Outcome, pr_ref: &str, remote: &str) -> Outcome {
+    let RefsExpect::Exactly { config_added, .. } = &mut outcome.refs else {
+        panic!("a cut that writes a PR branch lists its refs");
+    };
+    config_added.extend(tracking(pr_ref, remote));
+    outcome
+}
+
+/// What the oracle was observed doing differently in a cut that writes
+/// `feature/topic-pr` and otherwise meets its expectation.
+const TOPIC_PR_TRACKS: &str = "the cut sets feature/topic-pr to track origin/develop";
+
+/// What the oracle was observed doing differently in a cut that writes
+/// `feature/phase-1-pr` from `origin` and otherwise meets its expectation.
+const PHASE_PR_TRACKS: &str = "the cut sets feature/phase-1-pr to track origin/develop";
+
+/// What the oracle was observed doing differently in the fork-layout cut.
+const FORK_PR_TRACKS: &str = "the cut sets feature/phase-1-pr to track upstream/develop";
+
+/// `case` expecting `expected`, a cut that writes `pr_ref` with no upstream
+/// (PRCUT-06), where the oracle was observed doing exactly that except that
+/// `pr_ref` tracks `remote`'s `develop`: `defect`.
+fn upstream_fixed(
+    case: Case,
+    expected: Outcome,
+    pr_ref: &str,
+    remote: &str,
+    defect: &'static str,
+) -> Case {
+    let recorded = tracked(expected.clone(), pr_ref, remote);
+    fixed(case, expected, recorded, defect)
+}
+
+/// `upstream_fixed` for a cut to `feature/topic-pr` from `origin`.
+fn topic_upstream_fixed(case: Case, expected: Outcome) -> Case {
+    upstream_fixed(
+        case,
+        expected,
+        "refs/heads/feature/topic-pr",
+        "origin",
+        TOPIC_PR_TRACKS,
+    )
+}
+
+/// `upstream_fixed` for a cut to `feature/phase-1-pr` from `origin`.
+fn phase_upstream_fixed(case: Case, expected: Outcome) -> Case {
+    upstream_fixed(
+        case,
+        expected,
+        "refs/heads/feature/phase-1-pr",
+        "origin",
+        PHASE_PR_TRACKS,
+    )
 }
 
 /// `src/c.txt`, a file a second code commit adds.
@@ -180,9 +238,9 @@ fn seed_plus(extra: &[File]) -> Vec<File> {
 }
 
 /// The outcome of a cut that writes `pr_branch` at `pr_tip`: every preset
-/// ref and every one of `branches` unchanged, `new_commits` new, `pr_branch`
-/// tracking `origin/develop` (`tracking`), and the checkouts unchanged
-/// (PRCUT-06).
+/// ref and every one of `branches` unchanged, `new_commits` new, the local
+/// config unchanged, so `pr_branch` has no upstream, and the checkouts
+/// unchanged (PRCUT-06).
 fn cut_outcome(
     exit: i32,
     branches: &[&str],
@@ -204,10 +262,7 @@ fn cut_outcome(
     });
     Outcome {
         exit,
-        refs: RefsExpect::Exactly {
-            refs,
-            config_added: tracking(pr_branch, "origin"),
-        },
+        refs: RefsExpect::exactly(refs),
         new_commits,
         files: FilesExpect::Unchanged,
     }
@@ -339,7 +394,8 @@ fn topic_with_plain_name(fixture: &mut Fixture) -> Result<(), String> {
 
 /// What the oracle was observed doing with the quoted names.
 const QUOTED_NAMES_DEFECT: &str = "feature/topic-pr's commit keeps the quoted-name personal \
-     files .planning/\\xC3\\xA9.md, .planning/a\\nb.md and .planning/\\xFF.md in its tree";
+     files .planning/\\xC3\\xA9.md, .planning/a\\nb.md and .planning/\\xFF.md in its tree, and \
+     the cut sets feature/topic-pr to track origin/develop";
 
 /// HARN-06 path names, PRCUT-02: personal paths are removed from every
 /// replayed commit, whatever bytes their names hold, so wsx cuts
@@ -349,8 +405,9 @@ const QUOTED_NAMES_DEFECT: &str = "feature/topic-pr's commit keeps the quoted-na
 ///
 /// `fixed:`, by observation: devflow's cut exits 0 with all three quoted
 /// names in the PR commit's tree, because it matches personal paths against
-/// git's C-quoted path output (`".planning/..."`). Its counterpart is Parity:
-/// `.planning/plain.md` is stripped.
+/// git's C-quoted path output (`".planning/..."`), and sets the PR branch's
+/// upstream (`tracking`, PRCUT-06). Its counterpart is `fixed:` for the
+/// upstream alone: `.planning/plain.md` is stripped.
 fn quoted_personal_names() -> Scenario {
     let replayed = commit(
         b"feat: add b\n",
@@ -370,12 +427,16 @@ fn quoted_personal_names() -> Scenario {
         .chain(QUOTED_PERSONAL)
         .collect();
     let leaked = commit(b"feat: add b\n", 2, b"chore: initial commit", &leaked_files);
-    let recorded = cut_outcome(
-        0,
-        &["refs/heads/feature/topic"],
+    let recorded = tracked(
+        cut_outcome(
+            0,
+            &["refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            leaked.clone(),
+            vec![leaked],
+        ),
         "refs/heads/feature/topic-pr",
-        leaked.clone(),
-        vec![leaked],
+        "origin",
     );
     Scenario::new(
         "quoted_personal_names",
@@ -388,7 +449,7 @@ fn quoted_personal_names() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        topic_cut(topic_with_plain_name).expect(expected),
+        topic_upstream_fixed(topic_cut(topic_with_plain_name), expected),
     )
     .harn06(CaseKind::PathNames)
 }
@@ -448,7 +509,9 @@ const TOPIC_MERGE_DEFECT: &str = "the cut exits 0 and writes feature/topic-pr wi
 /// `fixed:`, by observation: devflow's cut replays `feat: add b` and
 /// `feat: add c` (reachable through the merge) and counts the merge as
 /// `Excluded: 1 planning/environment-only commit(s)`, since `diff-tree`
-/// lists no files for a merge; it exits 0. Its counterpart is Parity.
+/// lists no files for a merge; it exits 0, and the PR branch it writes
+/// tracks `origin/develop`. Its counterpart is `fixed:` for that upstream
+/// alone (`tracking`, PRCUT-06).
 fn topic_merge_dropped() -> Scenario {
     let feat_b = commit(
         b"feat: add b\n",
@@ -462,12 +525,16 @@ fn topic_merge_dropped() -> Scenario {
         b"feat: add b",
         &seed_plus(&[B_FILE, C_FILE]),
     );
-    let recorded = cut_outcome(
-        0,
-        &["refs/heads/feature/other", "refs/heads/feature/topic"],
+    let recorded = tracked(
+        cut_outcome(
+            0,
+            &["refs/heads/feature/other", "refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            feat_c.clone(),
+            vec![feat_b.clone(), feat_c.clone()],
+        ),
         "refs/heads/feature/topic-pr",
-        feat_c.clone(),
-        vec![feat_b.clone(), feat_c.clone()],
+        "origin",
     );
     Scenario::new(
         "topic_merge_dropped",
@@ -480,13 +547,16 @@ fn topic_merge_dropped() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        topic_cut(topic_linear).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/topic"],
-            "refs/heads/feature/topic-pr",
-            feat_c.clone(),
-            vec![feat_b, feat_c],
-        )),
+        topic_upstream_fixed(
+            topic_cut(topic_linear),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/topic"],
+                "refs/heads/feature/topic-pr",
+                feat_c.clone(),
+                vec![feat_b, feat_c],
+            ),
+        ),
     )
     .harn06(CaseKind::Merges)
 }
@@ -526,9 +596,10 @@ fn topic_with_integration_merge(fixture: &mut Fixture) -> Result<(), String> {
 /// `origin/develop`. The counterpart control is the same branch without the
 /// merge.
 ///
-/// Parity, by observation, subject and counterpart: devflow's cut replays
-/// `feat: add d` to nothing (it is on the base), counts the merge as
-/// excluded (`diff-tree` lists no files for it) and replays `feat: add b`.
+/// `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06), by
+/// observation, subject and counterpart: devflow's cut replays `feat: add d`
+/// to nothing (it is on the base), counts the merge as excluded (`diff-tree`
+/// lists no files for it) and replays `feat: add b`, as expected.
 fn integration_merged_into_feature() -> Scenario {
     let replayed = commit(
         b"feat: add b\n",
@@ -545,11 +616,11 @@ fn integration_merged_into_feature() -> Scenario {
     );
     Scenario::new(
         "integration_merged_into_feature",
-        topic_cut(topic_with_integration_merge).expect(expected.clone()),
+        topic_upstream_fixed(topic_cut(topic_with_integration_merge), expected.clone()),
     )
     .control(
         Role::Counterpart,
-        topic_cut(topic_after_develop_advanced).expect(expected),
+        topic_upstream_fixed(topic_cut(topic_after_develop_advanced), expected),
     )
     .harn06(CaseKind::Merges)
 }
@@ -623,8 +694,9 @@ fn topic_with_clean_integration_merge(fixture: &mut Fixture) -> Result<(), Strin
 /// reason and with a leftover: it replays `feat: change a` onto the advanced
 /// `origin/develop` first, that conflicts on `src/a.txt` (`unresolved code
 /// conflict`), and it exits leaving `feature/topic-pr` created at
-/// `origin/develop`'s tip, `feat: change a upstream`. It never reaches the
-/// merge. Its counterpart is Parity.
+/// `origin/develop`'s tip, `feat: change a upstream`, and tracking
+/// `origin/develop`. It never reaches the merge. Its counterpart is `fixed:`
+/// for the PR branch's upstream alone (`tracking`, PRCUT-06).
 fn merge_resolution_adds_personal_file() -> Scenario {
     let replayed = commit(
         b"feat: change a\n",
@@ -638,12 +710,16 @@ fn merge_resolution_adds_personal_file() -> Scenario {
         b"chore: initial commit",
         &[SEED_FILES[0], A_THEIRS[0]],
     );
-    let recorded = cut_outcome(
-        1,
-        &["refs/heads/feature/topic"],
+    let recorded = tracked(
+        cut_outcome(
+            1,
+            &["refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            upstream,
+            Vec::new(),
+        ),
         "refs/heads/feature/topic-pr",
-        upstream,
-        Vec::new(),
+        "origin",
     );
     Scenario::new(
         "merge_resolution_adds_personal_file",
@@ -657,13 +733,16 @@ fn merge_resolution_adds_personal_file() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        topic_cut(topic_with_clean_integration_merge).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/topic"],
-            "refs/heads/feature/topic-pr",
-            replayed.clone(),
-            vec![replayed],
-        )),
+        topic_upstream_fixed(
+            topic_cut(topic_with_clean_integration_merge),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/topic"],
+                "refs/heads/feature/topic-pr",
+                replayed.clone(),
+                vec![replayed],
+            ),
+        ),
     )
     .harn06(CaseKind::Merges)
 }
@@ -739,11 +818,12 @@ const CODE_RESOLUTION_DEFECT: &str = "the cut exits 0 and writes feature/topic-p
 /// change of its own in a non-personal path, so wsx refuses the cut, naming
 /// the merge, with refs, commits and files unchanged.
 ///
-/// Parity, by observation: devflow's cut replays `feat: add b`, replays
-/// `feat: change a upstream` (reachable through the merge) to nothing, and
-/// counts the merge as excluded, since `diff-tree` lists no files for a
-/// merge. Its counterpart is `fixed:`: the oracle does the same there and
-/// exits 0.
+/// `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06), by
+/// observation: devflow's cut replays `feat: add b`, replays `feat: change a
+/// upstream` (reachable through the merge) to nothing, and counts the merge
+/// as excluded, since `diff-tree` lists no files for a merge. Its
+/// counterpart is `fixed:`: the oracle does the same there, upstream
+/// included, and exits 0.
 fn merge_resolution_only_personal_file() -> Scenario {
     let replayed = commit(
         b"feat: add b\n",
@@ -760,14 +840,17 @@ fn merge_resolution_only_personal_file() -> Scenario {
     );
     Scenario::new(
         "merge_resolution_only_personal_file",
-        topic_cut(topic_merge_resolution_adding_personal).expect(cut.clone()),
+        topic_upstream_fixed(
+            topic_cut(topic_merge_resolution_adding_personal),
+            cut.clone(),
+        ),
     )
     .control(
         Role::Counterpart,
         fixed(
             topic_cut(topic_merge_resolution_adding_code),
             refusal(),
-            cut,
+            tracked(cut, "refs/heads/feature/topic-pr", "origin"),
             CODE_RESOLUTION_DEFECT,
         ),
     )
@@ -818,8 +901,9 @@ fn phase_with_existing_pr(fixture: &mut Fixture) -> Result<(), String> {
 ///
 /// `fixed:`, by observation: devflow's cut runs `git branch -f` on the
 /// existing branch, replays `feat(1): add b` onto `origin/develop` and exits
-/// 0, so `feature/phase-1-pr` ends at the new replay and no ref reaches the
-/// reviewer commit. Its counterpart is Parity.
+/// 0, so `feature/phase-1-pr` ends at the new replay, tracking
+/// `origin/develop`, and no ref reaches the reviewer commit. Its counterpart
+/// is `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06).
 fn existing_pr_branch_with_extra_commits() -> Scenario {
     let replayed = commit(
         b"feat(1): add b\n",
@@ -827,12 +911,16 @@ fn existing_pr_branch_with_extra_commits() -> Scenario {
         b"chore: initial commit",
         &seed_plus(&[B_FILE]),
     );
-    let recorded = cut_outcome(
-        0,
-        &["refs/heads/feature/phase-1"],
+    let recorded = tracked(
+        cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            replayed.clone(),
+            vec![replayed.clone()],
+        ),
         "refs/heads/feature/phase-1-pr",
-        replayed.clone(),
-        vec![replayed.clone()],
+        "origin",
     );
     Scenario::new(
         "existing_pr_branch_with_extra_commits",
@@ -846,13 +934,16 @@ fn existing_pr_branch_with_extra_commits() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        phase_cut(phase_with_b).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/phase-1"],
-            "refs/heads/feature/phase-1-pr",
-            replayed.clone(),
-            vec![replayed],
-        )),
+        phase_upstream_fixed(
+            phase_cut(phase_with_b),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/phase-1"],
+                "refs/heads/feature/phase-1-pr",
+                replayed.clone(),
+                vec![replayed],
+            ),
+        ),
     )
     .harn06(CaseKind::ExistingPrBranch)
 }
@@ -884,9 +975,11 @@ fn phase_b_after_upstream_change(fixture: &mut Fixture) -> Result<(), String> {
 ///
 /// `fixed:`, by observation: devflow's cut replays `feat(1): add b`, then
 /// stops on `unresolved code conflict` in `feat(1): change a` and exits 1,
-/// leaving `feature/phase-1-pr` created at the first replay. The source
-/// checkout is back on `feature/phase-1` with its files and index unchanged
-/// and no operation left in progress. Its counterpart is Parity.
+/// leaving `feature/phase-1-pr` created at the first replay, tracking
+/// `origin/develop`. The source checkout is back on `feature/phase-1` with
+/// its files and index unchanged and no operation left in progress. Its
+/// counterpart is `fixed:` for the PR branch's upstream alone (`tracking`,
+/// PRCUT-06).
 fn conflict_leaves_partial_pr_branch() -> Scenario {
     let replayed = commit(
         b"feat(1): add b\n",
@@ -894,12 +987,16 @@ fn conflict_leaves_partial_pr_branch() -> Scenario {
         b"feat: change a upstream",
         &[SEED_FILES[0], A_THEIRS[0], B_FILE],
     );
-    let recorded = cut_outcome(
-        1,
-        &["refs/heads/feature/phase-1"],
+    let recorded = tracked(
+        cut_outcome(
+            1,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            replayed.clone(),
+            vec![replayed.clone()],
+        ),
         "refs/heads/feature/phase-1-pr",
-        replayed.clone(),
-        vec![replayed.clone()],
+        "origin",
     );
     Scenario::new(
         "conflict_leaves_partial_pr_branch",
@@ -914,13 +1011,16 @@ fn conflict_leaves_partial_pr_branch() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        phase_cut(phase_b_after_upstream_change).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/phase-1"],
-            "refs/heads/feature/phase-1-pr",
-            replayed.clone(),
-            vec![replayed],
-        )),
+        phase_upstream_fixed(
+            phase_cut(phase_b_after_upstream_change),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/phase-1"],
+                "refs/heads/feature/phase-1-pr",
+                replayed.clone(),
+                vec![replayed],
+            ),
+        ),
     )
 }
 
@@ -965,8 +1065,9 @@ fn phase_with_landed_commit(fixture: &mut Fixture) -> Result<(), String> {
 ///
 /// `fixed:`, by observation: devflow's cut replays `feat(1): scoped` and
 /// `feat(1-02): second scoped` in their original order, leaves `fix:
-/// unscoped code` out with no warning on stdout or stderr, and exits 0. Its
-/// counterpart is Parity.
+/// unscoped code` out with no warning on stdout or stderr, and exits 0, the
+/// PR branch tracking `origin/develop`. Its counterpart is `fixed:` for that
+/// upstream alone (`tracking`, PRCUT-06).
 fn scoped_and_unscoped_commits() -> Scenario {
     let replayed = commit(
         b"feat(1): scoped\n",
@@ -986,12 +1087,16 @@ fn scoped_and_unscoped_commits() -> Scenario {
         b"feat(1): scoped",
         &seed_plus(&[B_FILE, D_FILE]),
     );
-    let recorded = cut_outcome(
-        0,
-        &["refs/heads/feature/phase-1"],
+    let recorded = tracked(
+        cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            second.clone(),
+            vec![scoped, second],
+        ),
         "refs/heads/feature/phase-1-pr",
-        second.clone(),
-        vec![scoped, second],
+        "origin",
     );
     Scenario::new(
         "scoped_and_unscoped_commits",
@@ -1005,13 +1110,16 @@ fn scoped_and_unscoped_commits() -> Scenario {
     )
     .control(
         Role::Counterpart,
-        phase_cut(phase_with_landed_commit).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/phase-1"],
-            "refs/heads/feature/phase-1-pr",
-            replayed.clone(),
-            vec![replayed],
-        )),
+        phase_upstream_fixed(
+            phase_cut(phase_with_landed_commit),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/phase-1"],
+                "refs/heads/feature/phase-1-pr",
+                replayed.clone(),
+                vec![replayed],
+            ),
+        ),
     )
     .harn06(CaseKind::ScopedAndUnscoped)
 }
@@ -1081,10 +1189,11 @@ const NO_BASE_REMOTE_EXIT: i32 = 128;
 /// exit code is the oracle's observed one; the phase that enables the Rust
 /// side revises it under IF-01.
 ///
-/// Parity, by observation, subject and counterpart: devflow's cut takes its
-/// base remote from `BASE_REMOTE`, so it fetches and cuts from `upstream`;
-/// without the remote, `git fetch upstream develop` fails before anything is
-/// created.
+/// `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06), by
+/// observation: devflow's cut takes its base remote from `BASE_REMOTE`, so it
+/// fetches and cuts from `upstream`, and the PR branch tracks
+/// `upstream/develop`. The counterpart is Parity: without the remote, `git
+/// fetch upstream develop` fails before anything is created.
 fn fork_layout() -> Scenario {
     let replayed = commit(
         b"feat(1): add b\n",
@@ -1106,15 +1215,18 @@ fn fork_layout() -> Scenario {
     });
     Scenario::new(
         "fork_layout",
-        fork_phase_cut(fork_phase_with_b).expect(Outcome {
-            exit: 0,
-            refs: RefsExpect::Exactly {
-                refs,
-                config_added: tracking("refs/heads/feature/phase-1-pr", "upstream"),
+        upstream_fixed(
+            fork_phase_cut(fork_phase_with_b),
+            Outcome {
+                exit: 0,
+                refs: RefsExpect::exactly(refs),
+                new_commits: vec![replayed],
+                files: FilesExpect::Unchanged,
             },
-            new_commits: vec![replayed],
-            files: FilesExpect::Unchanged,
-        }),
+            "refs/heads/feature/phase-1-pr",
+            "upstream",
+            FORK_PR_TRACKS,
+        ),
     )
     .control(
         Role::Counterpart,
@@ -1159,9 +1271,10 @@ fn phase_after_squash_merge(fixture: &mut Fixture) -> Result<(), String> {
 /// branch is empty", exit 1) has no requirement fixing wsx's outcome, while
 /// PRCUT-05 fixes this one.
 ///
-/// Parity, by observation, subject and counterpart: devflow's cut
-/// cherry-picks `feat(1): add b` to an empty change and counts it excluded,
-/// then replays `feat(1): add c`.
+/// `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06), by
+/// observation, subject and counterpart: devflow's cut cherry-picks
+/// `feat(1): add b` to an empty change and counts it excluded, then replays
+/// `feat(1): add c`, as expected.
 fn recut_after_squash_merge() -> Scenario {
     let feat_c = commit(
         b"feat(1): add c\n",
@@ -1183,23 +1296,29 @@ fn recut_after_squash_merge() -> Scenario {
     );
     Scenario::new(
         "recut_after_squash_merge",
-        phase_cut(phase_after_squash_merge).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/phase-1"],
-            "refs/heads/feature/phase-1-pr",
-            feat_c.clone(),
-            vec![feat_c],
-        )),
+        phase_upstream_fixed(
+            phase_cut(phase_after_squash_merge),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/phase-1"],
+                "refs/heads/feature/phase-1-pr",
+                feat_c.clone(),
+                vec![feat_c],
+            ),
+        ),
     )
     .control(
         Role::Counterpart,
-        phase_cut(phase_with_b_and_c).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/phase-1"],
-            "refs/heads/feature/phase-1-pr",
-            feat_c_on_b.clone(),
-            vec![feat_b, feat_c_on_b],
-        )),
+        phase_upstream_fixed(
+            phase_cut(phase_with_b_and_c),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/phase-1"],
+                "refs/heads/feature/phase-1-pr",
+                feat_c_on_b.clone(),
+                vec![feat_b, feat_c_on_b],
+            ),
+        ),
     )
     .harn06(CaseKind::SquashMerged)
 }
@@ -1256,10 +1375,11 @@ fn topic_from_develop_dirty(fixture: &mut Fixture) -> Result<(), String> {
 /// an uncommitted change to the tracked `src/a.txt` refuses the cut (PRCUT-06),
 /// with refs and commits unchanged and the modified file left as it was.
 ///
-/// Parity, by observation, subject and counterpart: devflow's cut reads
-/// `.workspace-divergence` with `git show ... 2>/dev/null` and skips it when
-/// absent, then replays `feat: add b`; its `diff-index` check refuses the
-/// dirty tree before it fetches.
+/// `fixed:` for the PR branch's upstream alone (`tracking`, PRCUT-06), by
+/// observation: devflow's cut reads `.workspace-divergence` with `git show
+/// ... 2>/dev/null` and skips it when absent, then replays `feat: add b`.
+/// The counterpart is Parity: its `diff-index` check refuses the dirty tree
+/// before it fetches.
 fn no_gsd_repo() -> Scenario {
     let replayed = commit(
         b"feat: add b\n",
@@ -1269,13 +1389,16 @@ fn no_gsd_repo() -> Scenario {
     );
     Scenario::new(
         "no_gsd_repo",
-        no_gsd_topic_cut(topic_from_develop).expect(cut_outcome(
-            0,
-            &["refs/heads/feature/topic"],
-            "refs/heads/feature/topic-pr",
-            replayed.clone(),
-            vec![replayed],
-        )),
+        topic_upstream_fixed(
+            no_gsd_topic_cut(topic_from_develop),
+            cut_outcome(
+                0,
+                &["refs/heads/feature/topic"],
+                "refs/heads/feature/topic-pr",
+                replayed.clone(),
+                vec![replayed],
+            ),
+        ),
     )
     .control(
         Role::Counterpart,
@@ -1335,7 +1458,8 @@ fn topic_with_undeclared_scratch(fixture: &mut Fixture) -> Result<(), String> {
 /// `feat: add b` only.
 ///
 /// The counterpart control's second commit adds the undeclared
-/// `scratch/y.md` instead, and wsx replays both commits.
+/// `scratch/y.md` instead, and wsx replays both commits. In both, the PR
+/// branch has no upstream (PRCUT-06).
 fn no_gsd_custom_personal_path() -> Scenario {
     let feat_b = commit(
         b"feat: add b\n",
