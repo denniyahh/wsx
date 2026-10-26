@@ -278,7 +278,7 @@ Source: `git -C ~/Github/devflow show origin/develop:<path>` at `ee6ec792d03f149
 - Phase mode is automatic on `feature/phase-N`. The scope regex is `^[a-z]+\((phase-)?0*N(-[0-9]+)?\)!?: `, applied to commits from `git log --reverse --no-merges BASE_REF..HEAD`.
 - The default PR name strips `workspace/`, `personal/` and the leading `<word>-`, which is backlog 999.146.
 - Refuses a dirty tracked tree (`diff-index`). Fetches the base, then runs `git branch -f PR BASE_REF` **unconditionally**.
-- **Checks the PR branch out in the user's tree.**
+- ~~**Checks the PR branch out in the user's tree.**~~ **Corrected 2026-10-26 (plan check):** true only while the script runs. It returns to `ORIG_BRANCH` on every exit path (EXIT trap at lines 173-180; explicit checkouts at lines 225, 247, 257, 272 and 289). Measured on a successful cut and on a conflict refusal: HEAD and the checkout's file hashes are unchanged afterwards, and a negative control that left the PR branch checked out did change them. The checkout is therefore not an observable difference and is never a `fixed:` reason.
 - Per commit:
   - `diff-tree --name-only`, which is quoted and shows no files for a merge commit;
   - `cherry-pick --no-commit ... || true`;
