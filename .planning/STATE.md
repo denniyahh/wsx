@@ -84,7 +84,7 @@ Recent decisions affecting current work:
 - [Phase 2]: deny.toml license-checks dev-dependencies (include-dev = true); cargo-deny 0.20.2 skips them by default
 - [Phase 2]: Harness fixture steps are fn(&mut Fixture) -> Result<(), String> and run_case(side, &Entry, &Case, make_env) returns fixture and adapter errors instead of panicking (02-02)
 - [Phase 2]: Adapters return Result<ActionRun, AdapterError { NotImplemented | Spawn }>; an oracle-side NotImplemented panics naming the scenario and action (02-02)
-- [Phase 2]: CommitExpect has no committer date per the 02-02 contract; only the author date is pinned to the action instant (open: add the field before many CommitExpect literals exist)
+- [Phase 2]: CommitExpect has no committer date per the 02-02 contract; only the author date is pinned to the action instant (resolved 2026-10-26 by the orchestrator: no field — HARN-03 lists commits as message + author + author date + committer name/email + tree and deliberately leaves out the committer date, which a replay or merge sets at run time and so cannot be pinned the same way for oracle and Rust)
 
 ### Pending Todos
 
