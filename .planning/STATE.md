@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-10-26T17:22:33.705Z"
+stopped_at: Completed 02-05-PLAN.md
+last_updated: "2026-10-26T17:37:36.795Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 60c850745547c29a78dc68fedaa12aa8e34635df
+state_head: db12777e4a9f568b5e7a6f18271c31ade9d85816
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 11
+  completed_plans: 12
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 5 of 15
+Plan: 6 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -66,6 +66,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 02 P02 | 18min | 2 tasks | 9 files |
 | Phase 02 P03 | 7min | 3 tasks | 12 files |
 | Phase 02 P04 | 7 min | 2 tasks | 2 files |
+| Phase 2 P05 | 11 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,10 @@ Recent decisions affecting current work:
 - [Phase 2]: Harness registry test allows a scenario module with no scenarios yet (scenarios! {}); a scenario fn left out of scenarios! is rejected by clippy as unused (02-03)
 - [Phase 2]: Fixture::commit and Fixture::git_tick take dates from one private Fixture::tick; a git_tick command must create exactly one commit, which is documented but not enforced (02-03)
 - [Phase 02]: 02-04: run_script always sets WSX_ORACLE_DIR, so the absent-variable oracle test spawns the same bash command line itself; the with-variable test also requires a stdout marker because phase-worktree.sh exits 0 when the oracle dir is wrong
+- [Phase 2]: 02-05: a fixed: case is judged at run time against its expected outcome before its record (judge returns FixedPassesOnOracle when the oracle run meets the expectation); FixedRecordMatchesExpected stays as the early literal-copy check
+- [Phase 2]: 02-05: a rust_only scenario's cases must all use OracleSide::NotImplemented; SameAsExpected counts as claiming an oracle side
+- [Phase 2]: 02-05: guard control direction is judged by expected exit only (known-positive non-zero, clean 0); a regression: refusal is exit != 0, RefsExpect::Unchanged and no new commits
+- [Phase 2]: 02-05: validate runs inside try_run_with_env, so every generated test validates before any fixture is built; reports are '<module>::<name>, <case><class>: <failure>'
 
 ### Pending Todos
 
@@ -111,6 +116,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T17:22:33.594Z
-Stopped at: Completed 02-04-PLAN.md
+Last session: 2026-10-26T17:37:36.680Z
+Stopped at: Completed 02-05-PLAN.md
 Resume file: None
