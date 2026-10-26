@@ -172,34 +172,46 @@ pub fn fixture_commit(message: &[u8], tick: i64, parent: &[u8], files: &[File]) 
     }
 }
 
+/// The seed files, `src/b.txt` and `workspace_files`: the tree of a
+/// workspace branch after a sync merged `feat: add b` or its squash.
+pub fn synced_files(workspace_files: &[File]) -> Vec<File> {
+    SEED_FILES
+        .into_iter()
+        .chain([B_FILE])
+        .chain(workspace_files.iter().copied())
+        .collect()
+}
+
+/// The merge a sync makes on `workspace/dev` (tip subject `ours`) of
+/// `theirs`: two parents, made by the config identity at the action instant,
+/// with the tree `synced_files(workspace_files)`.
+pub fn sync_merge(ours: &[u8], theirs: &CommitExpect, workspace_files: &[File]) -> CommitExpect {
+    let harness = Ident::harness();
+    CommitExpect {
+        message: b"chore: sync develop into workspace/dev\n".to_vec(),
+        author: harness.clone(),
+        author_date: date(ACTION_TIME),
+        committer_name: harness.name.clone(),
+        committer_email: harness.email.clone(),
+        parents: vec![ours.to_vec(), subject_of(theirs)],
+        tree: tree(&synced_files(workspace_files)),
+        signed: false,
+    }
+}
+
 /// The outcome of a sync that fetches `theirs` from `remote`'s `develop`,
 /// fast-forwards local `develop` to it and merges it into `workspace/dev`
-/// (tip subject `ours`) with a two-parent merge made by the config identity
-/// at the action instant. The work checkout then holds the seed files,
-/// `src/b.txt` and `workspace_files`; the `unchanged` refs keep their tips.
-fn synced(
+/// (tip subject `ours`) with `sync_merge`. The work checkout then holds
+/// `synced_files(workspace_files)`; the `unchanged` refs keep their tips.
+pub fn synced(
     remote: &str,
     theirs: CommitExpect,
     ours: &[u8],
     workspace_files: &[File],
     unchanged: &[&str],
 ) -> Outcome {
-    let harness = Ident::harness();
-    let all_files: Vec<File> = SEED_FILES
-        .into_iter()
-        .chain([B_FILE])
-        .chain(workspace_files.iter().copied())
-        .collect();
-    let merge = CommitExpect {
-        message: b"chore: sync develop into workspace/dev\n".to_vec(),
-        author: harness.clone(),
-        author_date: date(ACTION_TIME),
-        committer_name: harness.name.clone(),
-        committer_email: harness.email.clone(),
-        parents: vec![ours.to_vec(), subject_of(&theirs)],
-        tree: tree(&all_files),
-        signed: false,
-    };
+    let all_files = synced_files(workspace_files);
+    let merge = sync_merge(ours, &theirs, workspace_files);
     let tip = |name: &str, tip: Tip| RefExpect {
         name: name.to_owned(),
         tip,
@@ -238,8 +250,8 @@ fn subject_of(commit: &CommitExpect) -> Vec<u8> {
         .to_vec()
 }
 
-/// A sync that changes nothing and exits `exit`.
-fn no_change(exit: i32) -> Outcome {
+/// An action that changes nothing and exits `exit`.
+pub fn no_change(exit: i32) -> Outcome {
     Outcome {
         exit,
         refs: RefsExpect::Unchanged,
@@ -319,8 +331,8 @@ fn after_squash_merged_pr() -> Scenario {
     .harn06(CaseKind::SquashMerged)
 }
 
-/// Fixture step: `upstream/develop` gains commit 2, `feat: add b`.
-fn advance_upstream(fixture: &mut Fixture) -> Result<(), String> {
+/// Fixture step: `upstream/develop` gains `feat: add b` at the next tick.
+pub fn advance_upstream(fixture: &mut Fixture) -> Result<(), String> {
     fixture.advance_remote("upstream", "develop", |fixture, clone| {
         fixture.write(clone, B_FILE.0, B_FILE.1)?;
         fixture.commit(clone, b"feat: add b\n")
