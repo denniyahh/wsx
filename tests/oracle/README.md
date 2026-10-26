@@ -76,7 +76,7 @@ Messages the scripts print are not changed, so some still name `scripts/...` pat
 - Never edit a vendored file, not even to make a scenario pass. The oracle has to keep recording
   devflow's real behaviour, defects included: those defects are the negative controls for the
   scenarios that record a defect wsx has fixed.
-- The patch adapts paths only. It leaves `origin`, `origin/develop` and `cut-pr-branch.sh`'s
+- The patch adapts paths, and replaces the pre-push hook's container-gate tail with `exit 0` (see the table above); nothing else. It leaves `origin`, `origin/develop` and `cut-pr-branch.sh`'s
   `FORBIDDEN_PATHS` line alone, because those are oracle behaviour, not paths.
 - The harness applies the patch with `git apply` to the scratch copy, with
   `GIT_CEILING_DIRECTORIES` set to the scenario root's parent, so git never searches above the
@@ -87,7 +87,7 @@ Messages the scripts print are not changed, so some still name `scripts/...` pat
 ## Re-vendoring at a new devflow commit
 
 1. Copy the five scripts and `LICENSE` from devflow at the new commit, unchanged.
-2. Rebuild `oracle.patch` against the new files, adapting paths only.
+2. Rebuild `oracle.patch` against the new files, adapting paths and the pre-push tail only.
 3. Update this README, and in `tests/harness/provenance.rs` update `DEVFLOW_COMMIT`,
    `VENDORED_BLOBS` and `PATCHED_BLOBS`. The test
    `provenance::readme_records_the_pinned_commit_and_blobs` fails while this README and those
