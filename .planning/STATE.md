@@ -130,6 +130,7 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-14: all four planned cut oracle scenarios observed Parity as predicted; fork counterpart exit 128 recorded; the orchestrator-added merge counterpart is fixed:
 - [Phase 02]: 02-15: harn06_gaps names an untagged HARN-06 kind once (not per action); ORACLE_ACTIONS lists 19 (kind, action) pairs that need an oracle-recorded scenario
 - [Phase 02]: 02-15: vendored oracle file modes are checked from the git index (git ls-files -s) in provenance.rs; every scenario module must register a scenario
+- [Phase 03]: Owner 2026-10-26: planning granularity stays `fine` for phase 3 onward (question carried from the phase 2 pause; config unchanged)
 
 ### Pending Todos
 
@@ -153,6 +154,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T20:03:06.268Z
-Stopped at: Phase 2 complete, ready to plan Phase 3
+Last session: 2026-10-26T23:45:00.000Z
+Stopped at: Session resumed, proceeding to /gsd-autonomous --only 3 in .worktrees/phase-3 (feature/phase-3)
 Resume file: None
