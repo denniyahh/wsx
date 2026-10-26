@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Phase 1 complete, ready to plan Phase 2
-last_updated: "2026-10-26T16:34:42.117Z"
-last_activity: 2026-10-25
-last_activity_desc: Phase 1 complete, transitioned to Phase 2
-state_head: b63796d58acd5c497e31db7b12ce056ceb7f0e83
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-10-26T16:40:58.772Z"
+last_activity: 2026-10-26
+last_activity_desc: Phase 2 execution started
+state_head: 58813a0a3cf72d38faf013f7d6118df662a68ee3
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 
 ## Current Position
 
-Phase: 2 (Oracle harness) — READY TO EXECUTE
-Plan: Not started
+Phase: 2 (Oracle harness) — EXECUTING
+Plan: 2 of 15
 Status: Ready to execute
-Last activity: 2026-10-25 — Phase 1 complete, transitioned to Phase 2
+Last activity: 2026-10-26 — Phase 2 execution started
 
 Progress: [█░░░░░░░░░] 7%
 
@@ -62,6 +62,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 01 P03 | 9min | 2 tasks | 3 files |
 | Phase 01 P04 | 4min | 2 tasks | 4 files |
 | Phase 01 P06 | 6min | 2 tasks | 2 files |
+| Phase 02 P01 | 3min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,8 @@ Recent decisions affecting current work:
 - [Phase 1]: tool pins are verified through `cargo` itself (`install-tools.sh verify-cargo`), not by a PATH or CARGO_HOME search (code review CR-02)
 - [Phase 1]: the PR cut aborts on a failed cherry-pick, refuses protected branches, and re-cuts only with `--force` (CR-03, WR-04)
 - [Phase 1]: phase-1 fixes made after PR #2 merged (f1f1303) reach develop only through a follow-up PR; a phase-N cut replays only phase-N commits
+- [Phase 2]: the vendored oracle stays byte-identical to devflow ee6ec792; oracle.patch is its only adaptation and is applied with git apply under GIT_CEILING_DIRECTORIES (without it, git apply in a nested repo skips and exits 0)
+- [Phase 2]: deny.toml license-checks dev-dependencies (include-dev = true); cargo-deny 0.20.2 skips them by default
 
 ### Pending Todos
 
@@ -99,6 +102,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T11:10:00Z
-Stopped at: Phase 1 complete, ready to plan Phase 2
+Last session: 2026-10-26T16:40:58.668Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
