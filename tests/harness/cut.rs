@@ -263,6 +263,20 @@ fn topic_cut(steps: FixtureFn) -> Case {
     )
 }
 
+/// A cut scoped to phase 1 from `feature/phase-1`, to the default
+/// `feature/phase-1-pr`, in a devflow fixture built by `steps`.
+fn phase_cut(steps: FixtureFn) -> Case {
+    Case::new(
+        RepoConfig::devflow(),
+        steps,
+        Action::Cut {
+            checkout: PHASE_CHECKOUT.to_owned(),
+            scope: Some("1".to_owned()),
+            pr_branch: None,
+        },
+    )
+}
+
 // ------------------------------------------------- quoted personal names
 
 /// Personal files named with a non-ASCII, a newline and a non-UTF-8 byte;
@@ -622,10 +636,254 @@ fn merge_resolution_adds_personal_file() -> Scenario {
     .harn06(CaseKind::Merges)
 }
 
+// ------------------------------------------------ existing PR branch
+
+/// Fixture steps: `feature/phase-1` with `feat(1): add b` (fixture commit 2).
+fn phase_with_b(fixture: &mut Fixture) -> Result<(), String> {
+    phase_worktree(fixture)?;
+    commit_files(fixture, PHASE_CHECKOUT, &[B_FILE], b"feat(1): add b\n")
+}
+
+/// Fixture steps: `phase_with_b`, then `feature/phase-1-pr` made from
+/// `origin/develop` with `feat(1): add b` cherry-picked (fixture commit 3)
+/// and a reviewer commit `fix(1): review fixup` (commit 4) changing
+/// `src/b.txt`; the phase worktree is left on `feature/phase-1`.
+fn phase_with_existing_pr(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b(fixture)?;
+    fixture.git_ok(
+        PHASE_CHECKOUT,
+        [
+            "checkout",
+            "--quiet",
+            "--no-track",
+            "-b",
+            "feature/phase-1-pr",
+            "origin/develop",
+        ],
+    )?;
+    fixture.git_tick(PHASE_CHECKOUT, ["cherry-pick", "feature/phase-1"])?;
+    commit_files(
+        fixture,
+        PHASE_CHECKOUT,
+        &[(b"src/b.txt", b"b reviewed\n")],
+        b"fix(1): review fixup\n",
+    )?;
+    fixture.git_ok(PHASE_CHECKOUT, ["checkout", "--quiet", "feature/phase-1"])?;
+    Ok(())
+}
+
+/// HARN-06 existing PR branch, PRCUT-08: a cut whose target PR branch
+/// already exists, and is not the recorded result of a previous cut of this
+/// source, refuses, so wsx exits 1 with `feature/phase-1-pr` and its
+/// reviewer commit `fix(1): review fixup` unchanged. The counterpart control
+/// has no PR branch yet, and wsx cuts it.
+///
+/// `fixed:`, by observation: devflow's cut runs `git branch -f` on the
+/// existing branch, replays `feat(1): add b` onto `origin/develop` and exits
+/// 0, so `feature/phase-1-pr` ends at the new replay and no ref reaches the
+/// reviewer commit. Its counterpart is Parity.
+fn existing_pr_branch_with_extra_commits() -> Scenario {
+    let replayed = commit(
+        b"feat(1): add b\n",
+        2,
+        b"chore: initial commit",
+        &seed_plus(&[B_FILE]),
+    );
+    let recorded = cut_outcome(
+        0,
+        &["refs/heads/feature/phase-1"],
+        "refs/heads/feature/phase-1-pr",
+        replayed.clone(),
+        vec![replayed.clone()],
+    );
+    Scenario::new(
+        "existing_pr_branch_with_extra_commits",
+        fixed(
+            phase_cut(phase_with_existing_pr),
+            refusal(),
+            recorded,
+            "the cut exits 0 and moves feature/phase-1-pr from fix(1): review fixup to a new \
+             commit feat(1): add b",
+        ),
+    )
+    .control(
+        Role::Counterpart,
+        phase_cut(phase_with_b).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            replayed.clone(),
+            vec![replayed],
+        )),
+    )
+    .harn06(CaseKind::ExistingPrBranch)
+}
+
+// ----------------------------------------------- conflict mid-replay
+
+/// Fixture steps: `phase_with_b`, then `feat(1): change a` (fixture commit
+/// 3, `src/a.txt` = `mine`); `origin/develop` gains `feat: change a
+/// upstream` (commit 4, `src/a.txt` = `theirs`), fetched.
+fn phase_with_conflicting_commit(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b(fixture)?;
+    commit_files(fixture, PHASE_CHECKOUT, &[A_MINE], b"feat(1): change a\n")?;
+    advance_and_fetch(fixture, &A_THEIRS, b"feat: change a upstream\n")
+}
+
+/// Fixture steps: `phase_with_b`; `origin/develop` gains `feat: change a
+/// upstream` (fixture commit 3, `src/a.txt` = `theirs`), fetched.
+fn phase_b_after_upstream_change(fixture: &mut Fixture) -> Result<(), String> {
+    phase_with_b(fixture)?;
+    advance_and_fetch(fixture, &A_THEIRS, b"feat: change a upstream\n")
+}
+
+/// The interrupted-cut edge, PRCUT-03: the PR branch ref is written only
+/// after every commit has replayed, and a conflict refuses the cut, so when
+/// the second phase commit conflicts with `origin/develop` wsx exits 1 with
+/// no `feature/phase-1-pr` created and refs, commits and files unchanged.
+/// The counterpart control is the same branch without the conflicting
+/// commit, and wsx cuts it onto the advanced `origin/develop`.
+///
+/// `fixed:`, by observation: devflow's cut replays `feat(1): add b`, then
+/// stops on `unresolved code conflict` in `feat(1): change a` and exits 1,
+/// leaving `feature/phase-1-pr` created at the first replay. The source
+/// checkout is back on `feature/phase-1` with its files unchanged. Its
+/// counterpart is Parity.
+fn conflict_leaves_partial_pr_branch() -> Scenario {
+    let replayed = commit(
+        b"feat(1): add b\n",
+        2,
+        b"feat: change a upstream",
+        &[SEED_FILES[0], A_THEIRS[0], B_FILE],
+    );
+    let recorded = cut_outcome(
+        1,
+        &["refs/heads/feature/phase-1"],
+        "refs/heads/feature/phase-1-pr",
+        replayed.clone(),
+        vec![replayed.clone()],
+    );
+    Scenario::new(
+        "conflict_leaves_partial_pr_branch",
+        fixed(
+            phase_cut(phase_with_conflicting_commit),
+            refusal(),
+            recorded,
+            "the refused cut leaves a new branch feature/phase-1-pr behind, holding a new commit \
+             feat(1): add b",
+        ),
+    )
+    .control(
+        Role::Counterpart,
+        phase_cut(phase_b_after_upstream_change).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            replayed.clone(),
+            vec![replayed],
+        )),
+    )
+}
+
+// ------------------------------------------ scoped and unscoped commits
+
+/// `src/e.txt`, the change already landed on `origin/develop`.
+const LANDED: [File; 1] = [(b"src/e.txt", b"e\n")];
+
+/// Fixture steps: `feature/phase-1` with `feat(1): scoped` (fixture commit
+/// 2, `src/b.txt`), `fix: unscoped code` (commit 3, `src/c.txt`) and
+/// `feat(1-02): second scoped` (commit 4, `src/d.txt`), in that order.
+fn phase_with_unscoped_commit(fixture: &mut Fixture) -> Result<(), String> {
+    phase_worktree(fixture)?;
+    commit_files(fixture, PHASE_CHECKOUT, &[B_FILE], b"feat(1): scoped\n")?;
+    commit_files(fixture, PHASE_CHECKOUT, &[C_FILE], b"fix: unscoped code\n")?;
+    commit_files(
+        fixture,
+        PHASE_CHECKOUT,
+        &[D_FILE],
+        b"feat(1-02): second scoped\n",
+    )
+}
+
+/// Fixture steps: `origin/develop` gains `fix: landed` (fixture commit 2,
+/// `src/e.txt`), fetched; `feature/phase-1` with its own `fix: landed`
+/// (commit 3) making the identical change, then `feat(1): scoped` (commit
+/// 4, `src/b.txt`).
+fn phase_with_landed_commit(fixture: &mut Fixture) -> Result<(), String> {
+    advance_and_fetch(fixture, &LANDED, b"fix: landed\n")?;
+    phase_worktree(fixture)?;
+    commit_files(fixture, PHASE_CHECKOUT, &LANDED, b"fix: landed\n")?;
+    commit_files(fixture, PHASE_CHECKOUT, &[B_FILE], b"feat(1): scoped\n")
+}
+
+/// HARN-06 scoped and unscoped commits, PRCUT-05: every commit the source
+/// branch made since its fork that touches a non-personal path must be
+/// replayed, so wsx refuses a phase-1 cut that would leave out `fix:
+/// unscoped code`, naming it, with refs, commits and files unchanged. The
+/// counterpart control is PRCUT-05's passing case: a scoped cut from a
+/// branch that also carries work already landed on `origin/develop`, which
+/// wsx cuts with `feat(1): scoped` replayed.
+///
+/// `fixed:`, by observation: devflow's cut replays `feat(1): scoped` and
+/// `feat(1-02): second scoped` in their original order, leaves `fix:
+/// unscoped code` out with no warning on stdout or stderr, and exits 0. Its
+/// counterpart is Parity.
+fn scoped_and_unscoped_commits() -> Scenario {
+    let replayed = commit(
+        b"feat(1): scoped\n",
+        4,
+        b"fix: landed",
+        &[SEED_FILES[0], SEED_FILES[1], LANDED[0], B_FILE],
+    );
+    let scoped = commit(
+        b"feat(1): scoped\n",
+        2,
+        b"chore: initial commit",
+        &seed_plus(&[B_FILE]),
+    );
+    let second = commit(
+        b"feat(1-02): second scoped\n",
+        4,
+        b"feat(1): scoped",
+        &seed_plus(&[B_FILE, D_FILE]),
+    );
+    let recorded = cut_outcome(
+        0,
+        &["refs/heads/feature/phase-1"],
+        "refs/heads/feature/phase-1-pr",
+        second.clone(),
+        vec![scoped, second],
+    );
+    Scenario::new(
+        "scoped_and_unscoped_commits",
+        fixed(
+            phase_cut(phase_with_unscoped_commit),
+            refusal(),
+            recorded,
+            "the cut exits 0 and writes feature/phase-1-pr with two new commits, feat(1): scoped \
+             and feat(1-02): second scoped, fix: unscoped code left out",
+        ),
+    )
+    .control(
+        Role::Counterpart,
+        phase_cut(phase_with_landed_commit).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/phase-1"],
+            "refs/heads/feature/phase-1-pr",
+            replayed.clone(),
+            vec![replayed],
+        )),
+    )
+    .harn06(CaseKind::ScopedAndUnscoped)
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 9";
     quoted_personal_names: oracle, rust = "Rust side not enabled until phase 9";
     topic_merge_dropped: oracle, rust = "Rust side not enabled until phase 9";
     integration_merged_into_feature: oracle, rust = "Rust side not enabled until phase 9";
     merge_resolution_adds_personal_file: oracle, rust = "Rust side not enabled until phase 9";
+    existing_pr_branch_with_extra_commits: oracle, rust = "Rust side not enabled until phase 10";
+    conflict_leaves_partial_pr_branch: oracle, rust = "Rust side not enabled until phase 9";
+    scoped_and_unscoped_commits: oracle, rust = "Rust side not enabled until phase 10";
 }
