@@ -11,7 +11,8 @@
 # nothing a log reader can tell apart from a passing one.
 set -euo pipefail
 
-# Repo root from the script's own location, so the gate never depends on git.
+# Repo root from the script's own location, not from git. Only fmt needs git
+# (to list the .rs files), and it says so when git or a work tree is missing.
 CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
 usage() {
@@ -19,7 +20,8 @@ usage() {
 usage: scripts/check.sh [all|fmt|clippy|test [filters...]|deps|coverage [filters...]]
 
   all     fmt + clippy + test   (default)
-  fmt     cargo fmt --check, plus rustfmt --check on every tracked .rs file
+  fmt     cargo fmt --check, plus rustfmt --check on every .rs file in the
+          work tree that git does not ignore; needs git and a work tree
   clippy  cargo clippy --locked --workspace --all-targets -- -D warnings
   test    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail
           [-E <filterset> | test-name filter], at most one; no other
@@ -117,17 +119,36 @@ if [ "$TARGET" = "test" ] || [ "$TARGET" = "coverage" ]; then
     fi
 fi
 
+# Reads NUL-separated paths on stdin and writes back those that exist, so a
+# tracked file deleted from disk but not yet staged is not handed to rustfmt.
+existing_paths() {
+    local path
+    while IFS= read -r -d '' path; do
+        if [ -e "$path" ]; then
+            printf '%s\0' "$path"
+        fi
+    done
+}
+
 run_fmt() {
     require_tool cargo "install rustup from https://rustup.rs"
     show_toolchain
     require_tool cargo-fmt "rustup component add rustfmt"
+    require_tool git "install git"
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "error: 'check.sh fmt' lists the .rs files with git, so it must run in a git work tree; $(pwd) is not in one" >&2
+        exit 1
+    fi
     echo "==> cargo fmt --check"
     cargo fmt --check
     # cargo fmt only follows `mod` items it can see, and never one declared
-    # inside a macro (the harness's scenario modules are), so check every
-    # tracked .rs file directly as well.
-    echo "==> rustfmt --check on every tracked .rs file"
-    git ls-files -z -- '*.rs' | xargs -0 rustfmt --edition 2024 --check
+    # inside a macro (the harness's scenario modules are), so check every .rs
+    # file directly as well: tracked or not, unless git ignores it, and only
+    # if it is on disk.
+    echo "==> rustfmt --check on every .rs file git does not ignore"
+    git ls-files -z --cached --others --exclude-standard -- '*.rs' |
+        existing_paths |
+        xargs -0 -r rustfmt --edition 2024 --check
 }
 
 run_clippy() {
