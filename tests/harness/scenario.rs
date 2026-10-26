@@ -1060,6 +1060,7 @@ fn empty_snapshot() -> Snapshot {
         commits: Default::default(),
         new_commits: Vec::new(),
         files: Default::default(),
+        checkouts: Default::default(),
     }
 }
 
