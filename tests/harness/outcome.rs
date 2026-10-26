@@ -771,7 +771,8 @@ pub enum Field {
     CheckoutIndex(String),
     /// The operations left in progress in a checkout.
     CheckoutPending(String),
-    /// The oracle's stderr, against a case's `oracle_stderr`.
+    /// The action's stderr, against the case's `oracle_stderr` on the oracle
+    /// side and its `rust_stderr` on the Rust side.
     Stderr,
     /// A remote repository's refs; compared under both `RefsExpect` forms, as
     /// is the config below.
@@ -827,7 +828,7 @@ impl fmt::Display for Field {
             Field::CheckoutPending(name) => {
                 write!(f, "the operations in progress in checkout {name}")
             }
-            Field::Stderr => write!(f, "the oracle's stderr"),
+            Field::Stderr => write!(f, "the action's stderr"),
             Field::RemoteRefs(repo) => write!(f, "the refs of the remote repository {repo}"),
             Field::Config => write!(f, "the work repository's local config"),
         }

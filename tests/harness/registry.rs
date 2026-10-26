@@ -10,7 +10,7 @@
 
 use crate::action::Action;
 use crate::fixture::{Fixture, RepoConfig, WORK};
-use crate::scenario::{Case, CaseKind, Entry, Kind, Scenario, validate};
+use crate::scenario::{Case, CaseKind, Entry, Kind, Scenario, validate_entry};
 
 /// Every HARN-06 case kind, with each action the oracle runs in that case and
 /// must therefore have an oracle-recorded scenario for (success criterion 5).
@@ -166,15 +166,15 @@ fn rust_sides_not_enabled() {
     }
 }
 
-/// Every registered scenario builds and passes `validate` under the kind it
-/// is registered with.
+/// Every registered scenario builds and passes `validate_entry` under the kind
+/// and Rust side it is registered with.
 #[test]
 fn every_scenario_is_well_formed() {
     let entries = crate::all_scenarios();
     assert!(!entries.is_empty(), "the registry lists no scenario");
     let mut malformed = Vec::new();
     for entry in &entries {
-        if let Err(rejections) = validate(entry.kind, &(entry.build)()) {
+        if let Err(rejections) = validate_entry(entry, &(entry.build)()) {
             for rejection in rejections {
                 malformed.push(format!("{}::{}: {rejection}", entry.module, entry.name));
             }
