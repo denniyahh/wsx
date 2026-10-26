@@ -1060,6 +1060,169 @@ fn recut_after_squash_merge() -> Scenario {
     .harn06(CaseKind::SquashMerged)
 }
 
+// --------------------------------------------------------- no-GSD repo
+
+/// A cut with no scope from `feature/topic` to `feature/topic-pr`, in a
+/// no-GSD fixture built by `steps`.
+fn no_gsd_topic_cut(steps: FixtureFn) -> Case {
+    Case::new(
+        RepoConfig::no_gsd(),
+        steps,
+        Action::Cut {
+            checkout: TOPIC_CHECKOUT.to_owned(),
+            scope: None,
+            pr_branch: Some("feature/topic-pr".to_owned()),
+        },
+    )
+}
+
+/// Fixture steps: a worktree at `work/.worktrees/topic` on a new branch
+/// `feature/topic` from `develop`, not from the workspace branch, with one
+/// commit `feat: add b` (fixture commit 2, `src/b.txt`).
+fn topic_from_develop(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.git_ok(
+        WORK,
+        [
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "feature/topic",
+            ".worktrees/topic",
+            "develop",
+        ],
+    )?;
+    commit_files(fixture, TOPIC_CHECKOUT, &[B_FILE], b"feat: add b\n")
+}
+
+/// Fixture steps: `topic_from_develop`, then the tracked `src/a.txt` changed
+/// in the source checkout and left uncommitted.
+fn topic_from_develop_dirty(fixture: &mut Fixture) -> Result<(), String> {
+    topic_from_develop(fixture)?;
+    fixture.write(TOPIC_CHECKOUT, b"src/a.txt", b"uncommitted\n")
+}
+
+/// HARN-06 no-GSD repo, PRCUT-01 and IF-02: the cut reads no GSD, devflow or
+/// agent file, so in a repository with none of them wsx cuts
+/// `feature/topic-pr` at one new commit `feat: add b` on `origin/develop`.
+/// The source branch comes from `develop`, so the subject involves no
+/// personal path at all (`no_gsd_custom_personal_path` covers stripping one).
+///
+/// The counterpart control flips one variable, the source checkout's tree:
+/// an uncommitted change to the tracked `src/a.txt` refuses the cut (PRCUT-06),
+/// with refs and commits unchanged and the modified file left as it was.
+///
+/// Parity, by observation, subject and counterpart: devflow's cut reads
+/// `.workspace-divergence` with `git show ... 2>/dev/null` and skips it when
+/// absent, then replays `feat: add b`; its `diff-index` check refuses the
+/// dirty tree before it fetches.
+fn no_gsd_repo() -> Scenario {
+    let replayed = commit(
+        b"feat: add b\n",
+        2,
+        b"chore: initial commit",
+        &seed_plus(&[B_FILE]),
+    );
+    Scenario::new(
+        "no_gsd_repo",
+        no_gsd_topic_cut(topic_from_develop).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            replayed.clone(),
+            vec![replayed],
+        )),
+    )
+    .control(
+        Role::Counterpart,
+        no_gsd_topic_cut(topic_from_develop_dirty).expect(refusal()),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
+/// Why no case of `no_gsd_custom_personal_path` has an oracle side.
+const NO_ORACLE_CUSTOM_PATH: &str = "devflow's cut strips only its own built-in list and the \
+     only entries of .workspace-divergence, not a personal path declared in .wsx.conf";
+
+/// A no-GSD topic cut with no oracle side.
+fn rust_only_no_gsd_cut(steps: FixtureFn) -> Case {
+    no_gsd_topic_cut(steps).oracle(OracleSide::NotImplemented {
+        why: NO_ORACLE_CUSTOM_PATH,
+    })
+}
+
+/// `notes/x.md`, under the no-GSD preset's declared personal path `notes`.
+const NOTE_FILE: File = (b"notes/x.md", b"note\n");
+
+/// `scratch/y.md`, a path the no-GSD manifest does not declare.
+const SCRATCH_FILE: File = (b"scratch/y.md", b"scratch\n");
+
+/// Fixture steps: `feature/topic` from `workspace/dev` with `feat: add b`
+/// (fixture commit 2), then `docs: notes` (commit 3) adding `notes/x.md`.
+fn topic_with_declared_note(fixture: &mut Fixture) -> Result<(), String> {
+    topic_worktree(fixture)?;
+    commit_files(fixture, TOPIC_CHECKOUT, &[B_FILE], b"feat: add b\n")?;
+    commit_files(fixture, TOPIC_CHECKOUT, &[NOTE_FILE], b"docs: notes\n")
+}
+
+/// Fixture steps: `feature/topic` from `workspace/dev` with `feat: add b`
+/// (fixture commit 2), then `feat: add scratch` (commit 3) adding the
+/// undeclared `scratch/y.md`.
+fn topic_with_undeclared_scratch(fixture: &mut Fixture) -> Result<(), String> {
+    topic_worktree(fixture)?;
+    commit_files(fixture, TOPIC_CHECKOUT, &[B_FILE], b"feat: add b\n")?;
+    commit_files(
+        fixture,
+        TOPIC_CHECKOUT,
+        &[SCRATCH_FILE],
+        b"feat: add scratch\n",
+    )
+}
+
+/// HARN-06 no-GSD repo with a custom personal path, PRCUT-02, CONF-02 and
+/// IF-02. Rust-only: devflow's cut has no custom personal path. The personal
+/// paths are the manifest's list, so `docs: notes`, which touches only the
+/// declared `notes/x.md`, is dropped and wsx cuts `feature/topic-pr` with
+/// `feat: add b` only.
+///
+/// The counterpart control's second commit adds the undeclared
+/// `scratch/y.md` instead, and wsx replays both commits.
+fn no_gsd_custom_personal_path() -> Scenario {
+    let feat_b = commit(
+        b"feat: add b\n",
+        2,
+        b"chore: initial commit",
+        &seed_plus(&[B_FILE]),
+    );
+    let feat_scratch = commit(
+        b"feat: add scratch\n",
+        3,
+        b"feat: add b",
+        &seed_plus(&[B_FILE, SCRATCH_FILE]),
+    );
+    Scenario::new(
+        "no_gsd_custom_personal_path",
+        rust_only_no_gsd_cut(topic_with_declared_note).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            feat_b.clone(),
+            vec![feat_b.clone()],
+        )),
+    )
+    .control(
+        Role::Counterpart,
+        rust_only_no_gsd_cut(topic_with_undeclared_scratch).expect(cut_outcome(
+            0,
+            &["refs/heads/feature/topic"],
+            "refs/heads/feature/topic-pr",
+            feat_scratch.clone(),
+            vec![feat_b, feat_scratch],
+        )),
+    )
+    .harn06(CaseKind::NoGsd)
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 9";
     quoted_personal_names: oracle, rust = "Rust side not enabled until phase 9";
@@ -1071,4 +1234,6 @@ scenarios! {
     scoped_and_unscoped_commits: oracle, rust = "Rust side not enabled until phase 10";
     fork_layout: oracle, rust = "Rust side not enabled until phase 9";
     recut_after_squash_merge: oracle, rust = "Rust side not enabled until phase 10";
+    no_gsd_repo: oracle, rust = "Rust side not enabled until phase 9";
+    no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 9";
 }
