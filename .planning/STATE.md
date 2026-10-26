@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 2
 current_phase_name: Oracle harness
 status: executing
-stopped_at: Completed 02-12-PLAN.md
-last_updated: "2026-10-26T19:29:48.360Z"
+stopped_at: Completed 02-13-PLAN.md
+last_updated: "2026-10-26T19:36:57.895Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 2 execution started
-state_head: 843e68d4b17ec8158d22577df071e9613357722e
+state_head: 720a6495b0aa1b975a68a54b48cee72902ac0ef5
 progress:
   total_phases: 15
   completed_phases: 1
   total_plans: 22
-  completed_plans: 19
+  completed_plans: 20
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-25)
 ## Current Position
 
 Phase: 2 (Oracle harness) — EXECUTING
-Plan: 13 of 15
+Plan: 14 of 15
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 2 execution started
 
@@ -74,6 +74,7 @@ Progress: [█░░░░░░░░░] 7%
 | Phase 2 P10 | 9 min | 3 tasks | 1 files |
 | Phase 02 P11 | 8 min | 2 tasks | 1 files |
 | Phase 02 P12 | 9 min | 2 tasks | 2 files |
+| Phase 02 P13 | 4min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,7 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-12: every oracle case classed by its first Parity run: 7 Parity (all 6 sync cases, the worktree re-run counterpart), 5 fixed: (the 3 worktree subjects and 2 directory-name counterparts)
 - [Phase 02]: 02-12: worktree::no_gsd_repo's oracle refusal exits 2, not RESEARCH's exit 1 (the error-path grep fails on the missing ROADMAP.md; pipefail and set -e pass 2 through); recorded as observed
 - [Phase 02]: 02-12: sync::fork_layout's counterpart (upstream removed) expects exit 128, taken from the oracle run as the plan directs; no requirement fixes that exit code, phase 7 may choose another
+- [Phase 02]: 02-13: check::quoted_personal_names and check::no_gsd_repo are fixed: (oracle exit 1, refusing C-quoted .planning names and, without .workspace-divergence, .wsx.conf and notes/todo.md); check::fork_layout is Parity against upstream/develop; no_gsd_custom_personal_path is Rust-only
 
 ### Pending Todos
 
@@ -140,6 +142,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T19:29:48.221Z
-Stopped at: Completed 02-12-PLAN.md
+Last session: 2026-10-26T19:36:57.730Z
+Stopped at: Completed 02-13-PLAN.md
 Resume file: None

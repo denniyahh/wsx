@@ -52,7 +52,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
   - `fixed:` scenarios (oracle defects and improvements) pass on Rust and fail on the oracle
   - `regression:` scenarios are deliberate refusals
 - [x] **HARN-04**: The suite runs from `cargo nextest` with `--no-tests=fail`, so coverage and mutation testing see it. `clippy.toml` disallows `std::env::set_var`/`remove_var`
-- [ ] **HARN-05**: Every guard scenario has a known-positive control that must still be refused, and a clean control that must pass. A guard only ever observed refusing, or only ever observed passing, fails review
+- [x] **HARN-05**: Every guard scenario has a known-positive control that must still be refused, and a clean control that must pass. A guard only ever observed refusing, or only ever observed passing, fails review
 - [ ] **HARN-06**: The scenario set covers, each with a control:
   - merge commits (integration merged into a feature branch, a conflict resolved by adding a personal file)
   - squash-merged PRs
@@ -227,7 +227,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | HARN-02 | Phase 2 | Complete |
 | HARN-03 | Phase 2 | Complete |
 | HARN-04 | Phase 1 | Complete |
-| HARN-05 | Phase 2 | Pending |
+| HARN-05 | Phase 2 | Complete |
 | HARN-06 | Phase 2 | Pending |
 | CONF-01 | Phase 4 | Pending |
 | CONF-02 | Phase 4 | Pending |
