@@ -2,6 +2,8 @@
 //! `scripts/check.sh` or `clippy.toml` refuses the case it exists for.
 //!
 //! - A tool missing from PATH is named on stderr and fails the gate (DEV-01).
+//! - `check.sh coverage` sets `CARGO_LLVM_COV_SETUP=no` itself, so
+//!   cargo-llvm-cov never installs a toolchain component.
 //! - The nextest pin is checked on the binary cargo runs, not on another copy
 //!   found by a different search (T-01-07).
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
@@ -139,6 +141,105 @@ fn missing_nextest_fails_test_by_name() {
 #[test]
 fn missing_cargo_deny_fails_deps_by_name() {
     assert_missing_tool_named("deps", &["dirname", "cargo"], "cargo-deny");
+}
+
+#[test]
+fn missing_cargo_llvm_cov_fails_coverage_by_name() {
+    assert_missing_tool_named("coverage", &["dirname", "cargo", "rustc"], "cargo-llvm-cov");
+}
+
+/// The cargo-llvm-cov version `scripts/install-tools.sh` pins, read from the
+/// script so the pin stays in one place.
+fn pinned_llvm_cov_version() -> String {
+    let script = Path::new(REPO_ROOT).join("scripts/install-tools.sh");
+    let text = fs::read_to_string(&script).expect("read scripts/install-tools.sh");
+    text.lines()
+        .find_map(|line| line.strip_prefix("CARGO_LLVM_COV_VERSION="))
+        .expect("install-tools.sh pins CARGO_LLVM_COV_VERSION")
+        .to_owned()
+}
+
+/// A stand-in `cargo`: `cargo llvm-cov --version` reports the pinned version,
+/// `cargo llvm-cov nextest ...` records the `CARGO_LLVM_COV_SETUP` it sees
+/// (`<unset>` if none) and its arguments in `record`, and anything else runs
+/// the real cargo.
+fn cargo_stub(real: &Path, pin: &str, record: &Path) -> String {
+    format!(
+        "#!/bin/bash\n\
+         if [ \"$1\" = llvm-cov ] && [ \"$2\" = --version ]; then\n\
+         \x20   echo 'cargo-llvm-cov {pin}'; exit 0\n\
+         fi\n\
+         if [ \"$1\" = llvm-cov ] && [ \"$2\" = nextest ]; then\n\
+         \x20   printf '%s\\n' \"${{CARGO_LLVM_COV_SETUP-<unset>}}\" \"$@\" > '{record}'; exit 0\n\
+         fi\n\
+         exec '{real}' \"$@\"\n",
+        real = real.display(),
+        record = record.display(),
+    )
+}
+
+/// `check.sh coverage` runs cargo-llvm-cov with `CARGO_LLVM_COV_SETUP=no`, set
+/// by the script itself, so a missing llvm-tools component fails instead of
+/// being installed: the variable is removed from the environment check.sh
+/// starts in, and the stub must still see `no`.
+#[test]
+fn coverage_runs_cargo_llvm_cov_with_setup_disabled() {
+    let root = fresh_dir("coverage-setup");
+    let stub_dir = root.join("stub");
+    fs::create_dir_all(&stub_dir).expect("create the stub dir");
+    let record = root.join("record");
+    let cargo = stub_dir.join("cargo");
+    fs::write(
+        &cargo,
+        cargo_stub(&on_path("cargo"), &pinned_llvm_cov_version(), &record),
+    )
+    .expect("write the cargo stub");
+    let llvm_cov = stub_dir.join("cargo-llvm-cov");
+    fs::write(&llvm_cov, "#!/bin/bash\nexit 1\n").expect("write a cargo-llvm-cov stand-in");
+    for file in [&cargo, &llvm_cov] {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    }
+    let tools = minimal_path(
+        "coverage-setup-tools",
+        &["bash", "rustc", "dirname", "cargo-nextest"],
+    );
+    let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
+
+    let output = Command::new("/bin/bash")
+        .arg(check_sh())
+        .args(["coverage", "-E", "test(=some::test)"])
+        .env("PATH", path)
+        .env_remove("CARGO_LLVM_COV_SETUP")
+        .output()
+        .expect("spawn /bin/bash scripts/check.sh coverage");
+    let stdout = text(output.stdout, "check.sh stdout");
+    let stderr = text(output.stderr, "check.sh stderr");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "check.sh coverage with the stub; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    let recorded = fs::read_to_string(&record).expect("the stub recorded its run");
+    let lines: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        lines.first(),
+        Some(&"no"),
+        "CARGO_LLVM_COV_SETUP as cargo-llvm-cov sees it; recorded: {recorded:?}"
+    );
+    assert_eq!(
+        lines[1..],
+        [
+            "llvm-cov",
+            "nextest",
+            "--locked",
+            "--workspace",
+            "--no-fail-fast",
+            "--no-tests=fail",
+            "-E",
+            "test(=some::test)"
+        ],
+        "the cargo-llvm-cov command line"
+    );
 }
 
 /// A stand-in `cargo-nextest`. Run directly with `--version` it hands off to
