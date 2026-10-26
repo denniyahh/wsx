@@ -294,8 +294,73 @@ impl Fixture {
         Ok(())
     }
 
-    /// The preset's last step when the config declares signing.
+    /// The preset's last step when the config declares signing: a throwaway
+    /// ed25519 key generated in the scenario root (never a real key, removed
+    /// with the TempDir), and local config that signs every later commit in
+    /// the work repository and its worktrees with it. The key is named by its
+    /// private file path: the hermetic environment has no SSH agent.
     fn enable_signing(&self) -> Result<(), String> {
+        let private_key = self.root.join("signkey");
+        let keygen = [
+            OsStr::new("-q"),
+            OsStr::new("-t"),
+            OsStr::new("ed25519"),
+            OsStr::new("-N"),
+            OsStr::new(""),
+            OsStr::new("-C"),
+            OsStr::new("harness"),
+            OsStr::new("-f"),
+            private_key.as_os_str(),
+        ];
+        let output = command("ssh-keygen", &self.root, &self.env)
+            .args(keygen)
+            .output()
+            .map_err(|err| format!("spawn ssh-keygen: {err}"))?;
+        if output.status.code() != Some(0) {
+            return Err(format!(
+                "ssh-keygen exited {:?}; stderr: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ));
+        }
+        let public_path = self.root.join("signkey.pub");
+        let public = fs::read(&public_path)
+            .map_err(|err| format!("read {}: {err}", public_path.display()))?;
+        let fields: Vec<&[u8]> = public
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|field| !field.is_empty())
+            .collect();
+        let [kind, base64, ..] = fields[..] else {
+            return Err(format!(
+                "unexpected public key \"{}\"",
+                public.escape_ascii()
+            ));
+        };
+        let mut allowed = format!("{} namespaces=\"git\" ", Ident::harness().email).into_bytes();
+        allowed.extend_from_slice(kind);
+        allowed.push(b' ');
+        allowed.extend_from_slice(base64);
+        allowed.push(b'\n');
+        let allowed_path = self.root.join("allowed_signers");
+        fs::write(&allowed_path, allowed)
+            .map_err(|err| format!("write {}: {err}", allowed_path.display()))?;
+        let signing_config = [
+            ("gpg.format", OsStr::new("ssh")),
+            ("user.signingkey", private_key.as_os_str()),
+            ("commit.gpgsign", OsStr::new("true")),
+            ("gpg.ssh.allowedSignersFile", allowed_path.as_os_str()),
+        ];
+        for (key, value) in signing_config {
+            self.git_ok(
+                WORK,
+                [
+                    OsStr::new("config"),
+                    OsStr::new("--local"),
+                    OsStr::new(key),
+                    value,
+                ],
+            )?;
+        }
         Ok(())
     }
 
