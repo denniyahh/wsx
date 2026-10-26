@@ -10,10 +10,11 @@
 //! selecting only it fails with "no tests to run" instead of passing over zero
 //! tests.
 //!
-//! The runner builds each case's scratch tree, environment and fixture,
-//! snapshots, runs the side's adapter at the action instant, snapshots again,
-//! and judges the run. A failure fails the test with the differences in plain
-//! words, and the observed outcome in scenario syntax.
+//! The runner validates the scenario against the scenario rules, then, for
+//! the subject and each control, builds the case's scratch tree, environment
+//! and fixture, snapshots, runs the side's adapter at the action instant,
+//! snapshots again, and judges the run. A failure fails the test with the
+//! differences in plain words, and the observed outcome in scenario syntax.
 
 use std::fmt;
 
@@ -254,20 +255,208 @@ pub enum Rejection {
     Harn06WithoutControl(CaseKind),
 }
 
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Rejection::NoExplicitExpectation(case) => write!(
+                f,
+                "{case} states no expected outcome; every case needs an explicit \
+                 .expect(Outcome {{ .. }}), so none passes by agreeing with the oracle alone"
+            ),
+            Rejection::FixedWithoutRecordedOracle(case) => write!(
+                f,
+                "{case} is fixed: but records no oracle outcome; a fixed: case must record \
+                 what the oracle actually does, with .oracle(OracleSide::Recorded(..))"
+            ),
+            Rejection::FixedRecordMatchesExpected(case) => write!(
+                f,
+                "{case} is fixed: but its recorded oracle outcome equals its expected outcome; \
+                 a fixed: case must record what the oracle actually does, and that must differ \
+                 from what wsx is expected to do"
+            ),
+            Rejection::RegressionNotARefusal(case) => write!(
+                f,
+                "{case} is regression: but its expected outcome is not a refusal; a \
+                 regression: case must expect a non-zero exit, refs unchanged and no new commit"
+            ),
+            Rejection::RecordedWithoutDifferenceClass(case) => write!(
+                f,
+                "{case} records an oracle outcome but is a parity case; only a fixed: or \
+                 regression: case may record one"
+            ),
+            Rejection::GuardWithoutKnownPositive => write!(
+                f,
+                "the subject runs a guard, but no known-positive control shows the guard \
+                 refusing"
+            ),
+            Rejection::GuardWithoutCleanControl => write!(
+                f,
+                "the subject runs a guard, but no clean control shows the guard letting a \
+                 clean case through"
+            ),
+            Rejection::KnownPositiveNotRefused(case) => write!(
+                f,
+                "{case} is a known-positive control expected to pass; it must expect a refusal \
+                 (a non-zero exit)"
+            ),
+            Rejection::CleanControlRefused(case) => write!(
+                f,
+                "{case} is a clean control expected to refuse; it must expect exit 0"
+            ),
+            Rejection::OracleKindWithoutOracleSide { case, why } => write!(
+                f,
+                "{case} has no oracle side ({why}), but the scenario is registered with an \
+                 oracle test; register it rust_only"
+            ),
+            Rejection::RustOnlyWithOracleSide(case) => write!(
+                f,
+                "{case} claims an oracle side, but the scenario is registered rust_only; its \
+                 oracle side must be OracleSide::NotImplemented"
+            ),
+            Rejection::Harn06WithoutControl(kind) => write!(
+                f,
+                "the scenario covers the HARN-06 case \"{kind}\" but has no control; a HARN-06 \
+                 case needs at least one"
+            ),
+        }
+    }
+}
+
 /// Whether `action` is a guard, which must be shown both refusing and passing.
 pub fn is_guard(action: &Action) -> bool {
     matches!(action, Action::Check { .. } | Action::PrePush { .. })
 }
 
-/// Checks `scenario`, registered as `kind`, against the scenario rules.
-pub fn validate(kind: Kind, scenario: &Scenario) -> Result<(), Vec<Rejection>> {
-    let _ = (kind, scenario);
-    Ok(())
+/// A scenario's cases, subject first, each with its control role.
+fn cases_of(scenario: &Scenario) -> Vec<(CaseRef, Option<Role>, &Case)> {
+    let controls = scenario
+        .controls
+        .iter()
+        .enumerate()
+        .map(|(index, control)| {
+            (
+                CaseRef::Control(index + 1),
+                Some(control.role),
+                &control.case,
+            )
+        });
+    std::iter::once((CaseRef::Subject, None, &scenario.subject))
+        .chain(controls)
+        .collect()
 }
 
-/// The outcome a case's oracle run is compared with.
+/// A refusal: non-zero exit, refs unchanged and no new commit.
+fn is_refusal(outcome: &Outcome) -> bool {
+    outcome.exit != 0 && outcome.refs == RefsExpect::Unchanged && outcome.new_commits.is_empty()
+}
+
+/// The rules on one case's expectation, class and oracle record.
+fn outcome_rules(which: CaseRef, case: &Case) -> Vec<Rejection> {
+    let mut found = Vec::new();
+    let expected = case.expected.as_ref();
+    if expected.is_none() {
+        found.push(Rejection::NoExplicitExpectation(which));
+    }
+    match (&case.class, &case.oracle) {
+        (Class::Fixed { .. }, OracleSide::Recorded(record)) => {
+            if expected == Some(record) {
+                found.push(Rejection::FixedRecordMatchesExpected(which));
+            }
+        }
+        (Class::Fixed { .. }, _) => found.push(Rejection::FixedWithoutRecordedOracle(which)),
+        (Class::Regression { .. }, _) => {
+            if expected.is_some_and(|outcome| !is_refusal(outcome)) {
+                found.push(Rejection::RegressionNotARefusal(which));
+            }
+        }
+        (Class::Parity, OracleSide::Recorded(_)) => {
+            found.push(Rejection::RecordedWithoutDifferenceClass(which));
+        }
+        (Class::Parity, _) => {}
+    }
+    found
+}
+
+/// A guard subject's missing control roles, matched by role, not position.
+fn guard_rules(scenario: &Scenario) -> Vec<Rejection> {
+    if !is_guard(&scenario.subject.action) {
+        return Vec::new();
+    }
+    let has = |role| scenario.controls.iter().any(|control| control.role == role);
+    let mut found = Vec::new();
+    if !has(Role::KnownPositive) {
+        found.push(Rejection::GuardWithoutKnownPositive);
+    }
+    if !has(Role::Clean) {
+        found.push(Rejection::GuardWithoutCleanControl);
+    }
+    found
+}
+
+/// A known-positive control must expect a refusal, a clean one exit 0.
+fn control_direction(which: CaseRef, role: Option<Role>, case: &Case) -> Option<Rejection> {
+    let exit = case.expected.as_ref()?.exit;
+    match role? {
+        Role::KnownPositive if exit == 0 => Some(Rejection::KnownPositiveNotRefused(which)),
+        Role::Clean if exit != 0 => Some(Rejection::CleanControlRefused(which)),
+        _ => None,
+    }
+}
+
+/// A case's oracle side must match how the scenario is registered.
+fn kind_rule(kind: Kind, which: CaseRef, case: &Case) -> Option<Rejection> {
+    match (kind, &case.oracle) {
+        (Kind::Oracle, OracleSide::NotImplemented { why }) => {
+            Some(Rejection::OracleKindWithoutOracleSide { case: which, why })
+        }
+        (Kind::RustOnly, OracleSide::SameAsExpected | OracleSide::Recorded(_)) => {
+            Some(Rejection::RustOnlyWithOracleSide(which))
+        }
+        _ => None,
+    }
+}
+
+/// Checks `scenario`, registered as `kind`, against the scenario rules
+/// (success criterion 4 and HARN-05), and returns every rejection found, in
+/// rule order.
+pub fn validate(kind: Kind, scenario: &Scenario) -> Result<(), Vec<Rejection>> {
+    let cases = cases_of(scenario);
+    let mut rejections: Vec<Rejection> = cases
+        .iter()
+        .flat_map(|&(which, _, case)| outcome_rules(which, case))
+        .collect();
+    rejections.extend(guard_rules(scenario));
+    rejections.extend(
+        cases
+            .iter()
+            .filter_map(|&(which, role, case)| control_direction(which, role, case)),
+    );
+    rejections.extend(
+        cases
+            .iter()
+            .filter_map(|&(which, _, case)| kind_rule(kind, which, case)),
+    );
+    if let Some(case_kind) = scenario.harn06
+        && scenario.controls.is_empty()
+    {
+        rejections.push(Rejection::Harn06WithoutControl(case_kind));
+    }
+    if rejections.is_empty() {
+        Ok(())
+    } else {
+        Err(rejections)
+    }
+}
+
+/// The outcome a case's oracle run is compared with: the expected outcome
+/// for a parity case, the recorded one for a `fixed:` case, and for a
+/// `regression:` case the recorded one when there is one (the oracle may share
+/// a deliberate refusal), else the expected outcome.
 pub fn oracle_target(case: &Case) -> &Outcome {
-    expected_of(case)
+    match (&case.class, &case.oracle) {
+        (Class::Fixed { .. } | Class::Regression { .. }, OracleSide::Recorded(record)) => record,
+        _ => expected_of(case),
+    }
 }
 
 /// A validated case's expected outcome.
@@ -316,10 +505,24 @@ impl fmt::Display for CaseFailure {
     }
 }
 
-/// Judges `case`'s `run` on `side`.
+/// Judges `case`'s `run` on `side`. The Rust side is compared with the
+/// expected outcome. On the oracle side a `fixed:` case's run is compared with
+/// the expected outcome first: if that comparison is clean the oracle already
+/// does what wsx is expected to do, and the case fails whatever its record
+/// holds. Otherwise, and for every other case, the oracle run is compared with
+/// `oracle_target`.
 pub fn judge(side: Side, case: &Case, run: &CaseRun) -> Result<(), CaseFailure> {
-    let _ = side;
-    let mismatches = compare(expected_of(case), &run.before, &run.after, run.run.exit);
+    let against = |target: &Outcome| compare(target, &run.before, &run.after, run.run.exit);
+    let target = match side {
+        Side::Rust => expected_of(case),
+        Side::Oracle => {
+            if matches!(case.class, Class::Fixed { .. }) && against(expected_of(case)).is_empty() {
+                return Err(CaseFailure::FixedPassesOnOracle);
+            }
+            oracle_target(case)
+        }
+    };
+    let mismatches = against(target);
     if mismatches.is_empty() {
         Ok(())
     } else {
@@ -335,11 +538,26 @@ pub fn declaring_module(path: &'static str) -> &'static str {
 
 /// Declares scenarios. Each `name: oracle, rust = "<reason>";` generates
 /// `pub mod name` with `#[test] fn oracle()` and an ignored `#[test] fn rust()`;
-/// `name: oracle, rust_enabled;` generates both tests unignored. `name` must
-/// also be a `fn name() -> Scenario` in the invoking module. The invocation
+/// `name: oracle, rust_enabled;` generates both tests unignored, and
+/// `name: rust_only, rust = "<reason>";` generates only the ignored `rust()`.
+/// `name` must also be a `fn name() -> Scenario` in the invoking module. Every
+/// generated test validates its scenario before running it. The invocation
 /// also defines `registry()`, listing every scenario it declares; `scenarios! {}`
 /// declares none.
 macro_rules! scenarios {
+    (@kind oracle) => {
+        crate::scenario::Kind::Oracle
+    };
+    (@kind rust_only) => {
+        crate::scenario::Kind::RustOnly
+    };
+    (@oracle oracle) => {
+        #[test]
+        fn oracle() {
+            crate::scenario::run(crate::scenario::Side::Oracle, &entry());
+        }
+    };
+    (@oracle rust_only) => {};
     (@disabled rust $why:literal) => {
         Some($why)
     };
@@ -359,7 +577,7 @@ macro_rules! scenarios {
             crate::scenario::run(crate::scenario::Side::Rust, &entry());
         }
     };
-    ($($name:ident : oracle, $rust:ident $(= $why:literal)? ;)*) => {
+    ($($name:ident : $kind:ident, $rust:ident $(= $why:literal)? ;)*) => {
         $(
             pub mod $name {
                 pub fn entry() -> crate::scenario::Entry {
@@ -367,16 +585,12 @@ macro_rules! scenarios {
                         module: crate::scenario::declaring_module(module_path!()),
                         name: stringify!($name),
                         rust_disabled: scenarios!(@disabled $rust $($why)?),
-                        kind: crate::scenario::Kind::Oracle,
+                        kind: scenarios!(@kind $kind),
                         build: super::$name,
                     }
                 }
 
-                #[test]
-                fn oracle() {
-                    crate::scenario::run(crate::scenario::Side::Oracle, &entry());
-                }
-
+                scenarios!(@oracle $kind);
                 scenarios!(@rust $rust $($why)?);
             }
         )*
@@ -434,9 +648,10 @@ fn failure_entry(label: &str, case: &Case, failure: &CaseFailure, run: &CaseRun)
     }
 }
 
-/// Runs `entry`'s scenario on `side` with the environment `make_env` builds,
-/// and returns a report with one entry per failing case instead of panicking:
-/// `<module>::<name>, <case><class>: <failure>`.
+/// Validates `entry`'s scenario, then runs its subject and each control, each
+/// in its own scratch tree, on `side` with the environment `make_env` builds.
+/// Returns the rejections, or a report with one entry per failing case,
+/// instead of panicking: `<module>::<name>, <case><class>: <failure>`.
 pub fn try_run_with_env(
     side: Side,
     entry: &Entry,
@@ -450,19 +665,34 @@ pub fn try_run_with_env(
             scenario.name
         ));
     }
-    let case = &scenario.subject;
-    let label = format!(
-        "{id}, {}{}",
-        case_name(CaseRef::Subject, None),
-        class_label(case.class)
-    );
-    if case.expected.is_none() {
-        return Err(format!(
-            "{label}: the case states no expected outcome; add .expect(Outcome {{ .. }})"
-        ));
+    validate(entry.kind, &scenario).map_err(|rejections| {
+        let listed: Vec<String> = rejections
+            .iter()
+            .map(|rejection| format!("  - {rejection}"))
+            .collect();
+        format!("{id} breaks the scenario rules:\n{}", listed.join("\n"))
+    })?;
+    let failures: Vec<String> = cases_of(&scenario)
+        .into_iter()
+        .filter_map(|(which, role, case)| {
+            let label = format!(
+                "{id}, {}{}",
+                case_name(which, role),
+                class_label(case.class)
+            );
+            match run_case(side, entry, case, make_env) {
+                Err(err) => Some(format!("{label}: {err}")),
+                Ok(run) => judge(side, case, &run)
+                    .err()
+                    .map(|failure| failure_entry(&label, case, &failure, &run)),
+            }
+        })
+        .collect();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n\n"))
     }
-    let run = run_case(side, entry, case, make_env).map_err(|err| format!("{label}: {err}"))?;
-    judge(side, case, &run).map_err(|failure| failure_entry(&label, case, &failure, &run))
 }
 
 /// Builds `case`'s scratch tree (named after `entry`), environment and fixture,
