@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Mirrors the required CI checks (see .github/workflows/ci.yml) so a broken
+# push never has to wait for a runner to say so.
+set -euo pipefail
+
+# Git exports its own repository environment into hooks — notably GIT_DIR
+# (plus GIT_WORK_TREE/GIT_INDEX_FILE/GIT_PREFIX). GIT_DIR takes precedence
+# over a process's working directory when git resolves which repository to
+# act on, and Rust runs a test binary's tests as threads in ONE process, so
+# the whole suite would inherit it. Every fixture that shells out to git in a
+# tempdir — even one that correctly pins .current_dir() — would then retarget
+# THIS repository instead, running `git init`, `git config`, `git checkout -b`
+# and `git commit` against the real checkout. That is exactly how a push from
+# a worktree flipped this repo to core.bare=true, hijacked its HEAD onto a
+# fixture branch and rewrote its committer identity (999.37).
+#
+# githooks(5) prescribes exactly this: "If your hook needs to invoke Git
+# commands in a foreign repository or in a different working tree of the same
+# repository, then it should clear these environment variables so they do not
+# interfere with Git operations at the foreign location." A fixture repo in a
+# tempdir is a foreign repository.
+#
+# `git rev-parse --local-env-vars` is git's own authoritative list of the
+# repository-local variables (15 on git 2.55), so this needs no maintenance
+# when git adds one. The extras are not repository-local and so are absent
+# from that list, but still redirect resolution. Unsetting GIT_CONFIG_COUNT
+# (in the list) is sufficient to neutralize any GIT_CONFIG_KEY_n/VALUE_n:
+# those are only read when the count is set.
+#
+# GIT_EXEC_PATH and GIT_TRACE are deliberately preserved: the first only
+# locates git's own helper binaries, the second is a debugging aid. Neither
+# can redirect which repository git acts on.
+# shellcheck disable=SC2046  # word splitting is the point: one arg per name
+unset $(git rev-parse --local-env-vars) \
+      GIT_NAMESPACE GIT_DISCOVERY_ACROSS_FILESYSTEM \
+      GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+
+PUSH_LINES=()
+while read -r line; do
+    [ -n "$line" ] && PUSH_LINES+=("$line")
+done
+
+# ---------------------------------------------------------------------------
+# Branch hygiene policy: non-workspace branches (main, develop, feature/*,
+# fix/*, chore/*, release/*) must never carry personal agent setups, planning
+# state, or local databases. `.planning/` is INCLUDED here (unlike
+# pre-commit's copy of this list): 2a2ce97 deliberately purged it from
+# develop entirely, so nothing under `.planning/**` is ever meant to reach
+# these branches, not even STATE.md/ROADMAP.md/PROJECT.md.
+#
+# Scans the FULL commit range this push introduces (`git log --name-only`
+# over remote_sha..local_sha), not just the net diff between the two
+# endpoints, and not a `git ls-tree` of the whole pushed tree either.
+#
+# Neither of those alternatives is safe:
+#   - A whole-tree `ls-tree` check treats "exists anywhere in this branch's
+#     history" as forbidden, firing on every push once ANY commit ever added
+#     a tracked file under one of these prefixes -- including files
+#     legitimately committed before this policy existed.
+#   - An endpoint diff (remote_sha vs local_sha directly) only sees the NET
+#     change. A commit that adds a forbidden file, followed by a later commit
+#     in the SAME push that removes it, nets to zero difference at the
+#     endpoints -- but the forbidden content is still permanently reachable
+#     in the pushed history via the intermediate commit. Verified directly:
+#     add-then-remove-within-one-push produces an empty endpoint diff while
+#     `git log --diff-filter=A` over the same range still finds the commit
+#     that added it. An endpoint diff also can't see a rename: `--diff-filter=A`
+#     only matches git's own Added classification, and a path renamed INTO a
+#     forbidden prefix is classified Renamed, not Added -- confirmed directly
+#     (`git mv old.txt CLAUDE.md` does not appear under `--diff-filter=A`).
+#     `git log --name-only` has neither problem: it lists every path touched
+#     by every commit in the range, add/modify/delete/rename all included.
+#
+# Fails CLOSED, not open: if `git log` cannot resolve the range (e.g.
+# `remote_sha` is a real object the remote has but this clone has never
+# fetched -- a legitimate, not-hypothetical state), refuse the push rather
+# than silently treating an unreadable range as "nothing forbidden found."
+# The prior version piped stderr to /dev/null and `|| true`-d the exit code,
+# which is exactly the fail-open shape: a `fatal: bad object` from git
+# collapsed to an empty `$forbidden` and the push proceeded (999.11x).
+# ---------------------------------------------------------------------------
+for line in "${PUSH_LINES[@]}"; do
+    read -r local_ref local_sha remote_ref remote_sha <<< "$line"
+    [ -z "${local_ref:-}" ] && continue
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+
+    case "$remote_ref" in
+        refs/heads/develop | refs/heads/main | refs/heads/feature/* | refs/heads/fix/* | refs/heads/chore/* | refs/heads/release/*)
+            range_rc=0
+            case "$remote_sha" in
+                *[!0]*) range_files="$(git log --name-only --format='' "${remote_sha}..${local_sha}" 2>&1)" || range_rc=$? ;;
+                # A brand-new ref (this branch's first-ever push) reports an
+                # all-zero remote_sha -- there is no "old tip" to diff
+                # against. Bounding against `--not --remotes=origin` (commits
+                # reachable from local_sha that are NOT already reachable
+                # from any known origin/* ref) scans exactly the commits this
+                # push actually introduces to the remote, the same as the
+                # `remote_sha..local_sha` branch above does for an existing
+                # ref. Without this, `git log local_sha` alone walks the
+                # WHOLE history back to the repo's first commit -- on this
+                # repo that includes personal-artifact commits from before
+                # this policy existed, so literally every branch's first
+                # push would be refused, independent of what the push
+                # actually introduces.
+                *)      range_files="$(git log --name-only --format='' "${local_sha}" --not --remotes=origin 2>&1)" || range_rc=$? ;;
+            esac
+            if [ "$range_rc" -ne 0 ]; then
+                echo "pre-push: FATAL — could not inspect the commit range for '$remote_ref':" >&2
+                echo "$range_files" | sed 's/^/  /' >&2
+                echo "  Refusing to push rather than silently allowing forbidden content through" >&2
+                echo "  a range this hook could not actually check. If the remote has moved ahead" >&2
+                echo "  of this clone, fetch first." >&2
+                exit 1
+            fi
+            forbidden="$(printf '%s\n' "$range_files" | grep -E '^(\.agents|\.bg-shell|\.claude|\.codex|\.gemini|\.omx|\.opencode|CLAUDE\.md|\.mcp\.json|skills/|skills-lock\.json|\.gsd|\.gsd-worktrees|\.planning|\.devflow|\.worktrees)' | sort -u || true)"
+            if [ -n "$forbidden" ]; then
+                echo "pre-push: REFUSING to push personal/agent artifacts to '$remote_ref':" >&2
+                echo "$forbidden" | head -10 | sed 's/^/  /' >&2
+                echo "  Personal agent configurations, planning files, and local state belong exclusively" >&2
+                echo "  on 'workspace/<handle>' branches. Remove them before pushing to '$remote_ref'." >&2
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Release-signing policy: a tag or a `main` push must carry the maintainer's
+# key, never the agent's.
+#
+# This repository is developed with an AI agent that signs its own commits
+# with its own key. Both keys are configured with the same `user.email`, so a
+# tag signed with the WRONG key renders identically in `git log`, in
+# `git tag -v`'s signer line, and on GitHub — "Verified", maintainer's
+# address, no visible difference. The only field that distinguishes them is
+# the key fingerprint, so that is what this compares. Do not rewrite this to
+# check the signer string; it cannot detect the case this exists to catch.
+#
+# Opt-in by design: unset `devflow.releaseSigningKey` means no enforcement,
+# so a contributor who never cuts a release needs no setup. Once set it is
+# absolute — there is deliberately no override environment variable, because
+# an override is exactly what a mistaken release would reach for. To push a
+# rejected tag, re-sign it with the right key.
+#
+# Runs BEFORE the container check below: this costs milliseconds and the
+# container check costs minutes, so a policy violation should not wait.
+RELEASE_KEY="$(git config --get devflow.releaseSigningKey || true)"
+if [ -n "$RELEASE_KEY" ]; then
+    RELEASE_KEY_EXPANDED="${RELEASE_KEY/#\~/$HOME}"
+    if [ ! -r "$RELEASE_KEY_EXPANDED" ]; then
+        echo "pre-push: devflow.releaseSigningKey points at an unreadable file:" >&2
+        echo "  $RELEASE_KEY" >&2
+        echo "  Fix the path or unset it: git config --local --unset devflow.releaseSigningKey" >&2
+        exit 1
+    fi
+    RELEASE_FPR="$(ssh-keygen -lf "$RELEASE_KEY_EXPANDED" | awk '{print $2}')"
+
+    # git feeds the pre-push hook one line per ref on stdin:
+    #   <local ref> <local sha> <remote ref> <remote sha>
+    # A deletion has an all-zero local sha and is never a signing concern.
+    for line in "${PUSH_LINES[@]}"; do
+        read -r local_ref local_sha remote_ref _remote_sha <<< "$line"
+        [ -z "${local_ref:-}" ] && continue
+        case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+
+        case "$remote_ref" in
+            refs/tags/*)
+                tag_name="${remote_ref#refs/tags/}"
+                verify_out="$(git verify-tag --raw "$tag_name" 2>&1 || true)"
+                # `|| true` is load-bearing under `set -e`: grep exits 1 when
+                # the tag carries no signature at all, which would abort the
+                # hook right here — refusing the push, but SILENTLY, with the
+                # "not signed" diagnostic below never reached. A silent
+                # refusal is the failure mode this repository exists to
+                # eliminate; caught by the unsigned-tag case in
+                # tests/pre_push_signing_policy.rs.
+                got_fpr="$(printf '%s' "$verify_out" | grep -oE 'SHA256:[A-Za-z0-9+/]+' | head -1 || true)"
+                if [ -z "$got_fpr" ]; then
+                    echo "pre-push: REFUSING to push tag '$tag_name' — it is not signed." >&2
+                    echo "  Release tags must be signed with the maintainer key." >&2
+                    echo "  Re-create it:  git -c user.signingkey=$RELEASE_KEY tag -s -f $tag_name -m '...'" >&2
+                    exit 1
+                fi
+                if [ "$got_fpr" != "$RELEASE_FPR" ]; then
+                    echo "pre-push: REFUSING to push tag '$tag_name' — signed with the wrong key." >&2
+                    echo "  signed by: $got_fpr" >&2
+                    echo "  required:  $RELEASE_FPR  ($RELEASE_KEY)" >&2
+                    echo "  Both keys share your user.email, so this tag LOOKS correct — the" >&2
+                    echo "  fingerprint is the only thing that differs. Re-sign it:" >&2
+                    echo "    git -c user.signingkey=$RELEASE_KEY tag -s -f $tag_name -m '...'" >&2
+                    exit 1
+                fi
+                ;;
+            refs/heads/main)
+                echo "pre-push: REFUSING a direct push to 'main'." >&2
+                echo "  main is squash-only via pull request; a direct push would also carry" >&2
+                echo "  whatever key signed its commits rather than the maintainer key." >&2
+                exit 1
+                ;;
+        esac
+    done
+fi
+
+# A workspace branch (Workflow B) must declare every way it differs from
+# develop in .workspace-divergence. core.hooksPath may be shared by every
+# worktree, so the check runs the pushing checkout's own copy, and only in a
+# checkout that carries the manifest; develop-based branches skip it.
+if [ -f .workspace-divergence ]; then
+    ./scripts/check-workspace-divergence.sh origin/develop
+fi
+
+# Drop-in extension point: every file in scripts/hooks/pre-push.d/ runs, in name
+# order, with this hook's arguments, and the first failure fails the hook.
+# develop ships none; a personal workspace branch adds its own checks here as
+# new files instead of editing this hook (CONTRIBUTING.md, Workflow B). A
+# non-executable drop-in is an error, not a skip: a check that silently stops
+# running is the failure these hooks exist to prevent.
+dropin_dir="$(dirname "$0")/pre-push.d"
+if [ -d "$dropin_dir" ]; then
+    for dropin in "$dropin_dir"/*; do
+        [ -e "$dropin" ] || continue
+        if [ ! -f "$dropin" ] || [ ! -x "$dropin" ]; then
+            echo "pre-push: drop-in '$dropin' is not an executable file." >&2
+            exit 1
+        fi
+        if ! "$dropin" "$@"; then
+            echo "pre-push: drop-in '$dropin' failed." >&2
+            exit 1
+        fi
+    done
+fi
+
+# Verify in the pinned devcontainer image, not against the host toolchain.
+#
+# This hook used to run host `cargo` directly. That is how a commit passed
+# every check on this Fedora host and went red on a Debian runner minutes
+# later (999.47) — the hook was mirroring CI's *commands* but not its
+# *environment*, so it could only ever catch a subset of what CI catches.
+#
+# DEVFLOW_SKIP_CONTAINER_CHECK=1 falls back to host checks. That is a
+# deliberate escape hatch for when Docker is unavailable, and it is NOT
+# equivalent: a green host run does not imply CI will be green.
+if [ "${DEVFLOW_SKIP_CONTAINER_CHECK:-0}" = "1" ]; then
+    echo "pre-push: WARNING — container check skipped, running host checks."
+    echo "pre-push: a green result here does NOT imply CI will be green."
+    scripts/check.sh all
+else
+    echo "pre-push: scripts/check-in-container.sh all"
+    scripts/check-in-container.sh all
+fi
