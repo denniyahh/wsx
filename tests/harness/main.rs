@@ -21,10 +21,14 @@
 mod scenario;
 
 mod action;
+mod coverage;
 mod env;
 mod fixture;
+mod hermeticity;
 mod oracle;
 mod outcome;
+mod provenance;
+mod registry;
 mod rust;
 
 /// Declares each scenario module and concatenates the registries they define
