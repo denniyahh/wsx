@@ -35,7 +35,13 @@ type File = (&'static [u8], &'static [u8]);
 fn develop_checkout(fixture: &mut Fixture) -> Result<(), String> {
     fixture.git_ok(
         WORK,
-        ["worktree", "add", "--quiet", ".worktrees/develop", "develop"],
+        [
+            "worktree",
+            "add",
+            "--quiet",
+            ".worktrees/develop",
+            "develop",
+        ],
     )?;
     Ok(())
 }
@@ -82,7 +88,12 @@ fn push(config: RepoConfig, steps: FixtureFn, checkout: &str, branch: &str) -> C
 
 /// `push` in the devflow layout, after `branches_from_develop`.
 fn push_from(checkout: &str, branch: &str) -> Case {
-    push(RepoConfig::devflow(), branches_from_develop, checkout, branch)
+    push(
+        RepoConfig::devflow(),
+        branches_from_develop,
+        checkout,
+        branch,
+    )
 }
 
 /// The guard's verdict with the repository left as it was.
@@ -171,7 +182,12 @@ fn names_branch(fixture: &mut Fixture, personal: &'static [u8]) -> Result<(), St
 /// bytes, so wsx refuses it (exit 1) with the repository untouched.
 fn quoted_name_case(steps: FixtureFn, oracle_exit: i32) -> Case {
     fixed(
-        push(RepoConfig::devflow(), steps, DEVELOP_CHECKOUT, "feature/names"),
+        push(
+            RepoConfig::devflow(),
+            steps,
+            DEVELOP_CHECKOUT,
+            "feature/names",
+        ),
         1,
         oracle_exit,
         QUOTED_NAME_DEFECT,
@@ -217,9 +233,179 @@ fn quoted_non_utf8_name() -> Scenario {
     .harn06(CaseKind::PathNames)
 }
 
+// ------------------------------------- range, ref-pattern, merge and prefix
+
+/// The oracle's defect behind `unlisted_branch_pattern`.
+const UNLISTED_PATTERN_DEFECT: &str = "the hook checks only refs matching its listed branch \
+     patterns (develop, main, feature/*, fix/*, chore/*, release/*), so a push to \
+     refs/heads/wip/y is not checked";
+
+/// The oracle's defect behind `new_branch_without_own_commits`.
+const EMPTY_RANGE_DEFECT: &str = "the hook checks only the commits a new ref adds beyond \
+     --remotes=origin and never the pushed tip's tree, so a branch with no commit of its own \
+     gives an empty range";
+
+/// The oracle's defect behind `merge_resolution_adds_personal_file`.
+const MERGE_RESOLUTION_DEFECT: &str = "git log --name-only lists no file for a merge commit, \
+     so a personal file added in a merge's conflict resolution is never seen, and the pushed \
+     tip's tree is not checked";
+
+/// The oracle's defect behind `name_prefix_is_not_personal`.
+const NAME_PREFIX_DEFECT: &str = "the hook's personal-path regex ^(...|\\.planning|...) has \
+     no path boundary, so it refuses .planningX/z.md as if it were under .planning";
+
+/// Fixture steps: the develop checkout and `wip/y`, made from `develop`, whose
+/// one commit adds `.planning/y.md`.
+fn unlisted_branch(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    branch_from_develop(fixture, "wip/y", &[(b".planning/y.md", b"y\n")])
+}
+
+/// GUARD-01: every updated ref other than the workspace branch is checked, so
+/// wsx refuses a push of `.planning/y.md` to `refs/heads/wip/y` (exit 1).
+fn unlisted_branch_pattern() -> Scenario {
+    with_controls(Scenario::new(
+        "unlisted_branch_pattern",
+        fixed(
+            push(
+                RepoConfig::devflow(),
+                unlisted_branch,
+                DEVELOP_CHECKOUT,
+                "wip/y",
+            ),
+            1,
+            0,
+            UNLISTED_PATTERN_DEFECT,
+        ),
+    ))
+}
+
+/// Fixture steps: the develop checkout and `feature/noown`, a new branch at
+/// the `workspace/dev` tip: no commit of its own, and a tree carrying
+/// `.planning`.
+fn branch_at_workspace_tip(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    fixture.git_ok(
+        DEVELOP_CHECKOUT,
+        ["branch", "feature/noown", "refs/heads/workspace/dev"],
+    )?;
+    Ok(())
+}
+
+/// GUARD-01 (a), the pushed tip's tree carries no personal path: wsx refuses
+/// a new `feature/noown` at the workspace tip (exit 1), although the branch
+/// has no commit of its own.
+fn new_branch_without_own_commits() -> Scenario {
+    with_controls(Scenario::new(
+        "new_branch_without_own_commits",
+        fixed(
+            push(
+                RepoConfig::devflow(),
+                branch_at_workspace_tip,
+                DEVELOP_CHECKOUT,
+                "feature/noown",
+            ),
+            1,
+            0,
+            EMPTY_RANGE_DEFECT,
+        ),
+    ))
+}
+
+/// Fixture steps: `feature/merge` from `develop` commits `feat: change a`
+/// (`src/a.txt` = `mine`); `origin/develop` gains a commit setting
+/// `src/a.txt` to `theirs` and is fetched; merging `origin/develop` into
+/// `feature/merge` conflicts on `src/a.txt`, which is resolved to `merged`,
+/// and the merge commit also adds `.planning/STATE.md`. The checkout is left
+/// on `develop`.
+fn merge_adding_personal_file(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    fixture.git_ok(
+        DEVELOP_CHECKOUT,
+        ["checkout", "--quiet", "-b", "feature/merge"],
+    )?;
+    fixture.write(DEVELOP_CHECKOUT, b"src/a.txt", b"mine\n")?;
+    fixture.commit(DEVELOP_CHECKOUT, b"feat: change a\n")?;
+    fixture.advance_remote("origin", "develop", |fixture, clone| {
+        fixture.write(clone, b"src/a.txt", b"theirs\n")?;
+        fixture.commit(clone, b"feat: change a upstream\n")
+    })?;
+    fixture.git_ok(DEVELOP_CHECKOUT, ["fetch", "--quiet", "origin"])?;
+    let merge = fixture.git(
+        DEVELOP_CHECKOUT,
+        ["merge", "--quiet", "--no-commit", "origin/develop"],
+    )?;
+    if merge.status.code() != Some(1) {
+        return Err(format!(
+            "merging origin/develop into feature/merge exited {:?}, not 1 with a conflict",
+            merge.status.code()
+        ));
+    }
+    fixture.write(DEVELOP_CHECKOUT, b"src/a.txt", b"merged\n")?;
+    fixture.write(DEVELOP_CHECKOUT, b".planning/STATE.md", b"# State\n")?;
+    fixture.git_ok(DEVELOP_CHECKOUT, ["add", "--all"])?;
+    fixture.git_tick(DEVELOP_CHECKOUT, ["commit", "--quiet", "--no-edit"])?;
+    fixture.git_ok(DEVELOP_CHECKOUT, ["checkout", "--quiet", "develop"])?;
+    Ok(())
+}
+
+/// HARN-06 merges, GUARD-01 (a) and (b): merge commits are diffed against
+/// their first parent and the pushed tip's tree is checked, so wsx refuses a
+/// new `feature/merge` whose merge commit's conflict resolution adds
+/// `.planning/STATE.md` (exit 1).
+fn merge_resolution_adds_personal_file() -> Scenario {
+    with_controls(Scenario::new(
+        "merge_resolution_adds_personal_file",
+        fixed(
+            push(
+                RepoConfig::devflow(),
+                merge_adding_personal_file,
+                DEVELOP_CHECKOUT,
+                "feature/merge",
+            ),
+            1,
+            0,
+            MERGE_RESOLUTION_DEFECT,
+        ),
+    ))
+    .harn06(CaseKind::Merges)
+}
+
+/// Fixture steps: the develop checkout and `feature/prefix`, made from
+/// `develop`, whose one commit adds `.planningX/z.md`.
+fn prefix_branch(fixture: &mut Fixture) -> Result<(), String> {
+    develop_checkout(fixture)?;
+    branch_from_develop(fixture, "feature/prefix", &[(b".planningX/z.md", b"z\n")])
+}
+
+/// CONF-01: a personal path matches itself and what is under it, never a mere
+/// name prefix, so wsx passes a new `feature/prefix` adding `.planningX/z.md`
+/// (exit 0). Its adjacency: the known-positive control adds `.planning/x.md`,
+/// one character away, and both devflow and wsx refuse that.
+fn name_prefix_is_not_personal() -> Scenario {
+    with_controls(Scenario::new(
+        "name_prefix_is_not_personal",
+        fixed(
+            push(
+                RepoConfig::devflow(),
+                prefix_branch,
+                DEVELOP_CHECKOUT,
+                "feature/prefix",
+            ),
+            0,
+            1,
+            NAME_PREFIX_DEFECT,
+        ),
+    ))
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 6";
     quoted_non_ascii_name: oracle, rust = "Rust side not enabled until phase 6";
     quoted_newline_name: oracle, rust = "Rust side not enabled until phase 6";
     quoted_non_utf8_name: oracle, rust = "Rust side not enabled until phase 6";
+    unlisted_branch_pattern: oracle, rust = "Rust side not enabled until phase 6";
+    new_branch_without_own_commits: oracle, rust = "Rust side not enabled until phase 6";
+    merge_resolution_adds_personal_file: oracle, rust = "Rust side not enabled until phase 6";
+    name_prefix_is_not_personal: oracle, rust = "Rust side not enabled until phase 6";
 }
