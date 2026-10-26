@@ -454,3 +454,49 @@ fn patched_scripts_run_with_oracle_dir() {
         failures.join("\n\n")
     );
 }
+
+/// Each recorded value `readme` lacks: `DEVFLOW_COMMIT`, then every blob in
+/// `VENDORED_BLOBS` and `PATCHED_BLOBS`, in that order.
+fn readme_missing_records(readme: &str) -> Vec<String> {
+    [DEVFLOW_COMMIT]
+        .into_iter()
+        .chain(vendored_pairs().map(|(_, blob)| blob))
+        .chain(PATCHED_BLOBS.map(|(_, blob)| blob))
+        .filter(|record| !readme.contains(record))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The provenance README beside the vendored files.
+fn oracle_readme() -> String {
+    let path = Path::new(ORACLE_DIR).join("README.md");
+    fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+/// `tests/oracle/README.md` records the pinned devflow commit and every blob
+/// the provenance tests check, so the README and the constants cannot drift.
+///
+/// Counterpart: `readme_check_reports_a_missing_blob`, which shows the check
+/// reports a README missing one blob.
+#[test]
+fn readme_records_the_pinned_commit_and_blobs() {
+    let missing = readme_missing_records(&oracle_readme());
+    assert!(
+        missing.is_empty(),
+        "tests/oracle/README.md lacks these recorded values: {missing:?}"
+    );
+}
+
+/// The README text with the pre-push blob replaced, in memory only, is
+/// reported as missing exactly that blob.
+#[test]
+fn readme_check_reports_a_missing_blob() {
+    let pre_push = "67ef847ecf98dfaa1b124be5b10179b7a0134dc9";
+    let readme = oracle_readme();
+    assert!(
+        readme.contains(pre_push),
+        "the README must carry the pre-push blob for this control to remove it"
+    );
+    let edited = readme.replace(pre_push, "<blob removed>");
+    assert_eq!(readme_missing_records(&edited), [pre_push]);
+}
