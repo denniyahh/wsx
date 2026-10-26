@@ -48,7 +48,7 @@ fn with_signatures(mut case: Case, signatures: &[Signature]) -> Case {
         .expect("the registered case states an outcome");
     for Signature { message, signed } in signatures {
         let tips: Vec<&mut CommitExpect> = match &mut expected.refs {
-            RefsExpect::Exactly(list) => list
+            RefsExpect::Exactly { refs, .. } => refs
                 .iter_mut()
                 .filter_map(|entry| match &mut entry.tip {
                     Tip::Commit(commit) => Some(commit),

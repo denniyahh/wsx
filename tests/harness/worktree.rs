@@ -10,11 +10,14 @@
 
 use crate::action::Action;
 use crate::fixture::{ACTION_TIME, Fixture, Ident, RepoConfig, T0, TICK, WORK};
-use crate::outcome::{CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip};
+use crate::outcome::{
+    CheckoutExpect, CommitExpect, FileExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip,
+};
 use crate::scenario::{Case, CaseKind, Class, FixtureFn, OracleSide, Role, Scenario};
 use crate::sync::{
-    B_FILE, File, NO_GSD_FILES, SEED_FILES, WORKSPACE_FILES, advance_develop, advance_upstream,
-    date, fixture_commit, no_change, sync_merge, synced, synced_files, tree,
+    B_FILE, File, NO_GSD_FILES, SEED_FILES, WORKSPACE_FILES, WORKSPACE_REF, advance_develop,
+    advance_upstream, date, fixture_commit, no_change, sync_merge, synced, synced_files, tree,
+    work_on_workspace,
 };
 
 /// The new phase worktree, as wsx names it: after the branch (CONF-06).
@@ -82,7 +85,7 @@ fn self_test() -> Scenario {
     };
     let outcome = |new_checkout: &str| Outcome {
         exit: 0,
-        refs: RefsExpect::Exactly(vec![
+        refs: RefsExpect::exactly(vec![
             tip("refs/heads/develop", Tip::Commit(feat_b.clone())),
             tip("refs/heads/feature/phase-1", Tip::Commit(merge.clone())),
             tip("refs/heads/workspace/dev", Tip::Commit(merge.clone())),
@@ -91,12 +94,16 @@ fn self_test() -> Scenario {
             tip("refs/remotes/origin/workspace/dev", Tip::Unchanged),
         ]),
         new_commits: vec![feat_b.clone(), merge.clone()],
-        files: FilesExpect::Exactly(
-            files_in(WORK)
+        files: FilesExpect::Exactly {
+            files: files_in(WORK)
                 .into_iter()
                 .chain(files_in(new_checkout))
                 .collect(),
-        ),
+            checkouts: vec![
+                CheckoutExpect::on(WORK, WORKSPACE_REF),
+                CheckoutExpect::on(new_checkout, PHASE_REF),
+            ],
+        },
     };
     Scenario::new(
         "self_test",
@@ -153,16 +160,23 @@ fn plain_files(checkout: &str, files: &[File]) -> Vec<FileExpect> {
         .collect()
 }
 
-/// `outcome` plus `PHASE_REF` at `tip` and `files` in `checkout`. `outcome`
-/// must state its refs and files exactly.
+/// `outcome` plus `PHASE_REF` at `tip`, and `checkout` on it holding `files`.
+/// `outcome` must state its refs and files exactly.
 fn with_phase_branch(mut outcome: Outcome, tip: Tip, checkout: &str, files: &[File]) -> Outcome {
     match (&mut outcome.refs, &mut outcome.files) {
-        (RefsExpect::Exactly(refs), FilesExpect::Exactly(list)) => {
+        (
+            RefsExpect::Exactly { refs, .. },
+            FilesExpect::Exactly {
+                files: list,
+                checkouts,
+            },
+        ) => {
             refs.push(RefExpect {
                 name: PHASE_REF.to_owned(),
                 tip,
             });
             list.extend(plain_files(checkout, files));
+            checkouts.push(CheckoutExpect::on(checkout, PHASE_REF));
         }
         _ => panic!("with_phase_branch extends an outcome with exact refs and files only"),
     }
@@ -369,7 +383,7 @@ fn fork_layout() -> Scenario {
         with_phase_branch(
             Outcome {
                 exit: 0,
-                refs: RefsExpect::Exactly(
+                refs: RefsExpect::exactly(
                     unchanged
                         .iter()
                         .map(|name| RefExpect {
@@ -379,7 +393,10 @@ fn fork_layout() -> Scenario {
                         .collect(),
                 ),
                 new_commits: Vec::new(),
-                files: FilesExpect::Exactly(plain_files(WORK, &workspace_files)),
+                files: FilesExpect::Exactly {
+                    files: plain_files(WORK, &workspace_files),
+                    checkouts: work_on_workspace(),
+                },
             },
             Tip::Commit(workspace_tip.clone()),
             checkout,
@@ -495,7 +512,7 @@ fn rm_after_squash_merge() -> Scenario {
     ];
     let removed = Outcome {
         exit: 0,
-        refs: RefsExpect::Exactly(
+        refs: RefsExpect::exactly(
             kept.iter()
                 .map(|name| RefExpect {
                     name: (*name).to_owned(),
@@ -504,7 +521,10 @@ fn rm_after_squash_merge() -> Scenario {
                 .collect(),
         ),
         new_commits: Vec::new(),
-        files: FilesExpect::Exactly(plain_files(WORK, &synced_files(&WORKSPACE_FILES))),
+        files: FilesExpect::Exactly {
+            files: plain_files(WORK, &synced_files(&WORKSPACE_FILES)),
+            checkouts: work_on_workspace(),
+        },
     };
     Scenario::new(
         "rm_after_squash_merge",

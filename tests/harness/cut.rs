@@ -10,7 +10,9 @@
 
 use crate::action::Action;
 use crate::fixture::{Fixture, Ident, RepoConfig, T0, TICK, WORK};
-use crate::outcome::{CommitExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip};
+use crate::outcome::{
+    CommitExpect, FilesExpect, Outcome, RefExpect, RefsExpect, Tip, config_entry,
+};
 use crate::scenario::{Case, CaseKind, Class, FixtureFn, OracleSide, Role, Scenario};
 use crate::sync::{B_FILE, File, SEED_FILES, date, tree};
 
@@ -62,7 +64,10 @@ fn phase_branch(fixture: &mut Fixture) -> Result<(), String> {
 /// in the source worktree only while it replays, and returns to
 /// `feature/phase-1` before it exits, so the transient checkout leaves no
 /// observable trace in refs, commits, files, HEAD, index or operations in
-/// progress.
+/// progress. Its `git checkout -b feature/phase-1-pr origin/develop` also
+/// sets the new branch's upstream to `origin/develop` in the local config
+/// (`tracking`), and the expectation states that too, by the same
+/// observation: no requirement says whether wsx sets an upstream.
 fn self_test() -> Scenario {
     let harness = Ident::harness();
     let replayed = CommitExpect {
@@ -93,18 +98,21 @@ fn self_test() -> Scenario {
         )
         .expect(Outcome {
             exit: 0,
-            refs: RefsExpect::Exactly(vec![
-                unchanged("refs/heads/develop"),
-                unchanged("refs/heads/feature/phase-1"),
-                tip(
-                    "refs/heads/feature/phase-1-pr",
-                    Tip::Commit(replayed.clone()),
-                ),
-                unchanged("refs/heads/workspace/dev"),
-                unchanged("refs/remotes/origin/HEAD"),
-                unchanged("refs/remotes/origin/develop"),
-                unchanged("refs/remotes/origin/workspace/dev"),
-            ]),
+            refs: RefsExpect::Exactly {
+                refs: vec![
+                    unchanged("refs/heads/develop"),
+                    unchanged("refs/heads/feature/phase-1"),
+                    tip(
+                        "refs/heads/feature/phase-1-pr",
+                        Tip::Commit(replayed.clone()),
+                    ),
+                    unchanged("refs/heads/workspace/dev"),
+                    unchanged("refs/remotes/origin/HEAD"),
+                    unchanged("refs/remotes/origin/develop"),
+                    unchanged("refs/remotes/origin/workspace/dev"),
+                ],
+                config_added: tracking("refs/heads/feature/phase-1-pr", "origin"),
+            },
             new_commits: vec![replayed],
             files: FilesExpect::Unchanged,
         }),
@@ -122,6 +130,20 @@ const PRESET_REFS: [&str; 5] = [
     "refs/remotes/origin/develop",
     "refs/remotes/origin/workspace/dev",
 ];
+
+/// The local config entries that make the branch `pr_ref` (a full ref name)
+/// track `remote`'s `develop`: what the oracle's
+/// `git checkout -b <pr branch> <remote>/develop` writes, since git sets an
+/// upstream for a branch started from a remote-tracking ref.
+fn tracking(pr_ref: &str, remote: &str) -> Vec<Vec<u8>> {
+    let branch = pr_ref
+        .strip_prefix("refs/heads/")
+        .expect("a PR branch is named by its full ref name");
+    vec![
+        config_entry(&format!("branch.{branch}.remote"), remote),
+        config_entry(&format!("branch.{branch}.merge"), "refs/heads/develop"),
+    ]
+}
 
 /// `src/c.txt`, a file a second code commit adds.
 const C_FILE: File = (b"src/c.txt", b"c\n");
@@ -158,8 +180,9 @@ fn seed_plus(extra: &[File]) -> Vec<File> {
 }
 
 /// The outcome of a cut that writes `pr_branch` at `pr_tip`: every preset
-/// ref and every one of `branches` unchanged, `new_commits` new, and the
-/// checkouts' files unchanged (PRCUT-06).
+/// ref and every one of `branches` unchanged, `new_commits` new, `pr_branch`
+/// tracking `origin/develop` (`tracking`), and the checkouts unchanged
+/// (PRCUT-06).
 fn cut_outcome(
     exit: i32,
     branches: &[&str],
@@ -181,7 +204,10 @@ fn cut_outcome(
     });
     Outcome {
         exit,
-        refs: RefsExpect::Exactly(refs),
+        refs: RefsExpect::Exactly {
+            refs,
+            config_added: tracking(pr_branch, "origin"),
+        },
         new_commits,
         files: FilesExpect::Unchanged,
     }
@@ -1082,7 +1108,10 @@ fn fork_layout() -> Scenario {
         "fork_layout",
         fork_phase_cut(fork_phase_with_b).expect(Outcome {
             exit: 0,
-            refs: RefsExpect::Exactly(refs),
+            refs: RefsExpect::Exactly {
+                refs,
+                config_added: tracking("refs/heads/feature/phase-1-pr", "upstream"),
+            },
             new_commits: vec![replayed],
             files: FilesExpect::Unchanged,
         }),

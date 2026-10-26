@@ -1172,7 +1172,7 @@ fn fixed_record_reordered() -> Scenario {
         .expected
         .clone()
         .expect("self_test states an outcome");
-    let RefsExpect::Exactly(refs) = &mut record.refs else {
+    let RefsExpect::Exactly { refs, .. } = &mut record.refs else {
         panic!("self_test lists its refs");
     };
     refs.reverse();
@@ -1207,7 +1207,7 @@ fn listed_refs_variant(name: &'static str, expected_exit: i32, record_exit: i32)
     });
     let expected = Outcome {
         exit: expected_exit,
-        refs: RefsExpect::Exactly(listed.to_vec()),
+        refs: RefsExpect::exactly(listed.to_vec()),
         ..registered.clone()
     };
     let record = Outcome {
