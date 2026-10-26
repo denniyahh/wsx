@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use crate::env::{ScenarioDirs, hermetic_env, inherited_env};
 use crate::fixture::{ACTION_TIME, Fixture, Ident, RepoConfig, WORK, dated};
 use crate::oracle::{self, OracleCopy};
-use crate::scenario::{CaseRun, Entry, Side, oracle_target, run_case};
+use crate::scenario::{CaseFailure, CaseRun, Entry, Side, judge, oracle_target, run_case};
 
 /// Mode bits that make a file executable for someone.
 const EXECUTABLE_BITS: u32 = 0o111;
@@ -2287,17 +2287,40 @@ fn refs_exactly_reports_a_push_to_an_untracked_remote_ref() {
     assert_eq!(fields, [Field::RemoteRefs("remotes/origin.git".to_owned())]);
 }
 
-/// `cut::self_test` states the upstream the oracle's cut writes for the PR
-/// branch. The same expectation without those entries fails on the config
-/// alone, so the stated entries are compared, not ignored.
+/// `cut::self_test` expects the PR branch cut with no upstream (PRCUT-06).
+/// The oracle's cut writes `branch.feature/phase-1-pr.remote` and `.merge`,
+/// so its run, judged as the Rust side, stands for a wsx that writes them:
+/// it fails on the config alone. The same expectation with exactly those two
+/// entries listed passes, so the entries, and nothing else, make it fail.
 #[test]
-fn refs_exactly_compares_the_config_entries_it_lists() {
-    let (mut expected, run) = oracle_run("cut", "self_test");
-    assert_eq!(mismatched_fields(&expected, &run), Vec::<Field>::new());
+fn refs_exactly_fails_a_cut_that_writes_an_upstream() {
+    let entry = registered("cut", "self_test");
+    let case = (entry.build)().subject;
+    let run = run_case(Side::Oracle, &entry, &case, &|dirs| {
+        hermetic_env(&inherited_env(), dirs)
+    })
+    .expect("the oracle runs cut::self_test");
+    match judge(Side::Rust, &case, &run) {
+        Err(CaseFailure::Mismatches(mismatches)) => assert_eq!(
+            mismatches
+                .iter()
+                .map(|mismatch| mismatch.field.clone())
+                .collect::<Vec<_>>(),
+            [Field::Config]
+        ),
+        other => panic!("a cut that writes an upstream must fail on its config: {other:?}"),
+    }
+    let mut expected = case
+        .expected
+        .clone()
+        .expect("cut::self_test states an outcome");
     let RefsExpect::Exactly { config_added, .. } = &mut expected.refs else {
         panic!("cut::self_test lists its refs");
     };
-    assert!(!config_added.is_empty(), "the cut adds config entries");
-    config_added.clear();
-    assert_eq!(mismatched_fields(&expected, &run), [Field::Config]);
+    assert!(config_added.is_empty(), "the cut expects no upstream");
+    config_added.extend([
+        config_entry("branch.feature/phase-1-pr.remote", "origin"),
+        config_entry("branch.feature/phase-1-pr.merge", "refs/heads/develop"),
+    ]);
+    assert_eq!(mismatched_fields(&expected, &run), Vec::<Field>::new());
 }
