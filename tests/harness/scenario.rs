@@ -1135,6 +1135,8 @@ fn empty_snapshot() -> Snapshot {
         new_commits: Vec::new(),
         files: Default::default(),
         checkouts: Default::default(),
+        remote_refs: Default::default(),
+        config: Vec::new(),
     }
 }
 
