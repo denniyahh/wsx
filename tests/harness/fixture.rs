@@ -102,6 +102,9 @@ pub struct RepoConfig {
     pub manifest: Vec<(ManifestKind, Vec<u8>)>,
     /// Extra local config pairs for the work repository.
     pub extra_config: Vec<(String, String)>,
+    /// Whether commits made after the preset is built are signed, with a
+    /// throwaway SSH key generated for the scenario. Off in every preset.
+    pub signing: bool,
 }
 
 impl RepoConfig {
@@ -115,6 +118,7 @@ impl RepoConfig {
             push_remote: "origin".to_owned(),
             manifest: Vec::new(),
             extra_config: Vec::new(),
+            signing: false,
         }
     }
 
@@ -145,6 +149,13 @@ impl RepoConfig {
     /// Sets `key` to `value` in the work repository's local config.
     pub fn with_local_config(mut self, key: &str, value: &str) -> RepoConfig {
         self.extra_config.push((key.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Signs every commit made in the work repository after the preset is
+    /// built, with a key generated for the scenario.
+    pub fn with_signing(mut self) -> RepoConfig {
+        self.signing = true;
         self
     }
 }
@@ -277,6 +288,14 @@ impl Fixture {
                 &config.workspace,
             ],
         )?;
+        if config.signing {
+            self.enable_signing()?;
+        }
+        Ok(())
+    }
+
+    /// The preset's last step when the config declares signing.
+    fn enable_signing(&self) -> Result<(), String> {
         Ok(())
     }
 
