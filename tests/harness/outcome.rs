@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env::{ScenarioDirs, hermetic_env, inherited_env};
 use crate::fixture::{Fixture, Ident, RepoConfig, WORK};
+use crate::scenario::{CaseRun, Entry, Side, run_case};
 
 /// Mode bits that make a file executable for someone.
 const EXECUTABLE_BITS: u32 = 0o111;
@@ -1011,5 +1012,451 @@ fn symbolic_refs_are_recorded_by_target() {
         tip_mismatches,
         vec![Field::RefTip(develop.to_owned())],
         "only the fetched ref moved; the symbolic ref to it did not"
+    );
+}
+
+// ----------------------------------------- every expected field is compared
+
+/// The entry of the registered scenario `module::name`.
+fn registered(module: &str, name: &str) -> Entry {
+    crate::all_scenarios()
+        .into_iter()
+        .find(|entry| entry.module == module && entry.name == name)
+        .unwrap_or_else(|| panic!("{module}::{name} is registered"))
+}
+
+/// Runs the subject of the registered scenario `module::name` on the oracle
+/// side, and returns its explicit expected outcome with the run.
+fn oracle_run(module: &str, name: &str) -> (Outcome, CaseRun) {
+    let entry = registered(module, name);
+    let subject = (entry.build)().subject;
+    let expected = subject
+        .expected
+        .clone()
+        .unwrap_or_else(|| panic!("{module}::{name} states an expected outcome"));
+    let run = run_case(Side::Oracle, &entry, &subject, &|dirs| {
+        hermetic_env(&inherited_env(), dirs)
+    })
+    .unwrap_or_else(|err| panic!("the oracle runs {module}::{name}: {err}"));
+    (expected, run)
+}
+
+/// The fields `expected` differs from `run` in, in report order.
+fn mismatched_fields(expected: &Outcome, run: &CaseRun) -> Vec<Field> {
+    compare(expected, &run.before, &run.after, run.run.exit)
+        .into_iter()
+        .map(|mismatch| mismatch.field)
+        .collect()
+}
+
+/// An expectation's listed refs.
+fn listed_refs(outcome: &mut Outcome) -> &mut Vec<RefExpect> {
+    match &mut outcome.refs {
+        RefsExpect::Exactly(list) => list,
+        RefsExpect::Unchanged => panic!("the expectation lists its refs"),
+    }
+}
+
+/// An expectation's listed files.
+fn listed_files(outcome: &mut Outcome) -> &mut Vec<FileExpect> {
+    match &mut outcome.files {
+        FilesExpect::Exactly(list) => list,
+        FilesExpect::Unchanged => panic!("the expectation lists its files"),
+    }
+}
+
+/// The tip expectation of the listed ref `name`.
+fn listed_tip<'a>(outcome: &'a mut Outcome, name: &str) -> &'a mut Tip {
+    let entry = listed_refs(outcome)
+        .iter_mut()
+        .find(|entry| entry.name == name)
+        .unwrap_or_else(|| panic!("the expectation lists {name}"));
+    &mut entry.tip
+}
+
+/// `sync::self_test`'s second new commit: the two-parent sync merge.
+fn sync_merge(outcome: &mut Outcome) -> &mut CommitExpect {
+    let merge = &mut outcome.new_commits[1];
+    assert_eq!(merge.parents.len(), 2, "new commit 2 is the sync merge");
+    merge
+}
+
+/// Changes exactly one byte, the first, by flipping its lowest bit.
+fn flip_first_byte(bytes: &mut [u8]) {
+    bytes[0] ^= 1;
+}
+
+/// Changes exactly one byte of an ASCII string the same way.
+fn flip_first_char(text: &mut String) {
+    let mut bytes = std::mem::take(text).into_bytes();
+    flip_first_byte(&mut bytes);
+    *text = String::from_utf8(bytes).expect("flipping the low bit of an ASCII byte keeps it ASCII");
+}
+
+const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
+const ORIGIN_WORKSPACE: &str = "refs/remotes/origin/workspace/dev";
+const LOCAL_DEVELOP: &str = "refs/heads/develop";
+
+/// Which reported field a mutation must produce: every mismatch reported
+/// must satisfy it, and there must be at least one.
+type FieldTest = Box<dyn Fn(&Field) -> bool>;
+
+fn is(field: Field) -> FieldTest {
+    Box::new(move |got| *got == field)
+}
+
+/// The sync merge's `part`, reported as new commit 2.
+fn merge_part(part: CommitPart) -> FieldTest {
+    is(Field::Commit {
+        which: "new commit 2".to_owned(),
+        part,
+    })
+}
+
+/// A mutation's name, the single change it makes, and the field the
+/// comparison must report.
+type Mutation = (&'static str, fn(&mut Outcome), FieldTest);
+
+/// One row per field of the HARN-03 expected outcome.
+fn mutations() -> Vec<Mutation> {
+    vec![
+        ("exit code", |o| o.exit += 1, is(Field::Exit)),
+        (
+            "ref set: one extra ref",
+            |o| {
+                listed_refs(o).push(RefExpect {
+                    name: "refs/heads/extra".to_owned(),
+                    tip: Tip::Unchanged,
+                });
+            },
+            is(Field::RefSet),
+        ),
+        (
+            "ref set: one missing ref",
+            |o| listed_refs(o).retain(|entry| entry.name != ORIGIN_WORKSPACE),
+            is(Field::RefSet),
+        ),
+        (
+            "ref tip: an unchanged symbolic ref expected at a commit",
+            |o| {
+                let merge = sync_merge(o).clone();
+                *listed_tip(o, ORIGIN_HEAD) = Tip::Commit(merge);
+            },
+            is(Field::RefTip(ORIGIN_HEAD.to_owned())),
+        ),
+        (
+            "ref tip: a moved ref expected unchanged",
+            |o| *listed_tip(o, LOCAL_DEVELOP) = Tip::Unchanged,
+            is(Field::RefTip(LOCAL_DEVELOP.to_owned())),
+        ),
+        (
+            "ref tip: an unchanged ref expected at another commit",
+            |o| {
+                let merge = sync_merge(o).clone();
+                *listed_tip(o, ORIGIN_WORKSPACE) = Tip::Commit(merge);
+            },
+            Box::new(|got| matches!(got, Field::Commit { which, .. } if which == ORIGIN_WORKSPACE)),
+        ),
+        (
+            "new-commit count: one fewer",
+            |o| {
+                o.new_commits.pop();
+            },
+            is(Field::NewCommitCount),
+        ),
+        (
+            "new-commit count: one more",
+            |o| {
+                let extra = sync_merge(o).clone();
+                o.new_commits.push(extra);
+            },
+            is(Field::NewCommitCount),
+        ),
+        (
+            "new-commit order: the two swapped",
+            |o| o.new_commits.swap(0, 1),
+            Box::new(|got| {
+                matches!(got, Field::Commit { which, .. }
+                    if which == "new commit 1" || which == "new commit 2")
+            }),
+        ),
+        (
+            "commit message: one byte",
+            |o| flip_first_byte(&mut sync_merge(o).message),
+            merge_part(CommitPart::Message),
+        ),
+        (
+            "commit author name: one byte",
+            |o| flip_first_char(&mut sync_merge(o).author.name),
+            merge_part(CommitPart::Author),
+        ),
+        (
+            "commit author email: one byte",
+            |o| flip_first_char(&mut sync_merge(o).author.email),
+            merge_part(CommitPart::Author),
+        ),
+        (
+            "commit author date: one byte",
+            |o| flip_first_char(&mut sync_merge(o).author_date),
+            merge_part(CommitPart::AuthorDate),
+        ),
+        (
+            "commit committer name: one byte",
+            |o| flip_first_char(&mut sync_merge(o).committer_name),
+            merge_part(CommitPart::CommitterName),
+        ),
+        (
+            "commit committer email: one byte",
+            |o| flip_first_char(&mut sync_merge(o).committer_email),
+            merge_part(CommitPart::CommitterEmail),
+        ),
+        (
+            "commit parents: the two swapped",
+            |o| sync_merge(o).parents.swap(0, 1),
+            merge_part(CommitPart::Parents),
+        ),
+        (
+            "commit tree path: one byte",
+            |o| flip_first_byte(&mut sync_merge(o).tree[0].path),
+            merge_part(CommitPart::Tree),
+        ),
+        (
+            "commit tree mode",
+            |o| sync_merge(o).tree[0].mode = "100755".to_owned(),
+            merge_part(CommitPart::Tree),
+        ),
+        (
+            "commit tree content: one byte",
+            |o| flip_first_byte(&mut sync_merge(o).tree[0].content),
+            merge_part(CommitPart::Tree),
+        ),
+        (
+            "commit signature",
+            |o| {
+                let merge = sync_merge(o);
+                merge.signed = !merge.signed;
+            },
+            merge_part(CommitPart::Signature),
+        ),
+        (
+            "file path: one byte",
+            |o| flip_first_byte(&mut listed_files(o)[0].path),
+            is(Field::Files),
+        ),
+        (
+            "file content: one byte",
+            |o| flip_first_byte(&mut listed_files(o)[0].content),
+            is(Field::Files),
+        ),
+        (
+            "file executable bit",
+            |o| {
+                let file = &mut listed_files(o)[0];
+                file.executable = !file.executable;
+            },
+            is(Field::Files),
+        ),
+        (
+            "files: one extra",
+            |o| listed_files(o).push(FileExpect::plain(WORK, b"extra.txt", b"extra\n")),
+            is(Field::Files),
+        ),
+        (
+            "files: one missing",
+            |o| {
+                listed_files(o).remove(0);
+            },
+            is(Field::Files),
+        ),
+    ]
+}
+
+/// The negative direction of `changing_any_expected_field_fails`: the real
+/// run of `sync::self_test` meets its unmutated expectation.
+#[test]
+fn unchanged_expectation_has_no_mismatch() {
+    let (expected, run) = oracle_run("sync", "self_test");
+    assert_eq!(mismatched_fields(&expected, &run), Vec::<Field>::new());
+}
+
+/// Each single-field change to `sync::self_test`'s expectation, compared with
+/// one real oracle run, is reported naming that field and nothing else.
+#[test]
+fn changing_any_expected_field_fails() {
+    let (expected, run) = oracle_run("sync", "self_test");
+    assert_eq!(
+        mismatched_fields(&expected, &run),
+        Vec::<Field>::new(),
+        "the unmutated expectation is clean, so each mismatch below comes from its mutation"
+    );
+    let mut missed = Vec::new();
+    for (what, mutate, reported) in mutations() {
+        let mut mutated = expected.clone();
+        mutate(&mut mutated);
+        assert_ne!(
+            mutated, expected,
+            "the mutation \"{what}\" changes the expectation"
+        );
+        let fields = mismatched_fields(&mutated, &run);
+        if fields.is_empty() || !fields.iter().all(&reported) {
+            missed.push(format!("{what}: reported {fields:?}"));
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "mutations not reported as their own field:\n{}",
+        missed.join("\n")
+    );
+}
+
+/// An empty new-commit list and an unchanged file set are compared, not
+/// skipped: one extra new commit, or one stray file, is reported.
+#[test]
+fn empty_expectations_are_compared() {
+    let (expected, mut run) = oracle_run("sync", "already_up_to_date");
+    assert!(expected.new_commits.is_empty(), "no new commit is expected");
+    assert_eq!(expected.files, FilesExpect::Unchanged);
+    assert_eq!(mismatched_fields(&expected, &run), Vec::<Field>::new());
+
+    let fabricated = "f".repeat(40);
+    let tip = run
+        .after
+        .commits
+        .values()
+        .next()
+        .expect("a ref points at a commit")
+        .clone();
+    run.after.commits.insert(
+        fabricated.clone(),
+        CommitExpect {
+            message: b"chore: fabricated\n".to_vec(),
+            ..tip
+        },
+    );
+    run.after.new_commits.push(fabricated.clone());
+    assert_eq!(
+        mismatched_fields(&expected, &run),
+        vec![Field::NewCommitCount],
+        "one new commit against an expected empty list"
+    );
+    run.after.new_commits.pop();
+    run.after.commits.remove(&fabricated);
+
+    run.after.files.insert(
+        (WORK.to_owned(), b"stray.profraw".to_vec()),
+        FileState {
+            content: b"profile\n".to_vec(),
+            executable: false,
+        },
+    );
+    assert_eq!(
+        mismatched_fields(&expected, &run),
+        vec![Field::Files],
+        "one stray file against an unchanged file set"
+    );
+}
+
+/// Paths and messages are observed as raw bytes: non-ASCII, newline and
+/// non-UTF-8 names, and a message carrying a non-UTF-8 byte, a body and a
+/// trailer, come back byte for byte in the tree, the message and the files.
+#[test]
+fn names_are_observed_byte_exact() {
+    let names: [&[u8]; 3] = [
+        b".planning/\xC3\xA9.md",
+        b".planning/a\nb.md",
+        b".planning/\xFF.md",
+    ];
+    let message: &[u8] =
+        b"docs: names \xFF\n\nA body line.\n\nSigned-off-by: Ada Author <ada@example.invalid>\n";
+    let dirs = ScenarioDirs::new("outcome", "byte_exact_names").expect("scenario dirs");
+    let env = hermetic_env(&inherited_env(), &dirs);
+    // Under the default UTF-8 commit encoding, git itself reads a non-UTF-8
+    // byte in a message as Latin-1 and stores it re-encoded (0xFF becomes
+    // 0xC3 0xBF). A declared Latin-1 encoding makes git store the bytes as
+    // given, so what the observer returns can be held to them.
+    let config = RepoConfig::devflow().with_local_config("i18n.commitEncoding", "ISO-8859-1");
+    let mut fixture = Fixture::new(&dirs, env, config).expect("devflow fixture");
+    let before = observe(&fixture, None).expect("observe before the commit");
+    for name in names {
+        fixture.write(WORK, name, name).expect("write a named file");
+        let on_disk = fixture.checkout(WORK).join(OsStr::from_bytes(name));
+        assert_eq!(
+            fs::read(&on_disk).expect("read the file back by its byte name"),
+            name,
+            "{} is on disk under its exact bytes",
+            show(name)
+        );
+    }
+    fixture
+        .commit(WORK, message)
+        .expect("commit the named files");
+    let after = observe(&fixture, Some(&before)).expect("observe after the commit");
+
+    let [id] = &after.new_commits[..] else {
+        panic!("one new commit, got {:?}", after.new_commits);
+    };
+    let raw = fixture
+        .git_ok(WORK, ["cat-file", "commit", id.as_str()])
+        .expect("read the raw commit");
+    assert!(
+        raw.ends_with(message),
+        "git stored the message as given: {}",
+        show(&raw)
+    );
+    let commit = &after.commits[id];
+    assert_eq!(commit.message, message, "the message, byte for byte");
+    let planning: BTreeSet<&[u8]> = commit
+        .tree
+        .iter()
+        .map(|entry| entry.path.as_slice())
+        .filter(|path| path.starts_with(b".planning/"))
+        .collect();
+    let mut want: BTreeSet<&[u8]> = names.into_iter().collect();
+    want.extend([&b".planning/ROADMAP.md"[..], b".planning/STATE.md"]);
+    assert_eq!(planning, want, "the .planning paths in the commit tree");
+    for name in names {
+        let entry = commit
+            .tree
+            .iter()
+            .find(|entry| entry.path == name)
+            .unwrap_or_else(|| panic!("{} is in the tree", show(name)));
+        assert_eq!(entry.content, name, "{} content in the tree", show(name));
+        let file = after
+            .files
+            .get(&(WORK.to_owned(), name.to_vec()))
+            .unwrap_or_else(|| panic!("{} is observed on disk", show(name)));
+        assert_eq!(file.content, name, "{} content on disk", show(name));
+    }
+    // A lossy decoder would have turned 0xFF into U+FFFD; its bytes must not
+    // appear anywhere the observer recorded a name.
+    let lossy = String::from_utf8_lossy(names[2]).into_owned().into_bytes();
+    assert_ne!(lossy, names[2], "the lossy form differs from the raw bytes");
+    assert!(
+        !planning.contains(lossy.as_slice())
+            && !after.files.contains_key(&(WORK.to_owned(), lossy.clone())),
+        "the lossy name {} was observed",
+        show(&lossy)
+    );
+}
+
+/// Refs compare as a set keyed by name, so their order does not matter; new
+/// commits compare as a sequence, so theirs does.
+#[test]
+fn refs_compare_as_a_set_and_commits_as_a_sequence() {
+    let (expected, run) = oracle_run("sync", "self_test");
+    let mut reordered = expected.clone();
+    listed_refs(&mut reordered).reverse();
+    assert_ne!(reordered, expected, "reversing changes the listed order");
+    assert_eq!(
+        mismatched_fields(&reordered, &run),
+        Vec::<Field>::new(),
+        "refs listed in reverse order"
+    );
+    let mut swapped = expected.clone();
+    swapped.new_commits.swap(0, 1);
+    assert_ne!(
+        mismatched_fields(&swapped, &run),
+        Vec::<Field>::new(),
+        "new commits listed in reverse order"
     );
 }
