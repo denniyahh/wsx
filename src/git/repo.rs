@@ -311,8 +311,15 @@ fn discovery_dir(start_dir: &Path, git_dir: &Path) -> Option<PathBuf> {
 /// with git 2.56.0: `GIT_OBJECT_DIRECTORY` aimed at an empty store leaves
 /// git unable to read `HEAD`, while gix reads the repository's own store;
 /// `GIT_ALTERNATE_OBJECT_DIRECTORIES` naming another store lets git read its
-/// objects, while gix cannot.
-const OBJECT_STORE_VARS: [&str; 2] = ["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+/// objects, while gix cannot. `GIT_COMMON_DIR` naming another repository's
+/// common dir moves git's whole store (objects, refs and config) there, with
+/// or without `GIT_DIR`, while no gix crate reads it; it is refused whatever
+/// its value. git exports none of the three to a `pre-commit` hook.
+const OBJECT_STORE_VARS: [&str; 3] = [
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+];
 
 /// Refuses any of `OBJECT_STORE_VARS` set in the process environment, as
 /// `Error::ObjectStoreEnv` naming the first: wsx's gix reads would use a
@@ -406,13 +413,9 @@ fn refuse_untrusted_sibling(repo: &gix::Repository) -> Result<(), Error> {
 }
 
 /// The repository-path variables whose relative values gix and git resolve
-/// differently below the worktree root.
-const REPO_PATH_VARS: [&str; 4] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR",
-];
+/// differently below the worktree root. `GIT_COMMON_DIR` is not among them:
+/// `refuse_object_store_env` refuses it whatever its value.
+const REPO_PATH_VARS: [&str; 3] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
 
 /// Refuses a relative repository-path variable when wsx runs below the
 /// worktree root. gix resolves such a value against the current directory,
@@ -3027,9 +3030,60 @@ mod tests {
         );
     }
 
+    /// `GIT_COMMON_DIR` naming another repository's common dir makes git
+    /// read that repository's store: its `--git-common-dir` is that
+    /// directory and `cat-file` reads that repository's commit from this
+    /// one. gix ignores the variable, so wsx refuses it, naming it. The
+    /// control is `another_repository_commit_is_unreadable_without_alternates`
+    /// below: without the variable neither git nor wsx reads that commit.
+    #[test]
+    fn git_common_dir_is_refused() {
+        let scratch = Scratch::new("common-dir").expect("scratch");
+        let (repo, _head) = object_repo(&scratch, "repo");
+        let (other, other_head) = object_repo(&scratch, "other");
+        let common = other.join(".git");
+        let env = env_with(&scratch, "GIT_COMMON_DIR", common.clone());
+        assert_eq!(
+            git_line_in(&env, &repo, &["rev-parse", "--git-common-dir"]),
+            common.display().to_string()
+        );
+        let run = object_run(&scratch, &repo, &other_head, &[("GIT_COMMON_DIR", &common)]);
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(
+            String::from_utf8_lossy(&run.git.stdout).trim_end(),
+            "commit",
+            "{}",
+            run.both()
+        );
+        assert_eq!(run.result(), "refused", "{}", run.both());
+        let error = fact(&run.child, "error");
+        assert!(
+            error.contains(&format!("GIT_COMMON_DIR={}", common.display())),
+            "error: {error}"
+        );
+    }
+
+    /// `GIT_COMMON_DIR` is refused whatever its value, even the
+    /// repository's own common dir, where git reads the same store.
+    #[test]
+    fn git_common_dir_naming_the_repository_own_is_refused() {
+        let scratch = Scratch::new("common-dir-own").expect("scratch");
+        let (repo, head) = object_repo(&scratch, "repo");
+        let common = repo.join(".git");
+        let run = object_run(&scratch, &repo, &head, &[("GIT_COMMON_DIR", &common)]);
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(run.result(), "refused", "{}", run.both());
+        let error = fact(&run.child, "error");
+        assert!(
+            error.contains(&format!("GIT_COMMON_DIR={}", common.display())),
+            "error: {error}"
+        );
+    }
+
     /// Control: without the variable, neither git nor wsx can read the
     /// other repository's commit, and wsx opens the repository rather than
-    /// refuse it.
+    /// refuse it. This is the control for `GIT_ALTERNATE_OBJECT_DIRECTORIES`
+    /// and for `GIT_COMMON_DIR` alike.
     #[test]
     fn another_repository_commit_is_unreadable_without_alternates() {
         let scratch = Scratch::new("alternate-objects-unset").expect("scratch");

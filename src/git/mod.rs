@@ -87,10 +87,10 @@ pub enum Error {
         cwd: PathBuf,
         worktree: PathBuf,
     },
-    /// The object-store variable `name` (`GIT_OBJECT_DIRECTORY` or
-    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES`) is set to `value`. gix ignores
-    /// it and git honours it, so wsx's reads and its git children would use
-    /// different object stores.
+    /// The object-store variable `name` (`GIT_OBJECT_DIRECTORY`,
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES` or `GIT_COMMON_DIR`) is set to
+    /// `value`. gix ignores it and git honours it, so wsx's reads and its git
+    /// children would use different object stores.
     ObjectStoreEnv { name: &'static str, value: PathBuf },
     /// `GIT_DIR` is `git_dir` without `GIT_WORK_TREE`, and `reason` names
     /// what keeps wsx from deciding the worktree as git does (a setting in
