@@ -25,14 +25,17 @@ pub struct Repo {
 impl Repo {
     /// Finds the repository containing `start` the way git would, honouring
     /// `GIT_DIR`, `GIT_INDEX_FILE` and `GIT_CEILING_DIRECTORIES` from the
-    /// process environment. A relative repository-path variable is refused
-    /// below the worktree root (see `refuse_relative_repo_env`).
+    /// process environment. A relative repository-path variable, or a
+    /// `GIT_DIR` that leaves git to take the current directory as the
+    /// worktree, is refused below the worktree root (see
+    /// `refuse_relative_repo_env` and `refuse_implicit_worktree`).
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
         refuse_relative_repo_env(&repo)?;
+        refuse_implicit_worktree(&repo)?;
         Repo::from_gix(repo)
     }
 
@@ -415,6 +418,46 @@ fn refuse_relative_repo_env(repo: &gix::Repository) -> Result<(), Error> {
         Err(Error::RelativeRepoEnv {
             name,
             value,
+            cwd,
+            worktree,
+        })
+    }
+}
+
+/// Refuses `GIT_DIR` given without `GIT_WORK_TREE` when wsx runs anywhere
+/// but the worktree root, unless the repository's own config sets
+/// `core.worktree`. git then takes the current directory as the worktree,
+/// and gix the repository's: measured with git 2.56.0 from `main/sub` with
+/// an absolute `GIT_DIR=<main>/.git`, `git rev-parse --show-toplevel` prints
+/// `main/sub`, while gix's worktree is `main`. A relative `GIT_DIR` is
+/// refused first by `refuse_relative_repo_env`. git runs hooks at the
+/// worktree root, so a hook's `GIT_DIR` still applies. `core.worktree` counts
+/// only from the repository's own config (`Source::Local`), the file git
+/// reads it from; set anywhere else, the check still runs, the stricter
+/// direction. A repository without a worktree is not checked.
+fn refuse_implicit_worktree(repo: &gix::Repository) -> Result<(), Error> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    let Some(value) = std::env::var_os("GIT_DIR") else {
+        return Ok(());
+    };
+    let core_worktree = repo
+        .config_snapshot()
+        .plumbing()
+        .string_filter("core.worktree", |meta| {
+            meta.source == gix::config::Source::Local
+        });
+    if std::env::var_os("GIT_WORK_TREE").is_some() || core_worktree.is_some() {
+        return Ok(());
+    }
+    let worktree = canonical(workdir)?;
+    let cwd = canonical(repo.current_dir())?;
+    if cwd == worktree {
+        Ok(())
+    } else {
+        Err(Error::ImplicitWorkTree {
+            git_dir: PathBuf::from(value),
             cwd,
             worktree,
         })
@@ -2184,6 +2227,107 @@ mod tests {
         );
         let error = fact(&child, "error");
         assert!(error.contains("GIT_DIR=../.git"), "error: {error}");
+    }
+
+    /// An absolute `GIT_DIR` given without `GIT_WORK_TREE` or
+    /// `core.worktree` makes git take the current directory `main/sub` as
+    /// the worktree, where gix takes `main`: wsx refuses it below the root,
+    /// naming the variable.
+    #[test]
+    fn an_absolute_git_dir_below_the_worktree_root_is_refused() {
+        let scratch = Scratch::new("absolute-git-dir-sub").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let sub = main.join("sub");
+        let git_dir = main.join(".git");
+        let env = env_with(&scratch, "GIT_DIR", git_dir.clone());
+        assert_eq!(
+            git_line_in(&env, &sub, &["rev-parse", "--show-toplevel"]),
+            sub.display().to_string(),
+            "git takes the current directory as the worktree"
+        );
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "refused",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        let error = fact(&child, "error");
+        assert!(
+            error.contains(&format!("GIT_DIR={}", git_dir.display())),
+            "error: {error}"
+        );
+    }
+
+    /// Control: the same absolute `GIT_DIR` at the worktree root, where git
+    /// takes `main` as the worktree too, opens, and wsx's git child lists
+    /// the repository's files.
+    #[test]
+    fn an_absolute_git_dir_at_the_worktree_root_opens_like_git() {
+        let scratch = Scratch::new("absolute-git-dir-root").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        assert_eq!(
+            git_line_in(&env, &main, &["rev-parse", "--show-toplevel"]),
+            main.display().to_string()
+        );
+
+        let child = relative_env_run(&env, &main);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        assert_eq!(fact(&child, "git_ls_files"), "a.txt,b.txt");
+    }
+
+    /// Control: below the root, an absolute `GIT_DIR` with `GIT_WORK_TREE`
+    /// naming `main` is the worktree git uses too, and opens.
+    #[test]
+    fn an_absolute_git_dir_with_git_work_tree_below_the_root_opens() {
+        let scratch = Scratch::new("absolute-git-dir-work-tree").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let sub = main.join("sub");
+        let mut env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        env.push(("GIT_WORK_TREE".into(), main.clone().into()));
+        assert_eq!(
+            git_line_in(&env, &sub, &["rev-parse", "--show-toplevel"]),
+            main.display().to_string()
+        );
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+    }
+
+    /// Control: below the root, an absolute `GIT_DIR` whose repository sets
+    /// `core.worktree` to `main` is the worktree git uses too, and opens.
+    #[test]
+    fn an_absolute_git_dir_with_core_worktree_below_the_root_opens() {
+        let scratch = Scratch::new("absolute-git-dir-core-worktree").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let main_arg = main.to_str().expect("UTF-8 scratch path");
+        git_ok(&scratch, &main, ["config", "core.worktree", main_arg]).expect("set core.worktree");
+        let sub = main.join("sub");
+        let env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        assert_eq!(
+            git_line_in(&env, &sub, &["rev-parse", "--show-toplevel"]),
+            main.display().to_string()
+        );
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
     }
 
     /// Control: at the worktree root, as in a hook, a relative

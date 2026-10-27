@@ -87,6 +87,15 @@ pub enum Error {
         cwd: PathBuf,
         worktree: PathBuf,
     },
+    /// `GIT_DIR` is `git_dir`, with neither `GIT_WORK_TREE` nor the
+    /// repository's `core.worktree` set, while wsx runs in `cwd`, not the
+    /// worktree root `worktree`. git takes `cwd` as the worktree then, and
+    /// gix takes `worktree`, so wsx and git would see different worktrees.
+    ImplicitWorkTree {
+        git_dir: PathBuf,
+        cwd: PathBuf,
+        worktree: PathBuf,
+    },
     /// The linked worktree `worktree`, registered in `git_dir`, no longer
     /// exists: `git worktree list` shows it as prunable.
     StaleWorktree { worktree: PathBuf, git_dir: PathBuf },
@@ -160,6 +169,19 @@ impl fmt::Display for Error {
                 "refusing {name}={value}: a relative path is ambiguous in {cwd}, below the worktree root {worktree}; \
                  make it absolute or run wsx from {worktree}",
                 value = value.display(),
+                cwd = cwd.display(),
+                worktree = worktree.display()
+            ),
+            Error::ImplicitWorkTree {
+                git_dir,
+                cwd,
+                worktree,
+            } => write!(
+                f,
+                "refusing GIT_DIR={git_dir} without GIT_WORK_TREE in {cwd}: git takes the current directory \
+                 as the worktree, but the repository's worktree is {worktree}; \
+                 set GIT_WORK_TREE={worktree} or run wsx from {worktree}",
+                git_dir = git_dir.display(),
                 cwd = cwd.display(),
                 worktree = worktree.display()
             ),
@@ -273,6 +295,18 @@ mod tests {
             relative.to_string(),
             "refusing GIT_INDEX_FILE=i: a relative path is ambiguous in /w/s, below the worktree root /w; \
              make it absolute or run wsx from /w"
+        );
+
+        let implicit = Error::ImplicitWorkTree {
+            git_dir: PathBuf::from("/w/.git"),
+            cwd: PathBuf::from("/w/s"),
+            worktree: PathBuf::from("/w"),
+        };
+        assert_eq!(
+            implicit.to_string(),
+            "refusing GIT_DIR=/w/.git without GIT_WORK_TREE in /w/s: git takes the current directory \
+             as the worktree, but the repository's worktree is /w; \
+             set GIT_WORK_TREE=/w or run wsx from /w"
         );
 
         let stale = Error::StaleWorktree {

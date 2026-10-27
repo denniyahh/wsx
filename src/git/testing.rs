@@ -1050,11 +1050,15 @@ fn decoy_env(scratch: &Scratch) -> (PathBuf, PathBuf, Env) {
     (fixture, decoy_git_dir, env)
 }
 
-/// Re-executes the discovery child `child` with `env` from the scratch
-/// root, checks it exited 0, and returns its output.
-fn run_discovery_child(scratch: &Scratch, child: &str, env: &Env) -> Output {
-    let output = reexec(&testing_child(child), env, &scratch.root, b"")
-        .unwrap_or_else(|err| panic!("{err}"));
+/// Re-executes the discovery child `child` with `env` from the decoy's
+/// worktree root, where git runs a hook (and where `Repo::discover` accepts
+/// a `GIT_DIR` given without `GIT_WORK_TREE`), checks it exited 0, and
+/// returns its output.
+fn run_discovery_child(decoy_git_dir: &Path, child: &str, env: &Env) -> Output {
+    let cwd = decoy_git_dir
+        .parent()
+        .unwrap_or_else(|| panic!("{} has no parent", decoy_git_dir.display()));
+    let output = reexec(&testing_child(child), env, cwd, b"").unwrap_or_else(|err| panic!("{err}"));
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -1083,9 +1087,9 @@ fn print_discovered_git_dir() {
 #[test]
 fn rerun_scrubbed_discovers_the_fixture_under_a_runner_git_dir() {
     let scratch = Scratch::new("rerun-scrubbed").expect("scratch");
-    let (fixture, _decoy, env) = decoy_env(&scratch);
+    let (fixture, decoy, env) = decoy_env(&scratch);
     let child = "scrubbed_discovery_child";
-    let output = run_discovery_child(&scratch, child, &env);
+    let output = run_discovery_child(&decoy, child, &env);
     assert_eq!(
         marker(&output, "rerun").as_deref(),
         Ok(testing_child(child).as_str()),
@@ -1107,7 +1111,7 @@ fn a_runner_git_dir_redirects_unscrubbed_discovery() {
     let scratch = Scratch::new("rerun-unscrubbed").expect("scratch");
     let (_fixture, decoy, env) = decoy_env(&scratch);
     let child = "unscrubbed_discovery_child";
-    let output = run_discovery_child(&scratch, child, &env);
+    let output = run_discovery_child(&decoy, child, &env);
     assert_eq!(
         discovered_git_dir(&output),
         decoy.display().to_string(),
