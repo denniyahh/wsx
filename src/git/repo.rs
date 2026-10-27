@@ -226,10 +226,15 @@ fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
 /// | `r1/inner/deeper` | `r1/inner` | not found | not found |
 ///
 /// So the refusal applies when a ceiling entry is the directory discovery
-/// found while the start is not that directory: discovery climbed into the
-/// ceiling. The directory found is the worktree, or the git dir of a bare
-/// repository, which the same divergence hides from inside it (start
-/// `r.git/objects`, ceiling `r.git`: git finds nothing, gix finds `r.git`).
+/// stopped in while the start is not that directory: discovery climbed into
+/// the ceiling. That directory is the one holding `.git`, or the git dir
+/// itself when the start is inside it (see `discovery_dir`), never the
+/// worktree: `GIT_WORK_TREE` or `core.worktree` can move the worktree
+/// elsewhere, and git still compares the ceiling with the directory holding
+/// `.git`. The same divergence hides a bare repository from inside it (start
+/// `r.git/objects`, ceiling `r.git`: git finds nothing, gix finds `r.git`),
+/// while from inside a non-bare `r1/.git` with ceiling `r1`, git recognises
+/// the git dir below the ceiling and opens it.
 /// A start equal to the ceiling is searched by both. Nothing is checked when
 /// `GIT_DIR` is set (git does no discovery then). Entries are canonicalised;
 /// empty, relative and non-canonicalisable entries are skipped, as git
@@ -243,8 +248,18 @@ fn refuse_at_ceiling(start: &Path, repo: &gix::Repository) -> Result<(), Error> 
     let Some(ceilings) = std::env::var_os("GIT_CEILING_DIRECTORIES") else {
         return Ok(());
     };
-    let found = refusal_path(repo)?;
     let start_dir = canonical(start)?;
+    let git_dir = canonical(repo.git_dir())?;
+    let Some(found) = discovery_dir(&start_dir, &git_dir) else {
+        return Err(Error::NotARepo {
+            start: start.to_path_buf(),
+            reason: format!(
+                "no directory between it and the root leads to the git dir {} gix found, \
+                 so wsx cannot apply GIT_CEILING_DIRECTORIES as git does",
+                git_dir.display()
+            ),
+        });
+    };
     if start_dir == found {
         return Ok(());
     }
@@ -263,6 +278,29 @@ fn refuse_at_ceiling(start: &Path, repo: &gix::Repository) -> Result<(), Error> 
     } else {
         Ok(())
     }
+}
+
+/// The directory git's upward discovery from `start_dir` stopped in to find
+/// the canonical `git_dir`: `git_dir` itself when the start is inside it,
+/// else the nearest ancestor of the start (the start included) whose `.git`
+/// is that git dir, either a directory or a `gitdir:` file pointing at it.
+/// `None` when no ancestor leads there. Both paths are canonical.
+fn discovery_dir(start_dir: &Path, git_dir: &Path) -> Option<PathBuf> {
+    if start_dir.starts_with(git_dir) {
+        return Some(git_dir.to_path_buf());
+    }
+    let leads_to_git_dir = |dot_git: &Path| {
+        let target = if dot_git.is_file() {
+            gix::discover::path::from_gitdir_file(dot_git).ok()?
+        } else {
+            dot_git.to_path_buf()
+        };
+        Some(std::fs::canonicalize(target).ok()? == git_dir)
+    };
+    start_dir
+        .ancestors()
+        .find(|dir| leads_to_git_dir(&dir.join(".git")) == Some(true))
+        .map(Path::to_path_buf)
 }
 
 /// Refuses a repository git would refuse as owned by another user, before
@@ -1624,6 +1662,16 @@ mod tests {
     /// Runs git and `ceiling_child` from `start` with the scratch
     /// environment, its `GIT_CEILING_DIRECTORIES` replaced by `ceiling`.
     fn ceiling_run(scratch: &Scratch, ceiling: &Path, start: &Path) -> CeilingRun {
+        ceiling_run_with(scratch, &[], ceiling, start)
+    }
+
+    /// `ceiling_run` with the `extra` variables added to both runs.
+    fn ceiling_run_with(
+        scratch: &Scratch,
+        extra: &[(&str, &Path)],
+        ceiling: &Path,
+        start: &Path,
+    ) -> CeilingRun {
         let mut env: Env = scratch
             .env
             .iter()
@@ -1631,6 +1679,11 @@ mod tests {
             .cloned()
             .collect();
         env.push(("GIT_CEILING_DIRECTORIES".into(), ceiling.into()));
+        env.extend(
+            extra
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into())),
+        );
         let git = testing::git_in_env(&env, start, ["rev-parse", "--absolute-git-dir"])
             .unwrap_or_else(|err| panic!("{err}"));
         env.push((START_VAR.into(), start.into()));
@@ -1715,6 +1768,119 @@ mod tests {
         let scratch = Scratch::new("ceiling-in-root").expect("scratch");
         let r1 = ceiling_repo(&scratch);
         assert_both_open(&ceiling_run(&scratch, &r1, &r1), &r1);
+    }
+
+    /// `<root>/<name>`, created and canonical: a worktree directory outside
+    /// `r1`.
+    fn outside_dir(scratch: &Scratch, name: &str) -> PathBuf {
+        let dir = scratch.root.join(name);
+        std::fs::create_dir_all(&dir).expect("create a directory outside r1");
+        dir.canonicalize()
+            .expect("canonicalize the outside directory")
+    }
+
+    /// git compares the ceiling with the directory holding `.git`, not with
+    /// the worktree: with `GIT_WORK_TREE` elsewhere and no `GIT_DIR`, a
+    /// ceiling at `r1` still hides `r1/.git` from `r1/inner`, for git and
+    /// for wsx, although gix reports the worktree as the other directory.
+    #[test]
+    fn ceiling_hides_the_repository_when_git_work_tree_points_elsewhere() {
+        let scratch = Scratch::new("ceiling-work-tree").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        let elsewhere = outside_dir(&scratch, "elsewhere");
+        let run = ceiling_run_with(
+            &scratch,
+            &[("GIT_WORK_TREE", &elsewhere)],
+            &r1,
+            &r1.join("inner"),
+        );
+        assert_both_hidden(&run);
+    }
+
+    /// The same for `core.worktree` in the repository's config: a ceiling at
+    /// `r1` hides `r1/.git` from `r1/inner`, for git and for wsx.
+    #[test]
+    fn ceiling_hides_the_repository_when_core_worktree_points_elsewhere() {
+        let scratch = Scratch::new("ceiling-core-worktree").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        let wt2 = outside_dir(&scratch, "wt2");
+        let wt2_arg = wt2.to_str().expect("UTF-8 scratch path");
+        git_ok(&scratch, &r1, ["config", "core.worktree", wt2_arg]).expect("set core.worktree");
+        assert_both_hidden(&ceiling_run(&scratch, &r1, &r1.join("inner")));
+    }
+
+    /// Control for the two tests above: with the same `GIT_WORK_TREE` and
+    /// the ceiling at `r1`'s parent, git and wsx both find `r1/.git`, and
+    /// wsx opens the other directory as the worktree.
+    #[test]
+    fn ceiling_above_the_repository_opens_it_with_git_work_tree_elsewhere() {
+        let scratch = Scratch::new("ceiling-work-tree-above").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        let elsewhere = outside_dir(&scratch, "elsewhere");
+        let parent = r1.parent().expect("r1 has a parent");
+        let run = ceiling_run_with(
+            &scratch,
+            &[("GIT_WORK_TREE", &elsewhere)],
+            parent,
+            &r1.join("inner"),
+        );
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(ceiling_result(&run), "opened", "{}", run.both());
+        assert_eq!(
+            testing::marker(&run.child, "worktree").unwrap_or_else(|err| panic!("{err}")),
+            elsewhere.display().to_string(),
+            "{}",
+            run.both()
+        );
+    }
+
+    /// A linked worktree's `.git` is a `gitdir:` file: with the ceiling at
+    /// `wt1`, discovery from `wt1/sub` finds nothing in git, and none in wsx.
+    #[test]
+    fn ceiling_at_a_linked_worktree_hides_it_like_git() {
+        let scratch = Scratch::new("ceiling-linked").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let sub = worktrees.wt1.join("sub");
+        std::fs::create_dir_all(&sub).expect("create wt1/sub");
+        assert_both_hidden(&ceiling_run(&scratch, &worktrees.wt1, &sub));
+    }
+
+    /// Control: with the ceiling at `wt1`'s parent, git and wsx both find
+    /// wt1 from `wt1/sub` through its `gitdir:` file.
+    #[test]
+    fn ceiling_above_a_linked_worktree_lets_wsx_and_git_find_it() {
+        let scratch = Scratch::new("ceiling-above-linked").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let sub = worktrees.wt1.join("sub");
+        std::fs::create_dir_all(&sub).expect("create wt1/sub");
+        let run = ceiling_run(&scratch, &scratch.root, &sub);
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(
+            String::from_utf8_lossy(&run.git.stdout).trim_end(),
+            worktrees
+                .main
+                .join(".git/worktrees/wt1")
+                .display()
+                .to_string(),
+            "{}",
+            run.both()
+        );
+        assert_eq!(ceiling_result(&run), "opened", "{}", run.both());
+        assert_eq!(
+            testing::marker(&run.child, "worktree").unwrap_or_else(|err| panic!("{err}")),
+            worktrees.wt1.display().to_string(),
+            "{}",
+            run.both()
+        );
+    }
+
+    /// Starting inside `r1/.git`, git recognises the git dir itself while
+    /// climbing, below the ceiling `r1`, and opens it; so does wsx.
+    #[test]
+    fn starting_inside_the_git_dir_below_a_ceiling_opens_it() {
+        let scratch = Scratch::new("ceiling-inside-git-dir").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        assert_both_open(&ceiling_run(&scratch, &r1, &r1.join(".git/objects")), &r1);
     }
 
     /// `<root>/r.git`, canonical, made with `git init -q --bare`, so
