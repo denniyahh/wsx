@@ -24,6 +24,7 @@ impl Repo {
     /// process environment.
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
+        refuse_ref_storage(&repo)?;
         Repo::from_gix(repo)
     }
 
@@ -94,6 +95,32 @@ impl Repo {
                 message: err.to_string(),
             })
     }
+}
+
+/// The configured `extensions.refStorage`, or `None` when it is not set.
+fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
+    repo.config_snapshot().string("extensions.refStorage")
+}
+
+/// Refuses a repository whose refs are not in the files backend, read from
+/// `extensions.refStorage` before any ref is touched: gix 0.90 opens a
+/// reftable repository and fails only when it decodes a ref. Only the exact
+/// bytes `files` pass, as in git, which rejects any other spelling outright.
+fn refuse_ref_storage(repo: &gix::Repository) -> Result<(), Error> {
+    match ref_storage(repo) {
+        None => Ok(()),
+        Some(value) if value == "files" => Ok(()),
+        Some(value) => Err(Error::Reftable {
+            path: refusal_path(repo)?,
+            format: String::from_utf8_lossy(&value).into_owned(),
+        }),
+    }
+}
+
+/// The path a refusal names: the canonical worktree, or the canonical git
+/// dir of a bare repository.
+fn refusal_path(repo: &gix::Repository) -> Result<PathBuf, Error> {
+    canonical(repo.workdir().unwrap_or_else(|| repo.git_dir()))
 }
 
 /// `path` with every symlink and `..` resolved.
