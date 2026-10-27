@@ -8,6 +8,7 @@
 //! Arguments pass through `Command::args`, never through a shell.
 
 use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -85,6 +86,23 @@ fn finish(mut command: Command, argv: Vec<OsString>, worktree: &Path) -> Result<
     }
 }
 
+/// A `git` child for `args` in `worktree`: an empty environment plus `env`,
+/// `worktree` as its working directory, stdin from `/dev/null`.
+fn child<'a>(
+    worktree: &Path,
+    args: &[OsString],
+    env: impl Iterator<Item = &'a (OsString, OsString)>,
+) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env_clear()
+        .envs(env.map(|(key, value)| (key, value)))
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .args(args);
+    command
+}
+
 /// Runs the `git` binary with a fixed environment snapshot.
 ///
 /// A child aimed at wsx's own worktree gets the whole snapshot, so inside a
@@ -141,14 +159,29 @@ impl Git {
     /// environment plus every snapshot pair, `worktree` as its working
     /// directory, stdin from `/dev/null`.
     fn base_command(&self, worktree: &Path, args: &[OsString]) -> Command {
-        let mut command = Command::new("git");
-        command
-            .env_clear()
-            .envs(self.env.iter().map(|(key, value)| (key, value)))
-            .current_dir(worktree)
-            .stdin(Stdio::null())
-            .args(args);
-        command
+        child(worktree, args, self.env.iter())
+    }
+
+    /// The names `git rev-parse --local-env-vars` prints, queried through
+    /// `base_command` in `worktree` on first need and cached. A query that
+    /// cannot be started is `Error::Io`; a non-zero exit or a signal is
+    /// `Error::GitFailed` naming this query's argv, so no child aimed at
+    /// another worktree is built without the list.
+    fn removal_list(&self, worktree: &Path) -> Result<&[OsString], Error> {
+        if let Some(names) = self.local_env_vars.get() {
+            return Ok(names);
+        }
+        let argv: Vec<OsString> = ["rev-parse", "--local-env-vars"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let stdout = finish(self.base_command(worktree, &argv), argv, worktree)?;
+        let names = stdout
+            .split(u8::is_ascii_whitespace)
+            .filter(|name| !name.is_empty())
+            .map(|name| OsStr::from_bytes(name).to_os_string())
+            .collect();
+        Ok(self.local_env_vars.get_or_init(|| names))
     }
 
     /// The child for `args` in `worktree`: program `git`, `args` exactly as
@@ -156,13 +189,21 @@ impl Git {
     /// `/dev/null`, and an empty environment plus the snapshot. `worktree`
     /// must be a worktree root: it is canonicalised (`Error::Io` on failure)
     /// and compared for exact equality with the own worktree, so a
-    /// subdirectory of the own worktree counts as another worktree.
+    /// subdirectory of the own worktree counts as another worktree. A target
+    /// that is not the own worktree gets the snapshot without every name on
+    /// git's `--local-env-vars` list; never a prefix test, because wsx nests
+    /// sibling worktrees inside its own worktree directory.
     fn command(&self, worktree: &Path, args: &[OsString]) -> Result<Command, Error> {
-        let _target = std::fs::canonicalize(worktree).map_err(|source| Error::Io {
+        let target = std::fs::canonicalize(worktree).map_err(|source| Error::Io {
             what: format!("canonicalize {}", worktree.display()),
             source,
         })?;
-        Ok(self.base_command(worktree, args))
+        if self.own_worktree.as_deref() == Some(target.as_path()) {
+            return Ok(self.base_command(worktree, args));
+        }
+        let removed = self.removal_list(worktree)?;
+        let kept = self.env.iter().filter(|(key, _)| !removed.contains(key));
+        Ok(child(worktree, args, kept))
     }
 
     /// Runs `git --version` unless this helper has already passed the check,
