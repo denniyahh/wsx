@@ -179,8 +179,11 @@ impl Git {
     /// The names `git rev-parse --local-env-vars` prints, queried through
     /// `base_command` in `worktree` on first need and cached. A query that
     /// cannot be started is `Error::Io`; a non-zero exit or a signal is
-    /// `Error::GitFailed` naming this query's argv, so no child aimed at
-    /// another worktree is built without the list.
+    /// `Error::GitFailed` naming this query's argv, and an exit 0 that prints
+    /// no name (nothing, or only whitespace) is `Error::GitEmptyOutput`, so no
+    /// child aimed at another worktree is built without the list. Git 2.54
+    /// always prints the list, so an empty one means a broken or substituted
+    /// git, and removing nothing would let a hook's variables through.
     fn removal_list(&self, worktree: &Path) -> Result<&[OsString], Error> {
         if let Some(names) = self.local_env_vars.get() {
             return Ok(names);
@@ -189,12 +192,18 @@ impl Git {
             .into_iter()
             .map(OsString::from)
             .collect();
-        let stdout = finish(self.base_command(worktree, &argv), argv, worktree)?;
-        let names = stdout
+        let stdout = finish(self.base_command(worktree, &argv), argv.clone(), worktree)?;
+        let names: Vec<OsString> = stdout
             .split(u8::is_ascii_whitespace)
             .filter(|name| !name.is_empty())
             .map(|name| OsStr::from_bytes(name).to_os_string())
             .collect();
+        if names.is_empty() {
+            return Err(Error::GitEmptyOutput {
+                argv,
+                expected: "variable names",
+            });
+        }
         Ok(self.local_env_vars.get_or_init(|| names))
     }
 
