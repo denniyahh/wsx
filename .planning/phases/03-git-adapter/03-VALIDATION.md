@@ -3,9 +3,9 @@ phase: "3"
 slug: "git-adapter"
 # status lifecycle: draft (seeded by plan-phase) → validated (set by validate-phase §6)
 # audit-milestone §5.5 distinguishes NOT-VALIDATED (draft) from PARTIAL (validated + nyquist_compliant: false) (#2117)
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
 created: "2026-10-26"
 ---
 
@@ -57,6 +57,31 @@ Filled by the planner as task IDs are fixed. Requirement → test map from resea
 | CONTEXT | `GIT_CEILING_DIRECTORIES` matches git (refuses at the ceiling dir; control opens below it) | unit, differential | proposed by the plan |
 | CONTEXT | The gix open/discover ban list is pinned (each banned entry point called under `expect`) | compile-time (clippy) | `scripts/check.sh clippy` |
 
+### As built (audited 2026-10-27 at `1a34613`)
+
+Every test below exists and passed in `scripts/check.sh all` at `1a34613` (259 run, 259 passed,
+53 skipped; the orchestrator re-ran it independently). Names were cross-checked against
+`cargo nextest list`: all 76 test references in the ten plans resolve. The four `*_child` halves
+(`null_stdin_child`, `linked_hook_spawn_child`, `foreign_owner_child`, `ceiling_child`) are
+`#[ignore]`d by design and run only when their parent re-executes them; `check::reftable_refused::rust`
+is disabled until phase 5 (STATE.md blocker).
+
+| Requirement | Plan(s) | Tests (module `git::`) | Status |
+|-------------|---------|------------------------|--------|
+| GIT-01 reads equal git | 03-01, 03-03 | `reads::tests::{merge_base_matches_git, merge_base_moves_with_the_pair, ahead_behind_matches_git, ahead_behind_changes_with_the_pair, range_walk_matches_git, range_walk_changes_with_the_hidden_tip, tree_diff_matches_git, tree_diff_changes_with_the_pair}` + edge cases | ✅ green |
+| GIT-01 hooks and signing | 03-07 | `spawn::tests::{commit_and_merge_run_hooks_and_sign, explicit_bypass_skips_hooks_and_signing}` | ✅ green |
+| GIT-02 resolution in a hook | 03-08 | `repo::tests::{hook_resolves_linked_worktree, hook_resolves_main_worktree_with_relative_index}` | ✅ green |
+| GIT-02 sibling scrub + leak control | 03-05, 03-08 | `spawn::tests::{sibling_target_removes_local_env_vars, sibling_child_env_scrubbed, own_worktree_child_keeps_hook_index}` | ✅ green |
+| GIT-02 null stdin | 03-07 | `spawn::tests::children_get_null_stdin` | ✅ green |
+| GIT-02 git ≥ 2.54 | 03-05 | `spawn::tests::old_git_refused` | ✅ green |
+| GIT-02 ceiling parity | 03-10 | `repo::tests::ceiling_*` (5 tests) | ✅ green |
+| GIT-03 reftable refused | 03-06, 03-10 | `repo::tests::{reftable_repo_is_refused, empty_reftable_repo_is_refused, explicit_files_ref_storage_opens, miscased_ref_storage_is_refused_as_git_refuses_it, ref_storage_in_{global,worktree,environment}_config_does_not_refuse_a_files_repo}` | ✅ green |
+| GIT-03 harness `regression:` scenario | 03-02 | `check::reftable_refused::oracle` (Rust side disabled until phase 5) | ✅ green (oracle side) |
+| GIT-04 foreign owner | 03-09 | `repo::tests::{foreign_owner_refused, safe_directory_in_global_config_opens_a_foreign_repo, command_line_safe_directory_does_not_trust_a_foreign_repo}` | ✅ green (user-namespace path on host; root path in container) |
+| CONTEXT SHA-256 | 03-04 | `repo::tests::sha256_repo_opens` | ✅ green |
+| CONTEXT open ban pinned | 03-04 | `repo::tests::banned_gix_entry_points_refuse_a_missing_path` + `scripts/check.sh clippy` | ✅ green |
+| Test hermeticity | 03-10 | `testing::{discovering_tests_pass_with_a_runner_git_dir, a_runner_git_dir_redirects_unscrubbed_discovery, rerun_scrubbed_discovers_the_fixture_under_a_runner_git_dir}` | ✅ green |
+
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
 ---
@@ -79,11 +104,19 @@ design rather than skipping.
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < one named-test run
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < one named-test run
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-10-27
+
+## Validation Audit 2026-10-27
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
