@@ -108,8 +108,9 @@ impl Repo {
     /// off: inside a hook, opening a sibling by path would pair it with the
     /// hook's `GIT_DIR` and `GIT_INDEX_FILE`.
     ///
-    /// A gix failure to list or open one is `Error::Gix`; a sibling whose
-    /// directory is gone fails canonicalisation as `Error::Io` naming it. A
+    /// A gix failure to list or open one is `Error::Gix`; a linked worktree
+    /// whose directory is gone (`git worktree list` shows it as prunable)
+    /// fails the whole list closed as `Error::StaleWorktree` naming it. A
     /// sibling git would refuse as owned by another user is
     /// `Error::ForeignOwner` naming it (see `refuse_untrusted_sibling`).
     pub fn siblings(&self) -> Result<Vec<Repo>, Error> {
@@ -123,6 +124,7 @@ impl Repo {
         }
         let mut siblings = Vec::new();
         for repo in opened {
+            refuse_missing_worktree(&repo)?;
             let sibling = Repo::from_gix(repo)?;
             let is_self = match &self.worktree {
                 Some(own) => sibling.worktree.as_ref() == Some(own),
@@ -285,6 +287,23 @@ fn refuse_untrusted(repo: &gix::Repository) -> Result<(), Error> {
         Err(Error::ForeignOwner {
             path: refusal_path(repo)?,
         })
+    }
+}
+
+/// Refuses a sibling whose worktree directory no longer exists, which gix
+/// opens anyway, as `Error::StaleWorktree` naming the worktree and its git
+/// dir. Any other failure to read the directory is left to
+/// canonicalisation.
+fn refuse_missing_worktree(repo: &gix::Repository) -> Result<(), Error> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    match std::fs::symlink_metadata(workdir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(Error::StaleWorktree {
+            worktree: workdir.to_path_buf(),
+            git_dir: canonical(repo.git_dir())?,
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -1380,6 +1399,54 @@ mod tests {
         }
 
         guard.restore().expect("give the worktree back");
+    }
+
+    /// A linked worktree whose directory was deleted without
+    /// `git worktree prune` (git lists it as prunable) makes `siblings()`
+    /// fail closed with an error naming that worktree and the prune that
+    /// clears it, not a bare canonicalisation failure.
+    #[test]
+    fn a_stale_sibling_worktree_is_named_with_its_fix() {
+        let scratch = Scratch::new("stale-sibling").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        std::fs::remove_dir_all(&worktrees.wt1).expect("delete wt1's directory");
+        let listed = git_line(
+            &scratch,
+            &worktrees.main,
+            &["worktree", "list", "--porcelain"],
+        );
+        let wt1_entry = listed
+            .split("\n\n")
+            .find(|entry| entry.contains(&format!("worktree {}", worktrees.wt1.display())))
+            .unwrap_or_else(|| panic!("git worktree list has no wt1 entry:\n{listed}"));
+        assert!(
+            wt1_entry.contains("prunable"),
+            "git lists wt1 as prunable:\n{listed}"
+        );
+
+        let child = siblings_in_child(&scratch, &worktrees.main);
+        let error = fact(&child, "error");
+        assert!(
+            error.contains(&worktrees.wt1.display().to_string()),
+            "error: {error}"
+        );
+        assert!(error.contains("git worktree prune"), "error: {error}");
+    }
+
+    /// Control: with every linked worktree present, `siblings()` from main
+    /// opens both.
+    #[test]
+    fn siblings_open_every_present_linked_worktree() {
+        let scratch = Scratch::new("present-siblings").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let child = siblings_in_child(&scratch, &worktrees.main);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+        assert_eq!(fact(&child, "sibling_count"), "2");
     }
 
     /// A bare repository `<root>/r.git`, cloned from a one-commit

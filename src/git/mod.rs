@@ -87,6 +87,9 @@ pub enum Error {
         cwd: PathBuf,
         worktree: PathBuf,
     },
+    /// The linked worktree `worktree`, registered in `git_dir`, no longer
+    /// exists: `git worktree list` shows it as prunable.
+    StaleWorktree { worktree: PathBuf, git_dir: PathBuf },
     /// An operating-system call failed; `what` names the call and its subject.
     Io {
         what: String,
@@ -159,6 +162,14 @@ impl fmt::Display for Error {
                 value = value.display(),
                 cwd = cwd.display(),
                 worktree = worktree.display()
+            ),
+            Error::StaleWorktree { worktree, git_dir } => write!(
+                f,
+                "worktree {} is missing, but {} still registers it (git lists it as prunable)\n\
+                 If it is gone for good, run:\n\
+                 \tgit worktree prune",
+                worktree.display(),
+                git_dir.display()
             ),
             Error::Io { what, source } => write!(f, "{what}: {source}"),
             Error::Gix { what, message } => write!(f, "{what}: {message}"),
@@ -262,6 +273,17 @@ mod tests {
             relative.to_string(),
             "refusing GIT_INDEX_FILE=i: a relative path is ambiguous in /w/s, below the worktree root /w; \
              make it absolute or run wsx from /w"
+        );
+
+        let stale = Error::StaleWorktree {
+            worktree: PathBuf::from("/w"),
+            git_dir: PathBuf::from("/m/.git/worktrees/w"),
+        };
+        assert_eq!(
+            stale.to_string(),
+            "worktree /w is missing, but /m/.git/worktrees/w still registers it (git lists it as prunable)\n\
+             If it is gone for good, run:\n\
+             \tgit worktree prune"
         );
 
         let io = Error::Io {
