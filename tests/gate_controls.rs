@@ -8,6 +8,8 @@
 //!   found by a different search (T-01-07).
 //! - A checkout's `.tools/bin` wins over a shadowing nextest earlier on PATH,
 //!   with the counterpart showing the same shadow is refused without it.
+//! - A stale nextest in `.tools/bin` is refused with a fix that installs into
+//!   `.tools/bin`; without one, the fix is the plain install command.
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
 //!   caller's working directory.
 //! - It hides the checkout's `.tools` from the container, with the
@@ -374,11 +376,15 @@ fn checkout_check_sh_test(
     // /usr/local/cargo/bin) would otherwise beat both stand-ins.
     let cargo_home = checkout.join(".cargo-home");
     fs::create_dir_all(&cargo_home).expect("create the empty CARGO_HOME");
+    // No inherited WSX_TOOLS_DIR: an outer check.sh run from a checkout with
+    // .tools/bin exports it, and the scratch checkout's hints must not name
+    // that checkout's directory.
     let output = Command::new("/bin/bash")
         .arg(checkout.join("scripts/check.sh"))
         .arg("test")
         .env("PATH", path)
         .env("CARGO_HOME", &cargo_home)
+        .env_remove("WSX_TOOLS_DIR")
         .output()
         .expect("spawn /bin/bash scripts/check.sh test in the scratch checkout");
     (
@@ -436,6 +442,76 @@ fn shadowing_nextest_is_refused_without_a_repo_tools_dir() {
     assert!(
         !stdout.contains("STUB cargo-nextest ran"),
         "the shadowing nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+/// A stand-in for a stale nextest left in a checkout's `.tools/bin`: every
+/// version query, direct or through cargo, reports a version that is not the
+/// pin; anything else stands in for a test run that runs nothing and exits 0.
+const STALE_NEXTEST_STUB: &str = "#!/bin/bash\n\
+     if [ \"$1\" = --version ] || [ \"$2\" = --version ]; then\n\
+     \x20   echo 'cargo-nextest 0.0.0-stale'; exit 0\n\
+     fi\n\
+     echo \"STALE cargo-nextest ran: $*\"\n";
+
+#[test]
+fn stale_repo_tools_nextest_hint_installs_into_repo_tools() {
+    // A stale nextest in .tools/bin shadows any install into cargo's bin, so
+    // the refusal's fix must install into .tools/bin, or following it changes
+    // nothing.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-stale");
+    let repo_tools = checkout.join(".tools/bin");
+    fs::create_dir_all(&repo_tools).expect("create .tools/bin");
+    let stale = repo_tools.join("cargo-nextest");
+    fs::write(&stale, STALE_NEXTEST_STUB).expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).expect("chmod stale stub");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the stale .tools/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stale'"),
+        "the refusal must name the stale version, got stderr {stderr:?}"
+    );
+    let hint = format!(
+        "run WSX_TOOLS_DIR={} scripts/install-tools.sh install cargo-nextest",
+        repo_tools.display()
+    );
+    assert!(
+        stderr.contains(&hint),
+        "the fix must install into .tools/bin ({hint:?}), got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("STALE cargo-nextest ran"),
+        "the stale nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn shadowing_nextest_hint_names_no_tools_dir_without_one() {
+    // The counterpart: with no .tools/bin, cargo's bin is the right place to
+    // install, so the fix is the plain install command and names no .tools.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-absent-hint");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the shadowing nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("; run scripts/install-tools.sh install cargo-nextest"),
+        "the fix must be the plain install command, got stderr {stderr:?}"
+    );
+    assert!(
+        !stderr.contains(".tools"),
+        "the fix must not name a .tools directory, got stderr {stderr:?}"
     );
 }
 

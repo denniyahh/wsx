@@ -116,6 +116,18 @@ tool_info() {
     esac
 }
 
+# $1 = tool. Print the command that installs it where it is looked up: with
+# WSX_TOOLS_DIR set (check.sh sets it with a checkout's .tools/bin, which goes
+# first on PATH), the command names that directory, so following it replaces
+# the copy that is found rather than installing one it shadows.
+install_hint() {
+    if [ -n "${WSX_TOOLS_DIR:-}" ]; then
+        printf 'WSX_TOOLS_DIR=%q scripts/install-tools.sh install %s' "$WSX_TOOLS_DIR" "$1"
+    else
+        printf 'scripts/install-tools.sh install %s' "$1"
+    fi
+}
+
 # $1 = tool, $2 = where it was found (for messages), then the command that
 # runs it. Exit 1 unless the first line of its version output matches the pin.
 check_version() {
@@ -123,12 +135,12 @@ check_version() {
     shift 2
     tool_info "$tool"
     if ! output="$("$@" "$version_arg")"; then
-        echo "error: $tool $where failed to report its version; run scripts/install-tools.sh install $tool" >&2
+        echo "error: $tool $where failed to report its version; run $(install_hint "$tool")" >&2
         exit 1
     fi
     first="${output%%$'\n'*}"
     if [[ ! "$first" =~ $pattern ]]; then
-        echo "error: $tool $where reports '$first', expected $version; run scripts/install-tools.sh install $tool" >&2
+        echo "error: $tool $where reports '$first', expected $version; run $(install_hint "$tool")" >&2
         exit 1
     fi
 }
@@ -137,7 +149,7 @@ cmd_verify() {
     local tool bin
     for tool in "$@"; do
         if ! bin="$(command -v "$tool")"; then
-            echo "error: $tool is not on PATH; run scripts/install-tools.sh install $tool" >&2
+            echo "error: $tool is not on PATH; run $(install_hint "$tool")" >&2
             exit 1
         fi
         tool_info "$tool"
