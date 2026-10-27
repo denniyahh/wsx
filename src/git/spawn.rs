@@ -267,7 +267,7 @@ impl Git {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -778,5 +778,203 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         testing::child_print("stdin_blob", String::from_utf8_lossy(&output.stdout).trim());
+    }
+
+    /// The hooks `signing_repo` installs; each appends its own name to the
+    /// hook log.
+    const LOGGED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "pre-merge-commit"];
+
+    /// A repository whose own local config signs every commit, with logging
+    /// hooks, built in `<root>/repo`; returns it and the hook log path
+    /// `<root>/hooks.log`.
+    ///
+    /// `main` holds `a.txt` at `T0` and `side` adds `side.txt` at `T0 + TICK`,
+    /// both committed unsigned before any hook exists; `main` is checked out.
+    /// Then a throwaway ed25519 key (`<root>/signkey`, no passphrase), an
+    /// `allowed_signers` file naming it for the scratch identity, and local
+    /// config `gpg.format=ssh`, `user.signingkey`, `commit.gpgsign=true` and
+    /// `gpg.ssh.allowedSignersFile` (without that file `%G?` cannot print
+    /// `G`). Last, executable `/bin/sh` hooks for every `LOGGED_HOOKS` name.
+    fn signing_repo(scratch: &Scratch) -> Result<(PathBuf, PathBuf), String> {
+        let root = &scratch.root;
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).map_err(|err| format!("create {}: {err}", repo.display()))?;
+        testing::git_ok(scratch, &repo, ["init", "-q", "-b", "main"])?;
+        testing::write(&repo.join("a.txt"), b"a\n")?;
+        testing::commit_all(scratch, &repo, "base", testing::T0)?;
+        testing::git_ok(scratch, &repo, ["branch", "side"])?;
+        testing::git_ok(scratch, &repo, ["switch", "-q", "side"])?;
+        testing::write(&repo.join("side.txt"), b"side\n")?;
+        testing::commit_all(scratch, &repo, "side", testing::T0 + testing::TICK)?;
+        testing::git_ok(scratch, &repo, ["switch", "-q", "main"])?;
+
+        let key = root.join("signkey");
+        let keygen = [
+            OsStr::new("-q"),
+            OsStr::new("-t"),
+            OsStr::new("ed25519"),
+            OsStr::new("-N"),
+            OsStr::new(""),
+            OsStr::new("-C"),
+            OsStr::new("unit"),
+            OsStr::new("-f"),
+            key.as_os_str(),
+        ];
+        let output = testing::command("ssh-keygen", root, &scratch.env)
+            .args(keygen)
+            .output()
+            .map_err(|err| format!("spawn ssh-keygen: {err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "ssh-keygen exited {:?}; stderr: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            ));
+        }
+        let public_path = root.join("signkey.pub");
+        let public = fs::read(&public_path)
+            .map_err(|err| format!("read {}: {err}", public_path.display()))?;
+        let fields: Vec<&[u8]> = public
+            .split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty())
+            .collect();
+        let [kind, base64, ..] = fields[..] else {
+            return Err(format!(
+                "unexpected public key \"{}\"",
+                public.escape_ascii()
+            ));
+        };
+        let mut allowed = b"unit@example.invalid namespaces=\"git\" ".to_vec();
+        allowed.extend_from_slice(kind);
+        allowed.push(b' ');
+        allowed.extend_from_slice(base64);
+        allowed.push(b'\n');
+        let allowed_path = root.join("allowed_signers");
+        testing::write(&allowed_path, &allowed)?;
+        let signing_config = [
+            ("gpg.format", OsStr::new("ssh")),
+            ("user.signingkey", key.as_os_str()),
+            ("commit.gpgsign", OsStr::new("true")),
+            ("gpg.ssh.allowedSignersFile", allowed_path.as_os_str()),
+        ];
+        for (name, value) in signing_config {
+            testing::git_ok(
+                scratch,
+                &repo,
+                [
+                    OsStr::new("config"),
+                    OsStr::new("--local"),
+                    OsStr::new(name),
+                    value,
+                ],
+            )?;
+        }
+
+        let log = root.join("hooks.log");
+        for name in LOGGED_HOOKS {
+            let hook = repo.join(".git/hooks").join(name);
+            let script = format!("#!/bin/sh\nprintf '%s\\n' {name} >> {}\n", sh_quote(&log));
+            testing::write(&hook, script.as_bytes())?;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))
+                .map_err(|err| format!("make {} executable: {err}", hook.display()))?;
+        }
+        Ok((repo, log))
+    }
+
+    /// `git log --format=%G? -2` in `repo`: the signature state of HEAD and
+    /// the commit before it, one letter each.
+    fn last_two_signatures(scratch: &Scratch, repo: &Path) -> Vec<String> {
+        let stdout = testing::git_ok(scratch, repo, ["log", "--format=%G?", "-2"])
+            .expect("git log --format=%G? -2");
+        String::from_utf8_lossy(&stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// How often each hook name appears in the hook log; empty when no hook
+    /// ever wrote it.
+    fn hook_runs(log: &Path) -> BTreeMap<String, usize> {
+        let content = match fs::read_to_string(log) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => panic!("read {}: {err}", log.display()),
+        };
+        let mut runs = BTreeMap::new();
+        for line in content.lines() {
+            *runs.entry(line.to_owned()).or_insert(0) += 1;
+        }
+        runs
+    }
+
+    /// Asserts HEAD in `repo` is a merge commit (two parents).
+    fn assert_head_is_a_merge(scratch: &Scratch, repo: &Path) {
+        let stdout = testing::git_ok(scratch, repo, ["rev-list", "--parents", "-1", "HEAD"])
+            .expect("git rev-list --parents -1 HEAD");
+        let ids = String::from_utf8_lossy(&stdout).split_whitespace().count();
+        assert_eq!(ids, 3, "HEAD is not a two-parent merge");
+    }
+
+    #[test]
+    fn commit_and_merge_run_hooks_and_sign() {
+        let scratch = Scratch::new("hooks-sign").expect("scratch");
+        let (repo, log) = signing_repo(&scratch).expect("signing fixture");
+        let git = Git::new(scratch.env.clone()).with_own_worktree(repo.clone());
+        testing::write(&repo.join("c.txt"), b"c\n").expect("write c.txt");
+        testing::git_ok(&scratch, &repo, ["add", "c.txt"]).expect("stage c.txt");
+
+        git.run(&repo, ["commit", "-m", "c"])
+            .expect("commit through the helper");
+        git.run(&repo, ["merge", "--no-ff", "--no-edit", "side"])
+            .expect("merge through the helper");
+
+        assert_head_is_a_merge(&scratch, &repo);
+        assert_eq!(last_two_signatures(&scratch, &repo), ["G", "G"]);
+        let expected: BTreeMap<String, usize> = [
+            ("commit-msg".to_owned(), 2),
+            ("pre-commit".to_owned(), 1),
+            ("pre-merge-commit".to_owned(), 1),
+        ]
+        .into();
+        assert_eq!(hook_runs(&log), expected);
+    }
+
+    #[test]
+    fn explicit_bypass_skips_hooks_and_signing() {
+        let scratch = Scratch::new("hooks-bypass").expect("scratch");
+        let (repo, log) = signing_repo(&scratch).expect("signing fixture");
+        let git = Git::new(scratch.env.clone()).with_own_worktree(repo.clone());
+        testing::write(&repo.join("c.txt"), b"c\n").expect("write c.txt");
+        testing::git_ok(&scratch, &repo, ["add", "c.txt"]).expect("stage c.txt");
+
+        git.run(
+            &repo,
+            [
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--no-verify",
+                "-m",
+                "c",
+            ],
+        )
+        .expect("bypassing commit through the helper");
+        git.run(
+            &repo,
+            [
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "--no-verify",
+                "--no-ff",
+                "--no-edit",
+                "side",
+            ],
+        )
+        .expect("bypassing merge through the helper");
+
+        assert_head_is_a_merge(&scratch, &repo);
+        assert_eq!(last_two_signatures(&scratch, &repo), ["N", "N"]);
+        assert_eq!(hook_runs(&log), BTreeMap::new());
     }
 }
