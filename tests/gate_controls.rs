@@ -10,6 +10,10 @@
 //!   with the counterpart showing the same shadow is refused without it.
 //! - A stale nextest in `.tools/bin` is refused with a fix that installs into
 //!   `.tools/bin`; without one, the fix is the plain install command.
+//! - A stale nextest in `$CARGO_HOME/bin`, which cargo searches first while it
+//!   is not on PATH, is refused with the plain install command naming that
+//!   directory, even with a pinned `.tools/bin`; with `$CARGO_HOME/bin` on
+//!   PATH, the `.tools/bin` copy runs.
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
 //!   caller's working directory.
 //! - It hides the checkout's `.tools` from the container, with the
@@ -512,6 +516,97 @@ fn shadowing_nextest_hint_names_no_tools_dir_without_one() {
     assert!(
         !stderr.contains(".tools"),
         "the fix must not name a .tools directory, got stderr {stderr:?}"
+    );
+}
+
+/// A scratch checkout whose `.tools/bin` holds a nextest that reports the
+/// pin, and whose `CARGO_HOME` (`<checkout>/.cargo-home`, the one
+/// `checkout_check_sh_test` passes) holds a stale one in `bin`, with a PATH of
+/// the plain tools only: `$CARGO_HOME/bin` is not on it, so cargo searches
+/// that directory first (cargo#11020). Returns the checkout, that
+/// `$CARGO_HOME/bin` and the PATH.
+fn stale_cargo_home_checkout(name: &str) -> (PathBuf, PathBuf, std::ffi::OsString) {
+    let checkout = scratch_checkout(&format!("{name}-checkout"));
+    let repo_tools = checkout.join(".tools/bin");
+    let cargo_home_bin = checkout.join(".cargo-home/bin");
+    for dir in [&repo_tools, &cargo_home_bin] {
+        fs::create_dir_all(dir).unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
+    }
+    let pinned = repo_tools.join("cargo-nextest");
+    fs::write(&pinned, repo_tools_nextest_stub(&on_path("cargo-nextest")))
+        .expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).expect("chmod pinned stub");
+    let stale = cargo_home_bin.join("cargo-nextest");
+    fs::write(&stale, STALE_NEXTEST_STUB).expect("write $CARGO_HOME/bin/cargo-nextest");
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).expect("chmod stale stub");
+    let tools = minimal_path(
+        &format!("{name}-tools"),
+        &["bash", "cargo", "rustc", "dirname"],
+    );
+    (checkout, cargo_home_bin, tools.into_os_string())
+}
+
+#[test]
+fn stale_cargo_home_nextest_hint_installs_into_cargo_home() {
+    // .tools/bin already holds the pin, so installing there again changes
+    // nothing: cargo ran the stale copy in $CARGO_HOME/bin, which it searches
+    // before PATH while that directory is not on PATH. The fix must name that
+    // directory and be the plain install command, which installs there.
+    let (checkout, cargo_home_bin, path) = stale_cargo_home_checkout("cargo-home-stale");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the stale $CARGO_HOME/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stale'"),
+        "the refusal must name the stale version, got stderr {stderr:?}"
+    );
+    assert!(
+        stderr.contains(&cargo_home_bin.display().to_string()),
+        "the refusal must name $CARGO_HOME/bin ({}), got stderr {stderr:?}",
+        cargo_home_bin.display()
+    );
+    assert!(
+        stderr.contains("; run scripts/install-tools.sh install cargo-nextest"),
+        "the fix must be the plain install command, got stderr {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("WSX_TOOLS_DIR="),
+        "the fix must not install into .tools/bin, got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("ran: nextest run"),
+        "no nextest may run after a refused pin, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn repo_tools_nextest_wins_when_cargo_home_bin_is_on_path() {
+    // The counterpart: the same checkout with $CARGO_HOME/bin on PATH, after
+    // the plain tools. cargo then follows PATH order, check.sh's .tools/bin
+    // comes first, and its pinned nextest is the one that runs.
+    let (checkout, cargo_home_bin, tools) = stale_cargo_home_checkout("cargo-home-on-path");
+    let path = env::join_paths([PathBuf::from(tools), cargo_home_bin]).expect("join PATH");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "check.sh test must run the .tools/bin nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("REPO-TOOLS cargo-nextest ran: nextest run"),
+        "the .tools/bin nextest must be the one cargo runs, got stdout {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("STALE cargo-nextest ran"),
+        "the stale nextest must never run, got stdout {stdout:?}"
     );
 }
 

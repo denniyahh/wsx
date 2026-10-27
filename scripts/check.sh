@@ -17,13 +17,16 @@ CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # A checkout's own .tools/bin (WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh
 # install ...) goes first on PATH, so the pinned gate tools win over another
-# copy earlier on PATH, such as a package manager's newer build. cargo follows
-# PATH order for its subcommands, so `cargo nextest` runs the same copy. The
+# copy earlier on PATH, such as a package manager's newer build. For `cargo
+# nextest` and the other cargo subcommands that holds only while
+# $CARGO_HOME/bin is on PATH: cargo then follows PATH order, but otherwise it
+# searches $CARGO_HOME/bin first (cargo#11020), and a copy there wins. The
 # version checks below apply only to the pinned tools (cargo-nextest,
-# cargo-deny, cargo-llvm-cov); anything else in .tools/bin, a cargo or git
-# for example, would run first unchecked. WSX_TOOLS_DIR is exported with it,
-# so install-tools.sh's fix for a stale tool there installs into .tools/bin:
-# installed anywhere else, the stale copy would still win.
+# cargo-deny, cargo-llvm-cov) and ask cargo which copy it runs; anything else
+# in .tools/bin, a cargo or git for example, would run first unchecked.
+# WSX_TOOLS_DIR is exported with it, so install-tools.sh's fix for a stale
+# tool names the copy to replace: .tools/bin's when that copy is stale, else
+# the plain install into $CARGO_HOME/bin.
 if [ -d .tools/bin ]; then
     PATH="$PWD/.tools/bin:$PATH"
     WSX_TOOLS_DIR="$PWD/.tools/bin"

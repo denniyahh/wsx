@@ -31,6 +31,7 @@
 #                    runs: cargo puts $CARGO_HOME/bin first only when it is
 #                    absent from PATH, and otherwise follows PATH order
 #                    (cargo#11020), which no PATH lookup here can reproduce.
+#                    Its fix names the copy to replace (see cargo_fix).
 #
 # Exit 2 on a usage error, 1 on any failure.
 set -euo pipefail
@@ -128,19 +129,46 @@ install_hint() {
     fi
 }
 
-# $1 = tool, $2 = where it was found (for messages), then the command that
-# runs it. Exit 1 unless the first line of its version output matches the pin.
+# $1 = tool. The fix for a tool found on PATH or just installed: run
+# install_hint's command.
+plain_fix() {
+    printf 'run %s' "$(install_hint "$1")"
+}
+
+# $1 = tool, after tool_info. The fix when `cargo <subcommand>` reports
+# another version than the pin. If $WSX_TOOLS_DIR holds the tool and that
+# copy reports the pin, cargo ran another copy: it searches $CARGO_HOME/bin
+# before PATH while that directory is not on PATH (cargo#11020), so .tools/bin
+# does not win, and the fix is the plain command, which installs into
+# $CARGO_HOME/bin, with the reason. Otherwise the copy cargo ran is the one
+# install_hint replaces.
+cargo_fix() {
+    local tool="$1" repo_copy output
+    repo_copy="${WSX_TOOLS_DIR:-}/$tool"
+    if [ -n "${WSX_TOOLS_DIR:-}" ] && [ -x "$repo_copy" ] &&
+        output="$("$repo_copy" ${direct_sub:+"$direct_sub"} "$version_arg")" &&
+        [[ "${output%%$'\n'*}" =~ $pattern ]]; then
+        printf '%s reports %s, so cargo ran another copy: cargo searches %s before PATH while that directory is not on PATH (cargo#11020); run scripts/install-tools.sh install %s' \
+            "$repo_copy" "$version" "${CARGO_HOME:-$HOME/.cargo}/bin" "$tool"
+    else
+        plain_fix "$tool"
+    fi
+}
+
+# $1 = tool, $2 = where it was found (for messages), $3 = the function that
+# prints the fix (plain_fix or cargo_fix), then the command that runs it.
+# Exit 1 unless the first line of its version output matches the pin.
 check_version() {
-    local tool="$1" where="$2" output first
-    shift 2
+    local tool="$1" where="$2" fix="$3" output first
+    shift 3
     tool_info "$tool"
     if ! output="$("$@" "$version_arg")"; then
-        echo "error: $tool $where failed to report its version; run $(install_hint "$tool")" >&2
+        echo "error: $tool $where failed to report its version; $("$fix" "$tool")" >&2
         exit 1
     fi
     first="${output%%$'\n'*}"
     if [[ ! "$first" =~ $pattern ]]; then
-        echo "error: $tool $where reports '$first', expected $version; run $(install_hint "$tool")" >&2
+        echo "error: $tool $where reports '$first', expected $version; $("$fix" "$tool")" >&2
         exit 1
     fi
 }
@@ -153,7 +181,7 @@ cmd_verify() {
             exit 1
         fi
         tool_info "$tool"
-        check_version "$tool" "at $bin" "$bin" ${direct_sub:+"$direct_sub"}
+        check_version "$tool" "at $bin" plain_fix "$bin" ${direct_sub:+"$direct_sub"}
         echo "==> $tool $version OK"
     done
 }
@@ -166,7 +194,7 @@ cmd_verify_cargo() {
             usage
         fi
         sub="${tool#cargo-}"
-        check_version "$tool" "run as 'cargo $sub'" cargo "$sub"
+        check_version "$tool" "run as 'cargo $sub'" cargo_fix cargo "$sub"
         echo "==> cargo $sub: $tool $version OK"
     done
 }
@@ -200,7 +228,7 @@ install_one() {
         exit 1
     fi
     install -m 0755 "$extract_dir/$member" "$DEST/$tool"
-    check_version "$tool" "at $DEST/$tool" "$DEST/$tool" ${direct_sub:+"$direct_sub"}
+    check_version "$tool" "at $DEST/$tool" plain_fix "$DEST/$tool" ${direct_sub:+"$direct_sub"}
     echo "==> installed $tool $version to $DEST"
 }
 
