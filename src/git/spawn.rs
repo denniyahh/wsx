@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+use super::repo::Repo;
 use super::{Error, render_argv};
 
 /// The oldest git wsx runs, as (major, minor). CONTEXT "Running the git
@@ -142,6 +143,19 @@ impl Git {
         }
     }
 
+    /// The production helper: a snapshot of the process environment, taken
+    /// once, here, with `repo`'s worktree (when it has one) as wsx's own
+    /// worktree. Inside a hook the snapshot carries the hook's `GIT_DIR` and
+    /// `GIT_INDEX_FILE`, which children aimed at that worktree keep and
+    /// children aimed at any other worktree lose.
+    pub fn from_process(repo: &Repo) -> Git {
+        let git = Git::new(std::env::vars_os().collect());
+        match repo.worktree() {
+            Some(worktree) => git.with_own_worktree(worktree.to_path_buf()),
+            None => git,
+        }
+    }
+
     /// This helper with `worktree` as wsx's own worktree, whose children keep
     /// the whole snapshot. `worktree` is expected canonical (`Repo::worktree()`
     /// is) and must be a worktree root: own-versus-other is exact canonical
@@ -257,8 +271,10 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::process::{Command, Output, Stdio};
 
     use super::super::Error;
+    use super::super::repo::Repo;
     use super::super::testing::{self, Env, Scratch, Worktrees};
     use super::{Git, MIN_GIT_VERSION, parse_git_version};
 
@@ -670,5 +686,97 @@ mod tests {
                 .any(|line| line == "rev-parse --absolute-git-dir"),
             "the requested command ran without the removal list"
         );
+    }
+
+    /// The empty blob's id: what `git hash-object --stdin` prints for a
+    /// stdin that holds nothing, `/dev/null` included.
+    const EMPTY_BLOB: &str = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+
+    /// The bytes a parent feeds its re-executed child's stdin.
+    const STDIN_MARKER: &[u8] = b"wsx-stdin-marker\n";
+
+    /// The value of the child's `key` marker after asserting it exited 0;
+    /// either failure prints both of the child's streams.
+    fn child_fact(output: &Output, key: &str) -> String {
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "the child failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        testing::marker(output, key).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    #[test]
+    fn children_get_null_stdin() {
+        let scratch = Scratch::new("null-stdin").expect("scratch");
+        let repo = init_repo(&scratch);
+        let output = testing::reexec(
+            "git::spawn::tests::null_stdin_child",
+            &scratch.env,
+            &repo,
+            STDIN_MARKER,
+        )
+        .expect("re-execute the child");
+        assert_eq!(child_fact(&output, "stdin_blob"), EMPTY_BLOB);
+    }
+
+    #[test]
+    #[ignore = "child half of children_get_null_stdin; runs only when re-executed"]
+    fn null_stdin_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the child's repository");
+        let worktree = repo.worktree().expect("the repository has a worktree");
+        let stdout = Git::from_process(&repo)
+            .run(worktree, ["hash-object", "--stdin"])
+            .expect("git hash-object --stdin through the helper");
+        testing::child_print("stdin_blob", String::from_utf8_lossy(&stdout).trim());
+    }
+
+    #[test]
+    fn piped_stdin_reaches_an_unmanaged_child() {
+        let scratch = Scratch::new("piped-stdin").expect("scratch");
+        let repo = init_repo(&scratch);
+        let file = scratch.root.join("stdin-marker");
+        testing::write(&file, STDIN_MARKER).expect("write the marker file");
+        let expected = testing::git_ok(
+            &scratch,
+            &scratch.root,
+            [OsString::from("hash-object"), file.into()],
+        )
+        .expect("git hash-object <marker file>");
+        let expected = String::from_utf8_lossy(&expected).trim().to_owned();
+        assert_ne!(expected, EMPTY_BLOB);
+
+        let output = testing::reexec(
+            "git::spawn::tests::piped_stdin_child",
+            &scratch.env,
+            &repo,
+            STDIN_MARKER,
+        )
+        .expect("re-execute the child");
+        assert_eq!(child_fact(&output, "stdin_blob"), expected);
+    }
+
+    #[test]
+    #[ignore = "child half of piped_stdin_reaches_an_unmanaged_child; runs only when re-executed"]
+    fn piped_stdin_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        // `output()` defaults stdin to null; inherit it so the child's own
+        // piped stdin reaches git.
+        let output = Command::new("git")
+            .args(["hash-object", "--stdin"])
+            .current_dir(&cwd)
+            .stdin(Stdio::inherit())
+            .output()
+            .expect("spawn git hash-object --stdin");
+        assert!(
+            output.status.success(),
+            "git hash-object --stdin exited {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        testing::child_print("stdin_blob", String::from_utf8_lossy(&output.stdout).trim());
     }
 }

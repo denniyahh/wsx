@@ -15,7 +15,9 @@
 //! (`GIT_DIR`, `GIT_CONFIG_*`, the user's PATH and hooks) reaches git.
 
 use std::ffi::{OsStr, OsString};
+use std::fmt::Display;
 use std::fs;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -435,4 +437,108 @@ pub fn linked_worktrees(scratch: &Scratch) -> Result<Worktrees, String> {
         wt1: canonical(&wt1)?,
         wt2: canonical(&wt2)?,
     })
+}
+
+/// The prefix of every fact line a re-executed child prints.
+///
+/// A child half reports what it saw as `WSXCHILD <key>=<value>`, and its
+/// parent asserts that line. The parent never trusts the exit status alone:
+/// re-executing the test binary with a child name that matches no test exits
+/// 0 after `running 0 tests` (`reexec_of_an_unknown_child_has_no_marker`).
+pub const MARKER: &str = "WSXCHILD ";
+
+/// Prints one `WSXCHILD <key>=<value>` line to stdout, for the parent.
+pub fn child_print(key: &str, value: impl Display) {
+    println!("{MARKER}{key}={value}");
+}
+
+/// Re-executes this unit-test binary to run the single test `child` (its full
+/// libtest path, for example `git::spawn::tests::null_stdin_child`), ignored
+/// tests included, with output not captured.
+///
+/// The child gets an empty environment plus `env`, `cwd` as its working
+/// directory, and a piped stdin that receives `stdin` and is then closed, so
+/// a subject that reads the process environment or stdin runs against values
+/// the parent chose, without `set_var`. stdout and stderr are captured. An
+/// error only when the child cannot be started, fed or waited on.
+pub fn reexec(child: &str, env: &Env, cwd: &Path, stdin: &[u8]) -> Result<Output, String> {
+    let exe =
+        std::env::current_exe().map_err(|err| format!("locate the test executable: {err}"))?;
+    let mut process = Command::new(&exe)
+        .args(["--exact", child, "--include-ignored", "--nocapture"])
+        .env_clear()
+        .envs(env.iter().map(|(key, value)| (key, value)))
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("spawn {} --exact {child}: {err}", exe.display()))?;
+    let mut pipe = process
+        .stdin
+        .take()
+        .ok_or_else(|| format!("{child}: the child has no stdin pipe"))?;
+    // Fed from another thread, so a child that writes a lot before it reads
+    // (or never reads) cannot deadlock against this one. Dropping the pipe
+    // closes the child's stdin.
+    std::thread::scope(|scope| {
+        let feeder = scope.spawn(move || pipe.write_all(stdin));
+        let output = process
+            .wait_with_output()
+            .map_err(|err| format!("wait for {child}: {err}"))?;
+        feeder
+            .join()
+            .map_err(|_| format!("{child}: the stdin feeder panicked"))?
+            .map_err(|err| format!("write {} stdin bytes to {child}: {err}", stdin.len()))?;
+        Ok(output)
+    })
+}
+
+/// The value after `WSXCHILD <key>=` on its first line in the child's stdout,
+/// else in its stderr (a hook's stdout reaches git's stderr). An error quoting
+/// both streams when neither has the line.
+pub fn marker(output: &Output, key: &str) -> Result<String, String> {
+    let prefix = format!("{MARKER}{key}=");
+    let find = |stream: &[u8]| {
+        String::from_utf8_lossy(stream).lines().find_map(|line| {
+            line.find(&prefix)
+                .map(|start| line[start + prefix.len()..].to_owned())
+        })
+    };
+    find(&output.stdout)
+        .or_else(|| find(&output.stderr))
+        .ok_or_else(|| {
+            format!(
+                "no `{prefix}` line from the child (exit {:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+}
+
+#[test]
+fn reexec_of_an_unknown_child_has_no_marker() {
+    let scratch = Scratch::new("reexec-unknown").expect("scratch");
+    let output = reexec(
+        "git::testing::no_such_child",
+        &scratch.env,
+        &scratch.root,
+        b"",
+    )
+    .expect("re-execute the test binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a child name matching no test exits 0; stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("running 0 tests"),
+        "the unknown child ran a test; stdout: {stdout}"
+    );
+    assert!(
+        marker(&output, "anything").is_err(),
+        "a zero-test run produced a marker; stdout: {stdout}"
+    );
 }
