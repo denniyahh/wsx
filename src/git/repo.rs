@@ -97,6 +97,16 @@ impl Repo {
         &self.index_path
     }
 
+    /// Every other worktree of this repository, the main one included, each
+    /// with its own git dir and index, sorted by canonical worktree path and
+    /// then git dir. Siblings are opened only through gix's main-repo and
+    /// worktree-list calls, which switch the repository environment overrides
+    /// off: inside a hook, opening a sibling by path would pair it with the
+    /// hook's `GIT_DIR` and `GIT_INDEX_FILE`.
+    pub fn siblings(&self) -> Result<Vec<Repo>, Error> {
+        Ok(Vec::new())
+    }
+
     /// The object a revspec (`main`, `feat~3`, a hex id) names. A ref gix
     /// cannot decode because of its storage backend is the reftable refusal,
     /// never a generic read error.
@@ -683,5 +693,90 @@ mod tests {
     #[ignore = "child half of hook_resolves_main_worktree_with_relative_index; runs only when re-executed"]
     fn main_hook_resolution_child() {
         print_resolution();
+    }
+
+    /// Prints every sibling `Repo::siblings` opens from the hook's
+    /// repository, then what `Repo::discover` resolves for the sibling path
+    /// in `SIBLING_VAR`.
+    fn print_siblings() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the hook's repository");
+        let siblings = repo.siblings().expect("open the sibling worktrees");
+        testing::child_print("sibling_count", siblings.len());
+        for (i, sibling) in siblings.iter().enumerate() {
+            let worktree = sibling
+                .worktree()
+                .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string());
+            testing::child_print(&format!("sibling_{i}_worktree"), worktree);
+            testing::child_print(&format!("sibling_{i}_git_dir"), sibling.git_dir().display());
+            testing::child_print(
+                &format!("sibling_{i}_index"),
+                sibling.index_path().display(),
+            );
+        }
+        let wt2 = std::env::var_os(testing::SIBLING_VAR).expect("the parent set the sibling path");
+        match Repo::discover(Path::new(&wt2)) {
+            Ok(found) => testing::child_print("discover_wt2_git_dir", found.git_dir().display()),
+            Err(err) => testing::child_print("discover_wt2_error", err),
+        }
+    }
+
+    /// Inside wt1's pre-commit hook, `Repo::siblings()` returns exactly the
+    /// main worktree, then wt2 (sorted by canonical worktree path: wt2 is
+    /// nested inside main), each with its own git dir and index, never the
+    /// hook's.
+    #[test]
+    fn siblings_in_a_hook_use_their_own_git_dirs() {
+        let scratch = Scratch::new("hook-siblings").expect("scratch");
+        let (worktrees, output) =
+            testing::linked_hook_commit(&scratch, &child_path("linked_hook_siblings_child"))
+                .unwrap_or_else(|err| panic!("{err}"));
+        let main_git_dir = worktrees.main.join(".git");
+        let wt2_git_dir = main_git_dir.join("worktrees/wt2");
+        let expected = [
+            (&worktrees.main, main_git_dir.clone()),
+            (&worktrees.wt2, wt2_git_dir),
+        ];
+
+        assert_eq!(fact(&output, "sibling_count"), expected.len().to_string());
+        for (i, (worktree, git_dir)) in expected.iter().enumerate() {
+            assert_eq!(
+                fact(&output, &format!("sibling_{i}_worktree")),
+                worktree.display().to_string()
+            );
+            assert_eq!(
+                fact(&output, &format!("sibling_{i}_git_dir")),
+                git_dir.display().to_string()
+            );
+            assert_eq!(
+                fact(&output, &format!("sibling_{i}_index")),
+                git_dir.join("index").display().to_string()
+            );
+        }
+    }
+
+    /// The control for `siblings_in_a_hook_use_their_own_git_dirs`: in the
+    /// same hook, discovering wt2 by its path follows the hook's `GIT_DIR`
+    /// and resolves wt1's git dir, the leak `siblings()` avoids.
+    #[test]
+    fn discovering_a_sibling_inside_a_hook_follows_the_hook_env() {
+        let scratch = Scratch::new("hook-discover-sibling").expect("scratch");
+        let (worktrees, output) =
+            testing::linked_hook_commit(&scratch, &child_path("linked_hook_siblings_child"))
+                .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            fact(&output, "discover_wt2_git_dir"),
+            worktrees
+                .main
+                .join(".git/worktrees/wt1")
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    #[ignore = "child half of the hook sibling tests; runs only when re-executed"]
+    fn linked_hook_siblings_child() {
+        print_siblings();
     }
 }
