@@ -59,14 +59,14 @@ impl Repo {
         Ok(repo.to_thread_local())
     }
 
-    /// Wraps an open repository, canonicalising its worktree, git dir and
-    /// common dir. gix reports the common dir as `<git-dir>/../..`, and on
+    /// Wraps an open repository, canonicalising its worktree, git dir, common
+    /// dir and the index's directory. gix reports the common dir as `<git-dir>/../..`, and on
     /// some hosts `/home` is a symlink, so only canonical paths compare.
     fn from_gix(repo: gix::Repository) -> Result<Repo, Error> {
         let worktree = repo.workdir().map(canonical).transpose()?;
         let git_dir = canonical(repo.git_dir())?;
         let common_dir = canonical(repo.common_dir())?;
-        let index_path = git_dir.join("index");
+        let index_path = canonical_parent(&repo.index_path())?;
         Ok(Repo {
             repo,
             worktree,
@@ -152,6 +152,20 @@ fn refuse_ref_storage(repo: &gix::Repository) -> Result<(), Error> {
 /// dir of a bare repository.
 fn refusal_path(repo: &gix::Repository) -> Result<PathBuf, Error> {
     canonical(repo.workdir().unwrap_or_else(|| repo.git_dir()))
+}
+
+/// `path` with its parent directory canonicalised and its file name kept,
+/// for a file that may not exist: gix reports the index absolute (a relative
+/// `GIT_INDEX_FILE` is anchored at the current directory when opening), and
+/// inside a hook it is a lock file the commit removes once it ends.
+fn canonical_parent(path: &Path) -> Result<PathBuf, Error> {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => Ok(canonical(parent)?.join(name)),
+        _ => Err(Error::Io {
+            what: format!("split {} into directory and file name", path.display()),
+            source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
+        }),
+    }
 }
 
 /// `path` with every symlink and `..` resolved.
