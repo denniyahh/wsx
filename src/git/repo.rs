@@ -221,38 +221,39 @@ fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
 /// | `r1/inner` | `r1/inner` | finds `r1/.git` | finds `r1/.git` (`match_ceiling_dir_or_error = false`) |
 /// | `r1/inner/deeper` | `r1/inner` | not found | not found |
 ///
-/// So the refusal applies when a ceiling entry is the worktree discovery
-/// found while the start is not that worktree: discovery climbed into the
-/// ceiling. A start equal to the ceiling is searched by both. Nothing is
-/// checked when `GIT_DIR` is set (git does no discovery then) or the
-/// repository has no worktree. Entries are canonicalised; empty, relative and
-/// non-canonicalisable entries are skipped, as git ignores them. git's rule
-/// that an empty entry turns off symlink resolution for later entries is not
-/// modelled. The variable is only read here; gix applied it already.
+/// So the refusal applies when a ceiling entry is the directory discovery
+/// found while the start is not that directory: discovery climbed into the
+/// ceiling. The directory found is the worktree, or the git dir of a bare
+/// repository, which the same divergence hides from inside it (start
+/// `r.git/objects`, ceiling `r.git`: git finds nothing, gix finds `r.git`).
+/// A start equal to the ceiling is searched by both. Nothing is checked when
+/// `GIT_DIR` is set (git does no discovery then). Entries are canonicalised;
+/// empty, relative and non-canonicalisable entries are skipped, as git
+/// ignores them. git's rule that an empty entry turns off symlink resolution
+/// for later entries is not modelled. The variable is only read here; gix
+/// applied it already.
 fn refuse_at_ceiling(start: &Path, repo: &gix::Repository) -> Result<(), Error> {
     if std::env::var_os("GIT_DIR").is_some() {
         return Ok(());
     }
-    let (Some(workdir), Some(ceilings)) =
-        (repo.workdir(), std::env::var_os("GIT_CEILING_DIRECTORIES"))
-    else {
+    let Some(ceilings) = std::env::var_os("GIT_CEILING_DIRECTORIES") else {
         return Ok(());
     };
-    let worktree = canonical(workdir)?;
+    let found = refusal_path(repo)?;
     let start_dir = canonical(start)?;
-    if start_dir == worktree {
+    if start_dir == found {
         return Ok(());
     }
     let hidden = std::env::split_paths(&ceilings)
         .filter(|entry| entry.is_absolute())
         .filter_map(|entry| std::fs::canonicalize(entry).ok())
-        .any(|entry| entry == worktree);
+        .any(|entry| entry == found);
     if hidden {
         Err(Error::NotARepo {
             start: start.to_path_buf(),
             reason: format!(
                 "GIT_CEILING_DIRECTORIES stops discovery before it reaches {}, as git's does",
-                worktree.display()
+                found.display()
             ),
         })
     } else {
@@ -1600,6 +1601,64 @@ mod tests {
         let scratch = Scratch::new("ceiling-in-root").expect("scratch");
         let r1 = ceiling_repo(&scratch);
         assert_both_open(&ceiling_run(&scratch, &r1, &r1), &r1);
+    }
+
+    /// `<root>/r.git`, canonical, made with `git init -q --bare`, so
+    /// `r.git/objects` exists.
+    fn bare_ceiling_repo(scratch: &Scratch) -> PathBuf {
+        let bare = scratch.root.join("r.git");
+        let bare_arg = bare.to_str().expect("UTF-8 scratch path");
+        git_ok(scratch, &scratch.root, ["init", "-q", "--bare", bare_arg])
+            .expect("git init --bare r.git");
+        bare.canonicalize().expect("canonicalize r.git")
+    }
+
+    /// git found the bare `bare` (exit 0, printing it), then wsx opened it
+    /// with no worktree.
+    fn assert_both_open_bare(run: &CeilingRun, bare: &Path) {
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(
+            String::from_utf8_lossy(&run.git.stdout).trim_end(),
+            bare.display().to_string(),
+            "{}",
+            run.both()
+        );
+        assert_eq!(ceiling_result(run), "opened", "{}", run.both());
+        assert_eq!(
+            testing::marker(&run.child, "worktree").unwrap_or_else(|err| panic!("{err}")),
+            "<none>",
+            "{}",
+            run.both()
+        );
+    }
+
+    /// With the ceiling at a bare repository, discovery from inside it
+    /// (`r.git/objects`) finds nothing in git, and none in wsx, although gix
+    /// alone searches the ceiling directory and finds `r.git`.
+    #[test]
+    fn ceiling_at_a_bare_repository_hides_it_like_git() {
+        let scratch = Scratch::new("ceiling-bare").expect("scratch");
+        let bare = bare_ceiling_repo(&scratch);
+        assert_both_hidden(&ceiling_run(&scratch, &bare, &bare.join("objects")));
+    }
+
+    /// Control: with the ceiling at the bare repository's parent, git and
+    /// wsx both find `r.git` from `r.git/objects`.
+    #[test]
+    fn ceiling_above_a_bare_repository_lets_wsx_and_git_find_it() {
+        let scratch = Scratch::new("ceiling-above-bare").expect("scratch");
+        let bare = bare_ceiling_repo(&scratch);
+        let parent = bare.parent().expect("r.git has a parent");
+        assert_both_open_bare(&ceiling_run(&scratch, parent, &bare.join("objects")), &bare);
+    }
+
+    /// Starting in the bare repository that is the ceiling opens it for git
+    /// and for wsx.
+    #[test]
+    fn starting_in_a_bare_repository_that_is_the_ceiling_opens_it() {
+        let scratch = Scratch::new("ceiling-in-bare").expect("scratch");
+        let bare = bare_ceiling_repo(&scratch);
+        assert_both_open_bare(&ceiling_run(&scratch, &bare, &bare), &bare);
     }
 
     /// Prints what `Repo::discover` makes of the directory in `START_VAR`:
