@@ -106,11 +106,167 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use gix::sec::trust::DefaultForLevel;
 
+    use super::super::Error;
     use super::super::spawn::Git;
-    use super::super::testing::{Scratch, T0, commit_all, git_ok, write};
+    use super::super::testing::{Scratch, T0, TICK, commit_all, git, git_ok, write};
     use super::Repo;
+
+    /// The trimmed stdout of `git <args>` run in `dir`.
+    fn git_line(scratch: &Scratch, dir: &Path, args: &[&str]) -> String {
+        let stdout = git_ok(scratch, dir, args).unwrap_or_else(|err| panic!("{err}"));
+        String::from_utf8(stdout)
+            .expect("git printed UTF-8")
+            .trim_end()
+            .to_owned()
+    }
+
+    /// Builds `<root>/files` and `<root>/table` with the same steps and
+    /// dates (`a.txt` at `T0`, `sub/b.txt` at `T0 + TICK`), checks both
+    /// have the same `HEAD`, then migrates `table` to reftable with git
+    /// itself and checks git reports the reftable format there.
+    fn twins(scratch: &Scratch) -> (PathBuf, PathBuf) {
+        let build = |name: &str| {
+            let dir = scratch.root.join(name);
+            std::fs::create_dir_all(&dir).expect("create twin dir");
+            git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
+            write(&dir.join("a.txt"), b"a\n").expect("write a.txt");
+            commit_all(scratch, &dir, "a", T0).expect("commit a");
+            write(&dir.join("sub/b.txt"), b"b\n").expect("write sub/b.txt");
+            commit_all(scratch, &dir, "b", T0 + TICK).expect("commit b");
+            dir
+        };
+        let files = build("files");
+        let table = build("table");
+        assert_eq!(
+            git_line(scratch, &files, &["rev-parse", "HEAD"]),
+            git_line(scratch, &table, &["rev-parse", "HEAD"]),
+            "the twins must hold the same history"
+        );
+        git_ok(
+            scratch,
+            &table,
+            ["refs", "migrate", "--ref-format=reftable"],
+        )
+        .expect("git refs migrate --ref-format=reftable");
+        assert_eq!(
+            git_line(scratch, &table, &["rev-parse", "--show-ref-format"]),
+            "reftable",
+            "the migrated twin must use reftable"
+        );
+        assert_eq!(
+            git_line(scratch, &files, &["rev-parse", "--show-ref-format"]),
+            "files",
+            "the control twin must use the files backend"
+        );
+        (files, table)
+    }
+
+    /// A one-commit repository at `<root>/<name>` with
+    /// `core.repositoryformatversion = 1` and `extensions.refStorage` set to
+    /// `value` by `git config`.
+    fn ref_storage_repo(scratch: &Scratch, name: &str, value: &str) -> PathBuf {
+        let dir = scratch.root.join(name);
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
+        write(&dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &dir, "a", T0).expect("commit a");
+        git_ok(
+            scratch,
+            &dir,
+            ["config", "core.repositoryformatversion", "1"],
+        )
+        .expect("set core.repositoryformatversion");
+        git_ok(scratch, &dir, ["config", "extensions.refStorage", value])
+            .expect("set extensions.refStorage");
+        dir
+    }
+
+    /// The `format` and rendered message of a `Reftable` refusal, panicking
+    /// on an open or any other error.
+    fn refused_format(result: Result<Repo, Error>, what: &str) -> (String, String) {
+        let err = match result {
+            Ok(repo) => panic!(
+                "{what}: expected a Reftable refusal, but it opened at {}",
+                repo.git_dir().display()
+            ),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        match err {
+            Error::Reftable { format, .. } => (format, message),
+            _ => panic!("{what}: expected a Reftable refusal, got {message}"),
+        }
+    }
+
+    /// A repository git migrated to reftable is refused from a subdirectory,
+    /// naming reftable and saying wsx cannot read it.
+    #[test]
+    fn reftable_repo_is_refused() {
+        let scratch = Scratch::new("reftable").expect("scratch");
+        let (_files, table) = twins(&scratch);
+        let (format, message) = refused_format(Repo::discover(&table.join("sub")), "reftable twin");
+        assert_eq!(format, "reftable");
+        assert!(message.contains("reftable"), "message: {message}");
+        assert!(message.contains("cannot read"), "message: {message}");
+    }
+
+    /// Control: the same history in the files backend opens from the same
+    /// subdirectory.
+    #[test]
+    fn files_backend_twin_opens() {
+        let scratch = Scratch::new("files-twin").expect("scratch");
+        let (files, _table) = twins(&scratch);
+        let repo = Repo::discover(&files.join("sub")).expect("the files twin opens");
+        assert_eq!(repo.worktree(), Some(files.as_path()));
+    }
+
+    /// A reftable repository with no commit is refused the same way: the
+    /// check reads configuration, not refs.
+    #[test]
+    fn empty_reftable_repo_is_refused() {
+        let scratch = Scratch::new("empty-reftable").expect("scratch");
+        let empty = scratch.root.join("empty");
+        let empty_arg = empty.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &scratch.root,
+            ["init", "-q", "--ref-format=reftable", empty_arg],
+        )
+        .expect("git init --ref-format=reftable");
+        let (format, _message) = refused_format(Repo::discover(&empty), "empty reftable");
+        assert_eq!(format, "reftable");
+    }
+
+    /// `files` set explicitly, as git writes it, opens.
+    #[test]
+    fn explicit_files_ref_storage_opens() {
+        let scratch = Scratch::new("explicit-files").expect("scratch");
+        let dir = ref_storage_repo(&scratch, "repo", "files");
+        git_ok(&scratch, &dir, ["rev-parse", "HEAD"]).expect("git still reads the repository");
+        let repo = Repo::discover(&dir).expect("an explicit files backend opens");
+        assert_eq!(repo.worktree(), Some(dir.as_path()));
+    }
+
+    /// `Files` is not `files`: wsx refuses it, as git does.
+    #[test]
+    fn miscased_ref_storage_is_refused_as_git_refuses_it() {
+        let scratch = Scratch::new("miscased").expect("scratch");
+        let dir = ref_storage_repo(&scratch, "repo", "Files");
+        let (format, _message) = refused_format(Repo::discover(&dir), "miscased Files");
+        assert_eq!(format, "Files");
+
+        let output = git(&scratch, &dir, ["rev-parse", "--git-dir"]).expect("spawn git");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(128), "git stderr: {stderr}");
+        assert!(
+            stderr.contains("invalid value for 'extensions.refstorage'"),
+            "git stderr: {stderr}"
+        );
+    }
 
     /// The trust mapping `open_gix` passes: each level's default options.
     fn trust_map() -> gix::sec::trust::Mapping<gix::open::Options> {
