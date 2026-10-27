@@ -1,5 +1,7 @@
 //! Read queries answered by gix. Each takes revisions as revspec bytes and
-//! resolves them through `Repo::resolve`, so callers never hold a gix type.
+//! resolves them through `Repo::resolve` (commit queries through
+//! `Repo::resolve_commit`, which peels annotated tags as git does), so
+//! callers never hold a gix type.
 
 use std::collections::BTreeSet;
 
@@ -47,8 +49,8 @@ impl Repo {
     /// one such history, which shows gix can match git there, not that it
     /// always does.
     pub fn merge_base(&self, one: &[u8], two: &[u8]) -> Result<Option<ObjectId>, Error> {
-        let one_id = self.resolve(one)?;
-        let two_id = self.resolve(two)?;
+        let one_id = self.resolve_commit(one)?;
+        let two_id = self.resolve_commit(two)?;
         let base = self
             .repo
             .merge_base(one_id, two_id)
@@ -159,9 +161,9 @@ impl Repo {
         Ok(tree.id)
     }
 
-    /// The objects `revs` name, in order.
+    /// The commits `revs` name, in order, with annotated tags peeled.
     fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
-        revs.iter().map(|rev| self.resolve(rev)).collect()
+        revs.iter().map(|rev| self.resolve_commit(rev)).collect()
     }
 }
 
@@ -845,6 +847,96 @@ mod tests {
             String::from_utf8_lossy(&from_git),
             "",
             "git rev-list --not main printed something"
+        );
+    }
+
+    /// The criss-cross fixture with the annotated tag `v1` on `main`,
+    /// checked by git to be a tag object, not a commit.
+    fn tagged_criss_cross(scratch: &Scratch) -> std::path::PathBuf {
+        let repo_dir = criss_cross(scratch).expect("build criss-cross fixture");
+        git_ok(scratch, &repo_dir, ["tag", "-a", "v1", "-m", "v1", "main"])
+            .expect("git tag -a v1 main");
+        assert_eq!(
+            git_line(scratch, &repo_dir, &["cat-file", "-t", "v1"]),
+            "tag",
+            "v1 must be an annotated tag object"
+        );
+        repo_dir
+    }
+
+    /// An annotated tag as the hidden revision hides the commit it points
+    /// to, as in `git rev-list feat --not v1`. Control: git's answer differs
+    /// from the walk with nothing hidden, so a hidden tag silently ignored
+    /// cannot pass.
+    #[test]
+    fn range_walk_hides_an_annotated_tag_like_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("walk-hidden-tag").expect("create scratch");
+        let repo_dir = tagged_criss_cross(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_git = git_ids(&scratch, &repo_dir, &["rev-list", "feat", "--not", "v1"]);
+        let unhidden = git_ids(&scratch, &repo_dir, &["rev-list", "feat"]);
+        assert_ne!(
+            from_git, unhidden,
+            "git rev-list feat --not v1 must hide commits"
+        );
+        let walked = hex(&repo
+            .range_walk(&[b"feat"], &[b"v1"])
+            .expect("gix walk feat --not v1"));
+        assert_eq!(
+            walked, from_git,
+            "walk feat --not v1: gix against git rev-list"
+        );
+    }
+
+    /// An annotated tag as a tip walks from the commit it points to, as
+    /// `git rev-list v1` does.
+    #[test]
+    fn range_walk_from_an_annotated_tag_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("walk-tag-tip").expect("create scratch");
+        let repo_dir = tagged_criss_cross(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_git = git_ids(&scratch, &repo_dir, &["rev-list", "v1"]);
+        let walked = hex(&repo.range_walk(&[b"v1"], &[]).expect("gix walk v1"));
+        assert_eq!(walked, from_git, "walk v1: gix against git rev-list");
+    }
+
+    /// An annotated tag is peeled for merge-base and ahead/behind, giving
+    /// git's answers.
+    #[test]
+    fn merge_base_and_ahead_behind_peel_an_annotated_tag_like_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tag-merge-base").expect("create scratch");
+        let repo_dir = tagged_criss_cross(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_git = git_line(&scratch, &repo_dir, &["merge-base", "v1", "feat"]);
+        let from_gix = repo
+            .merge_base(b"v1", b"feat")
+            .expect("gix merge-base v1 feat")
+            .map(|id| id.to_string());
+        assert_eq!(
+            from_gix,
+            Some(from_git.clone()),
+            "merge-base v1 feat: gix against git's {from_git}"
+        );
+
+        let level_git = git_ahead_behind(&scratch, &repo_dir, "v1", "feat");
+        let level = repo
+            .ahead_behind(b"v1", b"feat")
+            .expect("gix ahead/behind v1 feat");
+        assert_eq!(
+            level, level_git,
+            "ahead/behind v1 feat: gix {level:?} against git {level_git:?}"
         );
     }
 

@@ -162,6 +162,23 @@ impl Repo {
         }
     }
 
+    /// The commit a revspec names, peeling annotated tags as git's
+    /// commit-taking commands do (`rev-list`, `merge-base`). Resolution
+    /// errors are `resolve`'s; an object that does not peel to a commit is
+    /// `Error::Gix` naming the revision.
+    pub(super) fn resolve_commit(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
+        let id = self.resolve(rev)?;
+        self.repo
+            .find_object(id)
+            .map_err(|err| err.to_string())
+            .and_then(|object| object.peel_to_commit().map_err(|err| err.to_string()))
+            .map(|commit| commit.id)
+            .map_err(|message| Error::Gix {
+                what: format!("peel {} to a commit", String::from_utf8_lossy(rev)),
+                message,
+            })
+    }
+
     /// The backstop behind `refuse_ref_storage`: the refusal for a ref whose
     /// storage backend gix reports as unsupported, naming the configured
     /// `extensions.refStorage`, or `unsupported` when none is set.
