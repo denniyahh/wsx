@@ -19,15 +19,79 @@ use super::{Error, render_argv};
 /// an older git is refused naming the version found and the one required.
 const MIN_GIT_VERSION: (u32, u32) = (2, 54);
 
+/// The first line of `output`, trimmed, lossily decoded.
+fn first_line(output: &[u8]) -> String {
+    String::from_utf8_lossy(output)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_owned()
+}
+
+/// One dot-separated version part as a number: ASCII digits only.
+fn version_part(part: Option<&str>) -> Option<u32> {
+    let part = part?;
+    if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    part.parse().ok()
+}
+
 /// The (major, minor) of `git --version` output: the first line's token after
 /// `git version `, its first two dot-separated parts. Anything after them
 /// (`.windows.1`, ` (Apple Git-155)`) is ignored. `None` when the output does
 /// not have that shape.
-fn parse_git_version(_output: &[u8]) -> Option<(u32, u32)> {
-    None
+fn parse_git_version(output: &[u8]) -> Option<(u32, u32)> {
+    let line = first_line(output);
+    let token = line
+        .strip_prefix("git version ")?
+        .split_whitespace()
+        .next()?;
+    let mut parts = token.split('.');
+    Some((version_part(parts.next())?, version_part(parts.next())?))
+}
+
+/// What a refusal names as the version found: the token after
+/// `git version `, or the whole first line when git printed something else.
+fn reported_version(output: &[u8]) -> String {
+    let line = first_line(output);
+    match line
+        .strip_prefix("git version ")
+        .and_then(|rest| rest.split_whitespace().next())
+    {
+        Some(token) => token.to_owned(),
+        None => line,
+    }
+}
+
+/// Runs `command` (whose arguments are `argv`) in `worktree` and returns its
+/// stdout. A child that cannot be started is `Error::Io`; one that does not
+/// exit 0, a signal-killed one included, is `Error::GitFailed` carrying its
+/// argv, exit code (`None` for a signal) and stderr.
+fn finish(mut command: Command, argv: Vec<OsString>, worktree: &Path) -> Result<Vec<u8>, Error> {
+    let output = command.output().map_err(|source| Error::Io {
+        what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
+        source,
+    })?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(Error::GitFailed {
+            argv,
+            status: output.status.code(),
+            stderr: output.stderr,
+        })
+    }
 }
 
 /// Runs the `git` binary with a fixed environment snapshot.
+///
+/// The git version check is cached per helper, not per process: each helper
+/// resolves `git` through its own snapshot's PATH, so two helpers may run two
+/// different binaries, and a check one of them passed says nothing about the
+/// other. Production builds one helper per process (`Git::from_process`), so
+/// there the check runs once per process, as CONTEXT decides.
 pub struct Git {
     /// The complete environment every child gets, as ordered key/value pairs.
     env: Vec<(OsString, OsString)>,
@@ -61,19 +125,36 @@ impl Git {
     /// The child for `args` in `worktree`: an empty environment plus the
     /// snapshot, `worktree` as its working directory, stdin from `/dev/null`.
     fn command(&self, worktree: &Path, args: &[OsString]) -> Command {
-        let mut command = Command::new("git");
-        command
-            .env_clear()
-            .envs(self.env.iter().map(|(key, value)| (key, value)))
-            .current_dir(worktree)
-            .stdin(Stdio::null())
-            .args(args);
-        command
+        self.base_command(worktree, args)
     }
 
-    /// Runs `git <args>` in `worktree` and returns its stdout. A child that
-    /// cannot be started is `Error::Io`; one that does not exit 0 is
-    /// `Error::GitFailed` carrying its argv, exit code and stderr.
+    /// Runs `git --version` unless this helper has already passed the check,
+    /// and refuses a git older than `MIN_GIT_VERSION` or one whose version
+    /// cannot be read, naming what git printed. Racing first callers may each
+    /// run the check; none proceeds before its own check has passed.
+    fn ensure_version(&self, worktree: &Path) -> Result<(), Error> {
+        if self.version_checked.get().is_some() {
+            return Ok(());
+        }
+        let argv = vec![OsString::from("--version")];
+        let stdout = finish(self.base_command(worktree, &argv), argv, worktree)?;
+        match parse_git_version(&stdout) {
+            Some(version) if version >= MIN_GIT_VERSION => {
+                self.version_checked.get_or_init(|| ());
+                Ok(())
+            }
+            _ => Err(Error::GitTooOld {
+                found: reported_version(&stdout),
+                required: MIN_GIT_VERSION,
+            }),
+        }
+    }
+
+    /// Runs `git <args>` in `worktree` and returns its stdout. The first run
+    /// on a helper checks the git version first, and a refused check spawns
+    /// nothing else. A child that cannot be started is `Error::Io`; one that
+    /// does not exit 0 is `Error::GitFailed` carrying its argv, exit code and
+    /// stderr.
     pub fn run<I, S>(&self, worktree: &Path, args: I) -> Result<Vec<u8>, Error>
     where
         I: IntoIterator<Item = S>,
@@ -83,22 +164,8 @@ impl Git {
             .into_iter()
             .map(|arg| arg.as_ref().to_os_string())
             .collect();
-        let output = self
-            .command(worktree, &argv)
-            .output()
-            .map_err(|source| Error::Io {
-                what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
-                source,
-            })?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            Err(Error::GitFailed {
-                argv,
-                status: output.status.code(),
-                stderr: output.stderr,
-            })
-        }
+        self.ensure_version(worktree)?;
+        finish(self.command(worktree, &argv), argv, worktree)
     }
 }
 
