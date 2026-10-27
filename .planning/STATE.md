@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-10-27T02:12:56.474Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-10-27T02:23:15.343Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: 6b36a05e59c4004863fd9ac481b8d744e49a3c02
+state_head: 0c0589f786bf9b1f0816f9ffff05b69d3091c076
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 26
+  completed_plans: 27
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 3 (Git adapter) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 3 execution started
 
@@ -82,6 +82,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 03 P02 | 2 min | 2 tasks | 2 files |
 | Phase 03 P03 | 9 min | 3 tasks | 1 files |
 | Phase 03 P04 | 4 min | 2 tasks | 2 files |
+| Phase 03 P05 | 6 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -140,6 +141,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-03: ahead_behind is built on range_walk (two hidden gix walks counted by set size), so the two reads cannot disagree; walk results are BTreeSet<ObjectId>, no order promised
 - [Phase 03]: 03-03: tree_diff drops tree-mode records and maps a mode change to TypeChanged only across blob/symlink/submodule; an executable-bit change alone is Modified, pinned against git by an added exec-bit test
 - [Phase 03]: The sanctioned gix discover_with_environment_overrides_opts is itself on the clippy ban list, so open_gix's expect holds only while the ban does and a second call anywhere fails the gate
+- [Phase 03]: 03-05: git version check and --local-env-vars list are cached per helper, not per process (each helper resolves git via its own snapshot's PATH); production builds one helper per process
+- [Phase 03]: 03-05: own-versus-other worktree is exact canonical equality, never a prefix test, because wsx nests sibling worktrees inside its own worktree directory
 
 ### Pending Todos
 
@@ -165,6 +168,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T02:12:56.290Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-10-27T02:23:15.158Z
+Stopped at: Completed 03-05-PLAN.md
 Resume file: None
