@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-10-27T01:52:49.148Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-10-27T02:05:32.982Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: 3daf0b1bb99d40dab3edcf295adabdc576b972bd
+state_head: c82302fad78dcbf6608bb30eb925fdb2253384ec
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 24
+  completed_plans: 25
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 3 (Git adapter) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 3 execution started
 
@@ -80,6 +80,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 02 P15 | 7 min | 2 tasks | 4 files |
 | Phase 03 P01 | 13 min | 2 tasks | 9 files |
 | Phase 03 P02 | 2 min | 2 tasks | 2 files |
+| Phase 03 P03 | 9 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -135,6 +136,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-01: merge-base control pairs main/feat~3 (F1) with main~2/feat (C1); git's single base for main/feat on the criss-cross fixture is F1, so comparing against it cannot catch a constant
 - [Phase 03]: 03-01: gix-protocol/gix-transport are unconditional gix 0.90.0 deps; the no-network check asserts gix-transport has only its empty default feature and no client crate (gix-credentials, curl, reqwest) is in the tree
 - [Phase 03]: 03-02: the oracle's record on reftable is verdict(0), observed through the harness (exit 0, refs unchanged); it matches RESEARCH's scratch prediction
+- [Phase 03]: 03-03: ahead_behind is built on range_walk (two hidden gix walks counted by set size), so the two reads cannot disagree; walk results are BTreeSet<ObjectId>, no order promised
+- [Phase 03]: 03-03: tree_diff drops tree-mode records and maps a mode change to TypeChanged only across blob/symlink/submodule; an executable-bit change alone is Modified, pinned against git by an added exec-bit test
 
 ### Pending Todos
 
@@ -160,6 +163,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T01:52:48.952Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-10-27T02:05:32.795Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
