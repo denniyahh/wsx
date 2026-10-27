@@ -152,7 +152,9 @@ They implement the decisions above and do not change them.
 - `Cargo.toml` `[dependencies]` gets gix (the first runtime dependency). `deny.toml` must accept
   gix's license and transitive graph.
 - `clippy.toml` gets the `gix::open`/`gix::discover` ban.
-- `tests/harness/registry.rs` gets the reftable `regression:` scenario (Rust side disabled).
+- `tests/harness/check.rs` gets the reftable `regression:` scenario (Rust side disabled) in its
+  `scenarios!` block. `tests/harness/main.rs` (`harness_modules!`) and
+  `registry::rust_sides_not_enabled` pick it up with no edit (verified 2026-10-26).
 - CI's container checks out the repo under another owner: tests that open this checkout must
   trust it explicitly, as phase 2 learned.
 
