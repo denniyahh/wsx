@@ -308,6 +308,58 @@ mod tests {
         gix::discover::upwards::Options::default()
     }
 
+    /// The repository at `dir`, opened past `refuse_ref_storage`, as only a
+    /// test can.
+    fn open_unchecked(dir: &Path) -> Repo {
+        let repo = Repo::open_gix(dir).expect("gix opens the repository");
+        Repo::from_gix(repo).expect("wrap the open repository")
+    }
+
+    /// With the configuration check bypassed, a reftable repository opens,
+    /// and resolving `HEAD` is the reftable refusal, not a generic read
+    /// error.
+    #[test]
+    fn reftable_ref_decode_maps_to_the_refusal() {
+        let scratch = Scratch::new("reftable-decode").expect("scratch");
+        let (_files, table) = twins(&scratch);
+        let repo = open_unchecked(&table);
+        match repo.resolve(b"HEAD") {
+            Err(Error::Reftable { format, .. }) => assert_eq!(format, "reftable"),
+            Err(other) => panic!("resolve HEAD: expected a Reftable refusal, got {other}"),
+            Ok(id) => panic!("resolve HEAD on reftable: expected a refusal, got {id}"),
+        }
+    }
+
+    /// Control: the files twin resolves `HEAD` through the same path, to
+    /// the id git prints.
+    #[test]
+    fn files_repo_resolves_head_through_the_same_path() {
+        let scratch = Scratch::new("files-decode").expect("scratch");
+        let (files, _table) = twins(&scratch);
+        let repo = open_unchecked(&files);
+        let id = repo
+            .resolve(b"HEAD")
+            .unwrap_or_else(|err| panic!("resolve HEAD on the files twin: {err}"));
+        assert_eq!(
+            id.to_string(),
+            git_line(&scratch, &files, &["rev-parse", "HEAD"])
+        );
+    }
+
+    /// A ref that does not exist is an ordinary read error, never the
+    /// reftable refusal.
+    #[test]
+    fn unknown_revision_is_not_reported_as_reftable() {
+        let scratch = Scratch::new("unknown-rev").expect("scratch");
+        let (files, _table) = twins(&scratch);
+        let repo = open_unchecked(&files);
+        match repo.resolve(b"refs/heads/no-such-branch") {
+            Err(Error::Gix { .. }) => {}
+            Err(other) => panic!("missing branch: expected Error::Gix, got {other}"),
+            Ok(id) => panic!("missing branch resolved to {id}"),
+        }
+    }
+
     /// Calls every gix open/discover entry point `clippy.toml` bans, each
     /// under its own expectation, so the ban list cannot go stale silently:
     /// a renamed entry point stops compiling, and a misspelled ban path
