@@ -213,6 +213,43 @@ where
     spawn_git(&scratch.env, dir, &argv(args))
 }
 
+/// Runs git in `dir` with exactly `env`, for a test that adds variables to
+/// the scratch environment; an error only when git cannot be started.
+pub fn git_in_env<I, S>(env: &Env, dir: &Path, args: I) -> Result<Output, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    spawn_git(env, dir, &argv(args))
+}
+
+/// `text` as one single-quoted `/bin/sh` word.
+fn sh_word(text: &OsStr) -> String {
+    format!("'{}'", text.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// Writes `<hooks_dir>/<hook>`, mode 0755: a `/bin/sh` script that `exec`s
+/// this unit-test binary to run the single ignored test `child` (its full
+/// libtest path), output not captured. git runs it with the hook's own
+/// environment and working directory, so the child sees exactly what a
+/// program git started as that hook would see. A child that fails makes the
+/// hook, and with a pre-commit hook the commit, fail.
+pub fn install_hook(hooks_dir: &Path, hook: &str, child: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let exe =
+        std::env::current_exe().map_err(|err| format!("locate the test executable: {err}"))?;
+    let script = format!(
+        "#!/bin/sh\nexec {} --exact {} --include-ignored --nocapture\n",
+        sh_word(exe.as_os_str()),
+        sh_word(OsStr::new(child))
+    );
+    let path = hooks_dir.join(hook);
+    write(&path, script.as_bytes())?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+        .map_err(|err| format!("chmod 0755 {}: {err}", path.display()))
+}
+
 /// Runs git in `dir` and returns its stdout, or an error carrying the
 /// command, exit code and stderr when it does not exit 0.
 pub fn git_ok<I, S>(scratch: &Scratch, dir: &Path, args: I) -> Result<Vec<u8>, String>
@@ -437,6 +474,68 @@ pub fn linked_worktrees(scratch: &Scratch) -> Result<Worktrees, String> {
         wt1: canonical(&wt1)?,
         wt2: canonical(&wt2)?,
     })
+}
+
+/// The variable a hook test hands its child: the canonical path of `wt2`,
+/// the sibling the child aims at.
+pub const SIBLING_VAR: &str = "WSX_TEST_SIBLING";
+
+/// What a child prints for an environment variable that is not set.
+pub const UNSET: &str = "<unset>";
+
+/// `name` from the process environment, or `UNSET`, for a child to print.
+pub fn env_or_unset(name: &str) -> String {
+    std::env::var_os(name).map_or_else(
+        || UNSET.to_owned(),
+        |value| value.to_string_lossy().into_owned(),
+    )
+}
+
+/// The error for a git run that did not exit 0, quoting both streams (a
+/// hook's output reaches git's stderr).
+pub fn failed_run(what: &str, output: &Output) -> String {
+    format!(
+        "{what} exited {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// Builds `linked_worktrees`, installs a pre-commit hook in the common hooks
+/// directory that re-executes `child`, changes `b.txt` in `wt1` and runs the
+/// partial commit `git commit -q -m x b.txt` there, with the scratch
+/// environment plus `SIBLING_VAR=<wt2>`. git exports a temporary
+/// `next-index-<pid>.lock` as the hook's `GIT_INDEX_FILE` for a partial
+/// commit. An error, quoting the hook's output, unless the commit exited 0:
+/// a child that fails fails the hook and so the commit.
+pub fn linked_hook_commit(scratch: &Scratch, child: &str) -> Result<(Worktrees, Output), String> {
+    let worktrees = linked_worktrees(scratch)?;
+    install_hook(&worktrees.main.join(".git/hooks"), "pre-commit", child)?;
+    write(&worktrees.wt1.join("b.txt"), b"b in wt1\n")?;
+    let mut env = scratch.env.clone();
+    env.push((SIBLING_VAR.into(), worktrees.wt2.clone().into()));
+    let output = git_in_env(&env, &worktrees.wt1, ["commit", "-q", "-m", "x", "b.txt"])?;
+    if output.status.code() != Some(0) {
+        return Err(failed_run("the partial commit in wt1", &output));
+    }
+    Ok((worktrees, output))
+}
+
+/// `path` with its parent directory canonicalised and its file name kept:
+/// how an index path is compared, because a lock file such as
+/// `next-index-<pid>.lock` is gone once its commit ends, so the file itself
+/// cannot be canonicalised afterwards. A relative `path` is taken against
+/// `base`.
+pub fn canonical_parent(base: &Path, path: &Path) -> Result<PathBuf, String> {
+    let path = base.join(path);
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(format!("{} has no parent or no file name", path.display()));
+    };
+    let parent = parent
+        .canonicalize()
+        .map_err(|err| format!("canonicalize {}: {err}", parent.display()))?;
+    Ok(parent.join(name))
 }
 
 /// The prefix of every fact line a re-executed child prints.

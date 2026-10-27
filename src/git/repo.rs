@@ -16,6 +16,10 @@ pub struct Repo {
     git_dir: PathBuf,
     /// The canonical common dir, shared by every worktree of the repository.
     common_dir: PathBuf,
+    /// The index this repository uses: inside a hook, the hook's
+    /// `GIT_INDEX_FILE`. Its parent directory is canonical; the file itself
+    /// may not exist (a fresh repository, or a lock file a commit removes).
+    index_path: PathBuf,
 }
 
 impl Repo {
@@ -62,11 +66,13 @@ impl Repo {
         let worktree = repo.workdir().map(canonical).transpose()?;
         let git_dir = canonical(repo.git_dir())?;
         let common_dir = canonical(repo.common_dir())?;
+        let index_path = git_dir.join("index");
         Ok(Repo {
             repo,
             worktree,
             git_dir,
             common_dir,
+            index_path,
         })
     }
 
@@ -83,6 +89,12 @@ impl Repo {
     /// The canonical common dir.
     pub fn common_dir(&self) -> &Path {
         &self.common_dir
+    }
+
+    /// The index file this repository reads and writes, which a hook's
+    /// `GIT_INDEX_FILE` overrides; the parent directory is canonical.
+    pub fn index_path(&self) -> &Path {
+        &self.index_path
     }
 
     /// The object a revspec (`main`, `feat~3`, a hex id) names. A ref gix
@@ -153,12 +165,13 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::process::Output;
 
     use gix::sec::trust::DefaultForLevel;
 
     use super::super::Error;
     use super::super::spawn::Git;
-    use super::super::testing::{Scratch, T0, TICK, commit_all, git, git_ok, write};
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, git, git_ok, write};
     use super::Repo;
 
     /// The trimmed stdout of `git <args>` run in `dir`.
@@ -535,5 +548,126 @@ mod tests {
 
         assert_eq!(base.len(), 64, "merge-base id {base} is not SHA-256 length");
         assert_eq!(base, head.trim_end(), "gix and git disagree on HEAD");
+    }
+
+    /// The full libtest path of a child half in this module.
+    fn child_path(name: &str) -> String {
+        format!("git::repo::tests::{name}")
+    }
+
+    /// The value of `key` from a hook child's output.
+    fn fact(output: &Output, key: &str) -> String {
+        testing::marker(output, key).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// Prints what `Repo::discover` resolves from the working directory, and
+    /// the raw `GIT_DIR` and `GIT_INDEX_FILE` the child was started with.
+    fn print_resolution() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the hook's repository");
+        let worktree = repo
+            .worktree()
+            .expect("the hooked repository has a worktree");
+        testing::child_print("worktree", worktree.display());
+        testing::child_print("git_dir", repo.git_dir().display());
+        testing::child_print("common_dir", repo.common_dir().display());
+        testing::child_print("index", repo.index_path().display());
+        testing::child_print("env_GIT_DIR", testing::env_or_unset("GIT_DIR"));
+        testing::child_print(
+            "env_GIT_INDEX_FILE",
+            testing::env_or_unset("GIT_INDEX_FILE"),
+        );
+    }
+
+    /// Inside the pre-commit hook of a partial commit in linked worktree
+    /// wt1, `Repo::discover` resolves wt1, its own git dir, the shared
+    /// common dir, and the temporary `next-index-*` index git exported as
+    /// the hook's `GIT_INDEX_FILE`, not the worktree's `index`.
+    #[test]
+    fn hook_resolves_linked_worktree() {
+        let scratch = Scratch::new("hook-linked").expect("scratch");
+        let (worktrees, output) =
+            testing::linked_hook_commit(&scratch, &child_path("linked_hook_resolution_child"))
+                .unwrap_or_else(|err| panic!("{err}"));
+        let git_dir = worktrees.main.join(".git/worktrees/wt1");
+
+        assert_eq!(
+            fact(&output, "worktree"),
+            worktrees.wt1.display().to_string()
+        );
+        assert_eq!(fact(&output, "git_dir"), git_dir.display().to_string());
+        assert_eq!(
+            fact(&output, "common_dir"),
+            worktrees.main.join(".git").display().to_string()
+        );
+        let hook_index = PathBuf::from(fact(&output, "env_GIT_INDEX_FILE"));
+        let hook_index = testing::canonical_parent(&worktrees.wt1, &hook_index)
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(hook_index.parent(), Some(git_dir.as_path()));
+        let name = hook_index.file_name().expect("the index has a file name");
+        assert!(
+            name.to_string_lossy().starts_with("next-index-"),
+            "a partial commit's hook index is a next-index-* file, got {}",
+            hook_index.display()
+        );
+        assert_eq!(
+            fact(&output, "index"),
+            hook_index.display().to_string(),
+            "wsx did not resolve the hook's index"
+        );
+    }
+
+    #[test]
+    #[ignore = "child half of hook_resolves_linked_worktree; runs only when re-executed"]
+    fn linked_hook_resolution_child() {
+        print_resolution();
+    }
+
+    /// Inside the main worktree's pre-commit hook for a plain commit of
+    /// staged changes, git leaves `GIT_DIR` unset and exports the relative
+    /// `.git/index`; the child prints both raw values, so the test fails if
+    /// git exports something else. `Repo::discover` still resolves the main
+    /// worktree, `<main>/.git` and `<main>/.git/index`.
+    #[test]
+    fn hook_resolves_main_worktree_with_relative_index() {
+        let scratch = Scratch::new("hook-main").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        testing::install_hook(
+            &worktrees.main.join(".git/hooks"),
+            "pre-commit",
+            &child_path("main_hook_resolution_child"),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        write(&worktrees.main.join("a.txt"), b"a in main\n").expect("write a.txt");
+        git_ok(&scratch, &worktrees.main, ["add", "a.txt"]).expect("git add a.txt");
+        let output =
+            testing::git_in_env(&scratch.env, &worktrees.main, ["commit", "-q", "-m", "y"])
+                .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the commit in main", &output)
+        );
+        let git_dir = worktrees.main.join(".git");
+
+        assert_eq!(fact(&output, "env_GIT_DIR"), testing::UNSET);
+        assert_eq!(fact(&output, "env_GIT_INDEX_FILE"), ".git/index");
+        assert_eq!(
+            fact(&output, "worktree"),
+            worktrees.main.display().to_string()
+        );
+        assert_eq!(fact(&output, "git_dir"), git_dir.display().to_string());
+        assert_eq!(fact(&output, "common_dir"), git_dir.display().to_string());
+        assert_eq!(
+            fact(&output, "index"),
+            git_dir.join("index").display().to_string()
+        );
+    }
+
+    #[test]
+    #[ignore = "child half of hook_resolves_main_worktree_with_relative_index; runs only when re-executed"]
+    fn main_hook_resolution_child() {
+        print_resolution();
     }
 }
