@@ -70,6 +70,12 @@ pub enum Error {
         status: Option<i32>,
         stderr: Vec<u8>,
     },
+    /// A `git` child exited 0 but printed nothing usable where wsx needs
+    /// output; `expected` names what it should have printed.
+    GitEmptyOutput {
+        argv: Vec<OsString>,
+        expected: &'static str,
+    },
     /// An operating-system call failed; `what` names the call and its subject.
     Io {
         what: String,
@@ -125,6 +131,11 @@ impl fmt::Display for Error {
                     write!(f, ": {stderr}")
                 }
             }
+            Error::GitEmptyOutput { argv, expected } => write!(
+                f,
+                "git {} exited 0 but printed no {expected}",
+                render_argv(argv)
+            ),
             Error::Io { what, source } => write!(f, "{what}: {source}"),
             Error::Gix { what, message } => write!(f, "{what}: {message}"),
         }
@@ -228,5 +239,17 @@ mod tests {
             message: "m".to_owned(),
         };
         assert_eq!(gix.to_string(), "resolve x: m");
+    }
+
+    #[test]
+    fn empty_output_message_names_the_query() {
+        let empty = Error::GitEmptyOutput {
+            argv: argv(&["rev-parse", "--local-env-vars"]),
+            expected: "variable names",
+        };
+        assert_eq!(
+            empty.to_string(),
+            "git rev-parse --local-env-vars exited 0 but printed no variable names"
+        );
     }
 }

@@ -977,4 +977,80 @@ mod tests {
         assert_eq!(last_two_signatures(&scratch, &repo), ["N", "N"]);
         assert_eq!(hook_runs(&log), BTreeMap::new());
     }
+
+    /// A fake body that answers `rev-parse --local-env-vars` with the
+    /// `printf` format `answer` and execs the real git for every other call.
+    fn list_answer(answer: &str) -> String {
+        format!(
+            "if [ \"$*\" = \"rev-parse --local-env-vars\" ]; then printf '{answer}'; exit 0; fi\nexec {} \"$@\"",
+            sh_quote(&real_git())
+        )
+    }
+
+    /// Runs `rev-parse --absolute-git-dir` aimed at wt2 through a helper whose
+    /// own worktree is wt1 and whose git answers the list query with `answer`.
+    fn sibling_run_with_list(
+        name: &str,
+        answer: &str,
+    ) -> (Scratch, Worktrees, Result<Vec<u8>, Error>) {
+        let scratch = Scratch::new(name).expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).expect("linked worktrees");
+        let env = fake_git(&scratch, &list_answer(answer));
+        let result = Git::new(env)
+            .with_own_worktree(worktrees.wt1.clone())
+            .run(&worktrees.wt2, ["rev-parse", "--absolute-git-dir"]);
+        (scratch, worktrees, result)
+    }
+
+    /// Asserts `result` refuses the empty list under the list query's argv,
+    /// that the query did run through the fake, and that the requested
+    /// command never did.
+    fn assert_list_refused(scratch: &Scratch, result: Result<Vec<u8>, Error>) {
+        match result {
+            Err(Error::GitEmptyOutput { argv, expected }) => {
+                assert_eq!(argv, ["rev-parse", "--local-env-vars"]);
+                assert_eq!(expected, "variable names");
+            }
+            other => panic!("an empty removal list must fail closed, got {other:?}"),
+        }
+        let lines = log_lines(scratch);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "rev-parse --local-env-vars"),
+            "the list query never reached the fake git: {lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line == "rev-parse --absolute-git-dir"),
+            "the requested command ran with an empty removal list: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn empty_list_query_fails_closed_before_the_command() {
+        let (scratch, _worktrees, result) = sibling_run_with_list("env-list-empty", "");
+        assert_list_refused(&scratch, result);
+    }
+
+    #[test]
+    fn whitespace_only_list_query_fails_closed_before_the_command() {
+        let (scratch, _worktrees, result) = sibling_run_with_list("env-list-blank", " \\n\\t\\n");
+        assert_list_refused(&scratch, result);
+    }
+
+    #[test]
+    fn one_name_list_query_lets_the_command_run() {
+        let (scratch, worktrees, result) = sibling_run_with_list("env-list-one", "GIT_DIR\\n");
+        let stdout = result.expect("a one-name list lets the sibling's command run");
+        assert_eq!(
+            String::from_utf8_lossy(&stdout).trim_end(),
+            worktrees.main.join(".git/worktrees/wt2").to_string_lossy()
+        );
+        assert_eq!(
+            log_lines(&scratch).last().map(String::as_str),
+            Some("rev-parse --absolute-git-dir")
+        );
+    }
 }
