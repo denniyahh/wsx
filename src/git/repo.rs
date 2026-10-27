@@ -25,18 +25,18 @@ pub struct Repo {
 impl Repo {
     /// Finds the repository containing `start` the way git would, honouring
     /// `GIT_DIR`, `GIT_INDEX_FILE` and `GIT_CEILING_DIRECTORIES` from the
-    /// process environment. A relative repository-path variable, or a
-    /// `GIT_DIR` that leaves git to take the current directory as the
-    /// worktree, is refused below the worktree root (see
-    /// `refuse_relative_repo_env` and `refuse_implicit_worktree`).
+    /// process environment. A relative repository-path variable is refused
+    /// below the worktree root (see `refuse_relative_repo_env`), and a
+    /// `GIT_DIR` without `GIT_WORK_TREE` gets the worktree git gives it (see
+    /// `apply_implicit_worktree`).
     pub fn discover(start: &Path) -> Result<Repo, Error> {
-        let repo = Repo::open_gix(start)?;
+        let mut repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
         refuse_object_store_env()?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
         refuse_relative_repo_env(&repo)?;
-        refuse_implicit_worktree(&repo)?;
+        apply_implicit_worktree(&mut repo)?;
         Repo::from_gix(repo)
     }
 
@@ -450,43 +450,117 @@ fn refuse_relative_repo_env(repo: &gix::Repository) -> Result<(), Error> {
     }
 }
 
-/// Refuses `GIT_DIR` given without `GIT_WORK_TREE` when wsx runs anywhere
-/// but the worktree root, unless the repository's own config sets
-/// `core.worktree`. git then takes the current directory as the worktree,
-/// and gix the repository's: measured with git 2.56.0 from `main/sub` with
-/// an absolute `GIT_DIR=<main>/.git`, `git rev-parse --show-toplevel` prints
-/// `main/sub`, while gix's worktree is `main`. A relative `GIT_DIR` is
-/// refused first by `refuse_relative_repo_env`. git runs hooks at the
-/// worktree root, so a hook's `GIT_DIR` still applies. `core.worktree` counts
-/// only from the repository's own config (`Source::Local`), the file git
-/// reads it from; set anywhere else, the check still runs, the stricter
-/// direction. A repository without a worktree is not checked.
-fn refuse_implicit_worktree(repo: &gix::Repository) -> Result<(), Error> {
-    let Some(workdir) = repo.workdir() else {
+/// Gives the repository the worktree git gives it when `GIT_DIR` is set
+/// without `GIT_WORK_TREE`, where gix 0.90 decides differently. git then
+/// takes no worktree when the repository's config sets `core.bare=true` or
+/// `GIT_IMPLICIT_WORK_TREE` is false, the configured one when it sets
+/// `core.worktree`, and otherwise the current directory, whatever the git
+/// dir is named; for a linked worktree's git dir (one with a `commondir`
+/// file) it ignores `core.bare` and `core.worktree` in that config. gix
+/// instead takes the parent of a git dir named `.git` (or a linked
+/// worktree's registered directory) and no worktree for any other name.
+/// Measured with git 2.56.0:
+///
+/// | `GIT_DIR`, cwd | git | gix |
+/// |---|---|---|
+/// | `--separate-git-dir` store, `r` or `r/sub` | the cwd | none |
+/// | `<main>/.git`, `main/sub` | `main/sub` | `main` |
+/// | `<main>/.git` with `GIT_IMPLICIT_WORK_TREE=0`, `main` | none | `main` |
+/// | bare repository's `worktrees/wt`, `wt/d` | `wt/d` | `wt` |
+///
+/// So the worktree is set here to git's answer, through gix's in-memory
+/// `set_workdir`; a hook's `GIT_INDEX_FILE` then stays with children aimed
+/// at that worktree. git reads `core.bare` and `core.worktree` for this only
+/// from the repository's own config (`Source::Local`) and `config.worktree`
+/// (`Source::Worktree`), and ignores them from `-c`, the environment and
+/// global config (measured). A local `core.worktree` is left to gix, which
+/// applies it as git does. One set in `config.worktree`, or a `core.bare`
+/// there, is not resolved here and is refused as `Error::ImplicitWorkTree`,
+/// as are a `core.bare` or `GIT_IMPLICIT_WORK_TREE` that is not a boolean
+/// (git exits 128 on those). git checks no ownership with an explicit
+/// `GIT_DIR` (measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`), so none is
+/// checked for the current directory either. A relative `GIT_DIR` below the
+/// worktree root gix found is refused first by `refuse_relative_repo_env`.
+fn apply_implicit_worktree(repo: &mut gix::Repository) -> Result<(), Error> {
+    let Some(worktree) = implicit_worktree(repo)? else {
         return Ok(());
     };
-    let Some(value) = std::env::var_os("GIT_DIR") else {
-        return Ok(());
+    repo.set_workdir(worktree.clone())
+        .map_err(|err| Error::Gix {
+            what: format!(
+                "set the worktree to {}",
+                worktree
+                    .as_deref()
+                    .map_or_else(|| "none".to_owned(), |dir| dir.display().to_string())
+            ),
+            message: err.to_string(),
+        })?;
+    Ok(())
+}
+
+/// The worktree git takes for `repo` (see `apply_implicit_worktree`):
+/// `None` when gix's own answer stands (no `GIT_DIR`, a `GIT_WORK_TREE`, or
+/// a local `core.worktree` of a git dir that is not a linked worktree's),
+/// else `Some` of git's worktree, itself `None` when git has none.
+fn implicit_worktree(repo: &gix::Repository) -> Result<Option<Option<PathBuf>>, Error> {
+    let Some(git_dir) = std::env::var_os("GIT_DIR") else {
+        return Ok(None);
     };
-    let core_worktree = repo
-        .config_snapshot()
-        .plumbing()
-        .string_filter("core.worktree", |meta| {
-            meta.source == gix::config::Source::Local
-        });
-    if std::env::var_os("GIT_WORK_TREE").is_some() || core_worktree.is_some() {
-        return Ok(());
+    if std::env::var_os("GIT_WORK_TREE").is_some() {
+        return Ok(None);
     }
-    let worktree = canonical(workdir)?;
-    let cwd = canonical(repo.current_dir())?;
-    if cwd == worktree {
-        Ok(())
+    let refuse = |reason: String| Error::ImplicitWorkTree {
+        git_dir: PathBuf::from(&git_dir),
+        reason,
+    };
+    let config = repo.config_snapshot();
+    let config = config.plumbing();
+    let in_worktree_config =
+        |meta: &gix::config::file::Metadata| meta.source == gix::config::Source::Worktree;
+    let in_repo_config =
+        |meta: &gix::config::file::Metadata| meta.source == gix::config::Source::Local;
+    if config
+        .string_filter("core.worktree", in_worktree_config)
+        .is_some()
+        || !matches!(
+            config.boolean_filter("core.bare", in_worktree_config),
+            Ok(None)
+        )
+    {
+        return Err(refuse(
+            "config.worktree sets core.worktree or core.bare, which this version of wsx \
+             does not resolve as git does"
+                .to_owned(),
+        ));
+    }
+    let linked = repo.git_dir().join("commondir").is_file();
+    if !linked
+        && config
+            .string_filter("core.worktree", in_repo_config)
+            .is_some()
+    {
+        return Ok(None);
+    }
+    let bare = !linked
+        && config
+            .boolean_filter("core.bare", in_repo_config)
+            .map_err(|err| refuse(format!("core.bare in its config is not a boolean ({err})")))?
+            == Some(true);
+    let implicit = match std::env::var_os("GIT_IMPLICIT_WORK_TREE") {
+        None => true,
+        Some(value) => gix::config::Boolean::try_from(value.clone())
+            .map_err(|_| {
+                refuse(format!(
+                    "GIT_IMPLICIT_WORK_TREE={} is not a boolean, and git refuses it too",
+                    value.to_string_lossy()
+                ))
+            })?
+            .is_true(),
+    };
+    if bare || !implicit {
+        Ok(Some(None))
     } else {
-        Err(Error::ImplicitWorkTree {
-            git_dir: PathBuf::from(value),
-            cwd,
-            worktree,
-        })
+        Ok(Some(Some(canonical(repo.current_dir())?)))
     }
 }
 
@@ -2257,15 +2331,15 @@ mod tests {
 
     /// An absolute `GIT_DIR` given without `GIT_WORK_TREE` or
     /// `core.worktree` makes git take the current directory `main/sub` as
-    /// the worktree, where gix takes `main`: wsx refuses it below the root,
-    /// naming the variable.
+    /// the worktree, where gix takes `main`: wsx takes `main/sub` as git
+    /// does, and its git child, run there with the same `GIT_DIR`, lists the
+    /// repository's files.
     #[test]
-    fn an_absolute_git_dir_below_the_worktree_root_is_refused() {
+    fn an_absolute_git_dir_below_the_worktree_root_opens_the_current_directory_like_git() {
         let scratch = Scratch::new("absolute-git-dir-sub").expect("scratch");
         let main = two_index_repo(&scratch);
         let sub = main.join("sub");
-        let git_dir = main.join(".git");
-        let env = env_with(&scratch, "GIT_DIR", git_dir.clone());
+        let env = env_with(&scratch, "GIT_DIR", main.join(".git"));
         assert_eq!(
             git_line_in(&env, &sub, &["rev-parse", "--show-toplevel"]),
             sub.display().to_string(),
@@ -2275,15 +2349,12 @@ mod tests {
         let child = relative_env_run(&env, &sub);
         assert_eq!(
             child_result(&child),
-            "refused",
+            "opened",
             "{}",
             testing::failed_run("the relative-env child", &child)
         );
-        let error = fact(&child, "error");
-        assert!(
-            error.contains(&format!("GIT_DIR={}", git_dir.display())),
-            "error: {error}"
-        );
+        assert_eq!(fact(&child, "worktree"), sub.display().to_string());
+        assert_eq!(fact(&child, "git_ls_files"), "a.txt,b.txt");
     }
 
     /// Control: the same absolute `GIT_DIR` at the worktree root, where git
@@ -2403,9 +2474,10 @@ mod tests {
     }
 
     /// Prints what `Repo::discover` makes of the working directory:
-    /// `result=opened` with `index` and the `git ls-files --full-name :/`
-    /// a `Git::from_process` child prints in the worktree (`git_ls_files`,
-    /// comma-separated, or `git_error`), or `result=refused` with `error`.
+    /// `result=opened` with `worktree`, `index` and the
+    /// `git ls-files --full-name :/` a `Git::from_process` child prints in
+    /// the worktree (`git_ls_files`, comma-separated, or `git_error`), or
+    /// `result=refused` with `error`.
     #[test]
     #[ignore = "child half of the relative-env tests; runs only when re-executed"]
     fn relative_env_child() {
@@ -2413,8 +2485,9 @@ mod tests {
         match Repo::discover(&cwd) {
             Ok(found) => {
                 testing::child_print("result", "opened");
-                testing::child_print("index", found.index_path().display());
                 let worktree = found.worktree().expect("the repository has a worktree");
+                testing::child_print("worktree", worktree.display());
+                testing::child_print("index", found.index_path().display());
                 match Git::from_process(&found).run(worktree, ["ls-files", "--full-name", ":/"]) {
                     Ok(stdout) => testing::child_print(
                         "git_ls_files",
@@ -2433,6 +2506,400 @@ mod tests {
                 testing::child_print("error", err.to_string().replace('\n', "\\n"));
             }
         }
+    }
+
+    /// What a child prints, and `git_worktree` returns, for a repository
+    /// without a worktree.
+    const NO_WORKTREE: &str = "<none>";
+
+    /// `<root>/r`, made by `git init --separate-git-dir <root>/store.git`,
+    /// committing `a.txt` and `b.txt`, with an empty `r/sub`: the worktree
+    /// and the git dir, both canonical. git writes `r/.git` as a `gitdir:`
+    /// file and sets no `core.worktree`, which this asserts.
+    fn separate_repo(scratch: &Scratch) -> (PathBuf, PathBuf) {
+        let root = scratch.root.join("r");
+        let store = scratch.root.join("store.git");
+        let (root_arg, store_arg) = (
+            root.to_str().expect("UTF-8 scratch path"),
+            store.to_str().expect("UTF-8 scratch path"),
+        );
+        git_ok(
+            scratch,
+            &scratch.root,
+            [
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--separate-git-dir",
+                store_arg,
+                root_arg,
+            ],
+        )
+        .expect("git init --separate-git-dir");
+        write(&root.join("a.txt"), b"a\n").expect("write a.txt");
+        write(&root.join("b.txt"), b"b\n").expect("write b.txt");
+        commit_all(scratch, &root, "ab", T0).expect("commit a and b");
+        std::fs::create_dir_all(root.join("sub")).expect("create r/sub");
+        let unset = testing::git(
+            scratch,
+            &root,
+            ["config", "--local", "--get", "core.worktree"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            unset.status.code(),
+            Some(1),
+            "git init --separate-git-dir sets no core.worktree"
+        );
+        (
+            root.canonicalize().expect("canonicalize r"),
+            store.canonicalize().expect("canonicalize store.git"),
+        )
+    }
+
+    /// The worktree git reports in `cwd` with `env`: `--show-toplevel` when
+    /// `--is-inside-work-tree` says `true`, else `NO_WORKTREE`. Both
+    /// commands must exit 0.
+    fn git_worktree(env: &Env, cwd: &Path) -> String {
+        if git_line_in(env, cwd, &["rev-parse", "--is-inside-work-tree"]) == "true" {
+            git_line_in(env, cwd, &["rev-parse", "--show-toplevel"])
+        } else {
+            NO_WORKTREE.to_owned()
+        }
+    }
+
+    /// Re-executes `implicit_worktree_child` in `cwd` with `env`, and checks
+    /// it exited 0.
+    fn implicit_run(env: &Env, cwd: &Path) -> Output {
+        let output = testing::reexec(&child_path("implicit_worktree_child"), env, cwd, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the implicit-worktree child", &output)
+        );
+        output
+    }
+
+    /// Asserts that git's worktree in `cwd` with `env` is `expected`, and
+    /// that wsx opens the repository with that worktree.
+    fn assert_worktree_like_git(env: &Env, cwd: &Path, expected: &str) {
+        assert_eq!(git_worktree(env, cwd), expected, "git's worktree");
+        let child = implicit_run(env, cwd);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the implicit-worktree child", &child)
+        );
+        assert_eq!(fact(&child, "worktree"), expected, "wsx's worktree");
+    }
+
+    /// A `--separate-git-dir` repository through `GIT_DIR` at its worktree
+    /// root, as git runs its hooks: git takes the current directory `r` as
+    /// the worktree, and so does wsx, although gix sees no worktree at all
+    /// (the git dir is not named `.git` and sets no `core.worktree`).
+    #[test]
+    fn a_separate_git_dir_at_its_worktree_root_opens_the_root_like_git() {
+        let scratch = Scratch::new("separate-git-dir-root").expect("scratch");
+        let (root, store) = separate_repo(&scratch);
+        let env = env_with(&scratch, "GIT_DIR", store);
+        assert_worktree_like_git(&env, &root, &root.display().to_string());
+    }
+
+    /// The same `GIT_DIR` from `r/sub`: git takes `r/sub` as the worktree,
+    /// and so does wsx.
+    #[test]
+    fn a_separate_git_dir_below_its_root_opens_the_current_directory_like_git() {
+        let scratch = Scratch::new("separate-git-dir-sub").expect("scratch");
+        let (root, store) = separate_repo(&scratch);
+        let sub = root.join("sub");
+        let env = env_with(&scratch, "GIT_DIR", store);
+        assert_worktree_like_git(&env, &sub, &sub.display().to_string());
+    }
+
+    /// Control: with `core.bare=true` in the separate git dir's config, git
+    /// has no worktree in `r/sub`, and neither has wsx.
+    #[test]
+    fn core_bare_keeps_a_separate_git_dir_without_a_worktree_like_git() {
+        let scratch = Scratch::new("separate-git-dir-bare").expect("scratch");
+        let (root, store) = separate_repo(&scratch);
+        let store_arg = store.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &root,
+            ["--git-dir", store_arg, "config", "core.bare", "true"],
+        )
+        .expect("set core.bare");
+        let env = env_with(&scratch, "GIT_DIR", store);
+        assert_worktree_like_git(&env, &root.join("sub"), NO_WORKTREE);
+    }
+
+    /// `GIT_IMPLICIT_WORK_TREE=0` with `GIT_DIR=<main>/.git` at the root
+    /// `main`: git has no worktree, where gix takes `main` from the `.git`
+    /// name; wsx has none, as git.
+    #[test]
+    fn implicit_work_tree_off_leaves_no_worktree_like_git() {
+        let scratch = Scratch::new("implicit-off").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let mut env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        env.push(("GIT_IMPLICIT_WORK_TREE".into(), "0".into()));
+        assert_worktree_like_git(&env, &main, NO_WORKTREE);
+    }
+
+    /// Control: `GIT_IMPLICIT_WORK_TREE=yes`, a boolean git reads as true,
+    /// leaves `main` the worktree for both.
+    #[test]
+    fn implicit_work_tree_on_keeps_the_current_directory_like_git() {
+        let scratch = Scratch::new("implicit-on").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let mut env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        env.push(("GIT_IMPLICIT_WORK_TREE".into(), "yes".into()));
+        assert_worktree_like_git(&env, &main, &main.display().to_string());
+    }
+
+    /// A `GIT_IMPLICIT_WORK_TREE` that is not a boolean makes git exit 128
+    /// ("bad boolean environment value"); wsx refuses it, naming it.
+    #[test]
+    fn an_unparseable_implicit_work_tree_is_refused() {
+        let scratch = Scratch::new("implicit-bogus").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let mut env = env_with(&scratch, "GIT_DIR", main.join(".git"));
+        env.push(("GIT_IMPLICIT_WORK_TREE".into(), "bogus".into()));
+        let git = testing::git_in_env(&env, &main, ["rev-parse", "--show-toplevel"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            git.status.code(),
+            Some(128),
+            "{}",
+            testing::failed_run("git", &git)
+        );
+
+        let child = implicit_run(&env, &main);
+        assert_eq!(
+            child_result(&child),
+            "refused",
+            "{}",
+            testing::failed_run("the implicit-worktree child", &child)
+        );
+        let error = fact(&child, "error");
+        assert!(
+            error.contains("GIT_IMPLICIT_WORK_TREE=bogus"),
+            "error: {error}"
+        );
+    }
+
+    /// A linked worktree's git dir as `GIT_DIR`, below the worktree `wt`
+    /// of a bare repository: git ignores the common config's
+    /// `core.bare=true` for a linked worktree and takes the current
+    /// directory `wt/d`, where gix takes `wt`; wsx takes `wt/d`, as git.
+    #[test]
+    fn a_linked_worktree_of_a_bare_repository_opens_the_current_directory_like_git() {
+        let scratch = Scratch::new("bare-linked-implicit").expect("scratch");
+        let (bare, wt) = bare_with_worktree(&scratch);
+        assert_eq!(git_line(&scratch, &bare, &["config", "core.bare"]), "true");
+        let below = wt.join("d");
+        std::fs::create_dir_all(&below).expect("create wt/d");
+        let env = env_with(&scratch, "GIT_DIR", bare.join("worktrees/wt"));
+        assert_worktree_like_git(&env, &below, &below.display().to_string());
+    }
+
+    /// `core.worktree` in `config.worktree` (`extensions.worktreeConfig`)
+    /// is honoured by git (`main`, from `main/sub`), and wsx does not
+    /// resolve it as git does: it refuses, naming `GIT_DIR` and the file.
+    #[test]
+    fn core_worktree_in_worktree_config_is_refused() {
+        let scratch = Scratch::new("worktree-config-core-worktree").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let main_arg = main.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &main,
+            ["config", "extensions.worktreeConfig", "true"],
+        )
+        .expect("enable worktreeConfig");
+        git_ok(
+            &scratch,
+            &main,
+            ["config", "--worktree", "core.worktree", main_arg],
+        )
+        .expect("set core.worktree in config.worktree");
+        let sub = main.join("sub");
+        let git_dir = main.join(".git");
+        let env = env_with(&scratch, "GIT_DIR", git_dir.clone());
+        assert_eq!(git_worktree(&env, &sub), main.display().to_string());
+
+        let child = implicit_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "refused",
+            "{}",
+            testing::failed_run("the implicit-worktree child", &child)
+        );
+        let error = fact(&child, "error");
+        assert!(
+            error.contains(&format!("GIT_DIR={}", git_dir.display())),
+            "error: {error}"
+        );
+        assert!(error.contains("config.worktree"), "error: {error}");
+    }
+
+    /// Prints what `Repo::discover` makes of the working directory:
+    /// `result=opened` with `worktree` (`NO_WORKTREE` when it has none), or
+    /// `result=refused` with `error`.
+    #[test]
+    #[ignore = "child half of the implicit-worktree tests; runs only when re-executed"]
+    fn implicit_worktree_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        match Repo::discover(&cwd) {
+            Ok(found) => {
+                testing::child_print("result", "opened");
+                testing::child_print(
+                    "worktree",
+                    found.worktree().map_or_else(
+                        || NO_WORKTREE.to_owned(),
+                        |worktree| worktree.display().to_string(),
+                    ),
+                );
+            }
+            Err(err) => {
+                testing::child_print("result", "refused");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
+    }
+
+    /// `separate_repo` with a pre-commit hook in `store.git/hooks` that
+    /// re-executes `separate_hook_child`, `a.txt` changed and staged, and
+    /// `b.txt` changed but not staged, then the partial commit
+    /// `git commit -q -m x -- ../b.txt` run from `r/sub`. git runs the hook
+    /// at `r` with `GIT_DIR=<store.git>` and a temporary `next-index-*`
+    /// index holding `HEAD` plus `b.txt` only, while the real index also
+    /// holds the staged `a.txt`. Returns the worktree, the git dir and the
+    /// commit's output, which must exit 0.
+    fn separate_hook_commit(scratch: &Scratch) -> (PathBuf, PathBuf, Output) {
+        let (root, store) = separate_repo(scratch);
+        testing::install_hook(
+            &store.join("hooks"),
+            "pre-commit",
+            &child_path("separate_hook_child"),
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        write(&root.join("a.txt"), b"a staged\n").expect("write a.txt");
+        git_ok(scratch, &root, ["add", "a.txt"]).expect("git add a.txt");
+        write(&root.join("b.txt"), b"b committed\n").expect("write b.txt");
+        let output = testing::git_in_env(
+            &scratch.env,
+            &root.join("sub"),
+            ["commit", "-q", "-m", "x", "--", "../b.txt"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the partial commit in r/sub", &output)
+        );
+        (root, store, output)
+    }
+
+    /// Inside that hook, wsx's worktree is the one git reports there, `r`,
+    /// and the hook's `GIT_DIR` is the separate git dir.
+    #[test]
+    fn a_separate_git_dir_hook_resolves_the_worktree_git_reports() {
+        let scratch = Scratch::new("separate-hook-worktree").expect("scratch");
+        let (root, store, output) = separate_hook_commit(&scratch);
+        assert_eq!(fact(&output, "env_GIT_DIR"), store.display().to_string());
+        assert_eq!(fact(&output, "git_toplevel"), root.display().to_string());
+        assert_eq!(fact(&output, "worktree"), root.display().to_string());
+    }
+
+    /// In the same hook, git itself sees only `b.txt` staged (the partial
+    /// commit's index), and a `Git::from_process` child aimed at wsx's own
+    /// worktree keeps the hook's `GIT_INDEX_FILE` and sees the same.
+    #[test]
+    fn a_separate_git_dir_hook_child_keeps_the_partial_commit_index() {
+        let scratch = Scratch::new("separate-hook-index").expect("scratch");
+        let (_root, store, output) = separate_hook_commit(&scratch);
+        let hook_index = PathBuf::from(fact(&output, "env_GIT_INDEX_FILE"));
+        assert_eq!(hook_index.parent(), Some(store.as_path()));
+        assert!(
+            hook_index
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("next-index-")),
+            "a partial commit's hook index is a next-index-* file, got {}",
+            hook_index.display()
+        );
+        assert_eq!(fact(&output, "git_cached"), "b.txt");
+        assert_eq!(fact(&output, "own_cached"), "b.txt");
+    }
+
+    /// Control: in the same hook, the same command through a helper with no
+    /// own worktree loses the hook's `GIT_DIR` and `GIT_INDEX_FILE`, so it
+    /// reads the real index, where `a.txt` is staged: the index test above
+    /// detects a child that loses the hook's index.
+    #[test]
+    fn a_separate_git_dir_hook_child_without_an_own_worktree_reads_the_real_index() {
+        let scratch = Scratch::new("separate-hook-scrubbed").expect("scratch");
+        let (_root, _store, output) = separate_hook_commit(&scratch);
+        assert_eq!(fact(&output, "scrubbed_cached"), "a.txt");
+    }
+
+    /// `git diff --cached --name-only` in `dir` through `helper`, its lines
+    /// joined with commas.
+    fn helper_cached(helper: &Git, dir: &Path) -> String {
+        let stdout = helper
+            .run(dir, ["diff", "--cached", "--name-only"])
+            .unwrap_or_else(|err| panic!("git diff --cached in {}: {err}", dir.display()));
+        String::from_utf8_lossy(&stdout)
+            .lines()
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Prints, from inside the hook: the raw `GIT_DIR` and `GIT_INDEX_FILE`;
+    /// git's own `--show-toplevel` and staged names (`git_toplevel`,
+    /// `git_cached`, run with the hook's environment); wsx's `worktree`
+    /// (`NO_WORKTREE` when it has none); and the staged names a helper child
+    /// reports in the hook's working directory, with wsx's worktree as its
+    /// own (`own_cached`) and with none (`scrubbed_cached`).
+    #[test]
+    #[ignore = "child half of the separate-git-dir hook tests; runs only when re-executed"]
+    fn separate_hook_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let plain = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&cwd)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("run git in the hook");
+            assert!(output.status.success(), "git {args:?} in the hook failed");
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        testing::child_print("env_GIT_DIR", testing::env_or_unset("GIT_DIR"));
+        testing::child_print(
+            "env_GIT_INDEX_FILE",
+            testing::env_or_unset("GIT_INDEX_FILE"),
+        );
+        testing::child_print("git_toplevel", plain(&["rev-parse", "--show-toplevel"]));
+        testing::child_print("git_cached", plain(&["diff", "--cached", "--name-only"]));
+        let repo = Repo::discover(&cwd).expect("discover the hook's repository");
+        testing::child_print(
+            "worktree",
+            repo.worktree().map_or_else(
+                || NO_WORKTREE.to_owned(),
+                |worktree| worktree.display().to_string(),
+            ),
+        );
+        testing::child_print("own_cached", helper_cached(&Git::from_process(&repo), &cwd));
+        let scrubbed = Git::new(std::env::vars_os().collect());
+        testing::child_print("scrubbed_cached", helper_cached(&scrubbed, &cwd));
     }
 
     /// The variable an object-store test hands its child: the revision the
