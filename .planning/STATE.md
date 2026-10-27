@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
 status: executing
-stopped_at: Phase 2 complete, ready to plan Phase 3
-last_updated: "2026-10-27T01:32:55.702Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-10-27T01:48:07.256Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: f71e83b34f7922413ba48e46df0c6f276ca1385d
+state_head: f60c8cda4f541b5c0228446461640d43c58951ae
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 22
+  completed_plans: 23
 ---
 
 # Project State
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 3 (Git adapter) — EXECUTING
-Plan: 1 of 10
-Status: Executing Phase 3
+Plan: 2 of 10
+Status: Ready to execute
 Last activity: 2026-10-26 — Phase 3 execution started
 
 Progress: [█░░░░░░░░░] 13%
@@ -78,6 +78,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 02 P13 | 4min | 2 tasks | 1 files |
 | Phase 02 P14 | 10min | 2 tasks | 1 files |
 | Phase 02 P15 | 7 min | 2 tasks | 4 files |
+| Phase 03 P01 | 13 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -130,6 +131,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-15: harn06_gaps names an untagged HARN-06 kind once (not per action); ORACLE_ACTIONS lists 19 (kind, action) pairs that need an oracle-recorded scenario
 - [Phase 02]: 02-15: vendored oracle file modes are checked from the git index (git ls-files -s) in provenance.rs; every scenario module must register a scenario
 - [Phase 03]: Owner 2026-10-26: planning granularity stays `fine` for phase 3 onward (question carried from the phase 2 pause; config unchanged)
+- [Phase 03]: 03-01: merge-base control pairs main/feat~3 (F1) with main~2/feat (C1); git's single base for main/feat on the criss-cross fixture is F1, so comparing against it cannot catch a constant
+- [Phase 03]: 03-01: gix-protocol/gix-transport are unconditional gix 0.90.0 deps; the no-network check asserts gix-transport has only its empty default feature and no client crate (gix-credentials, curl, reqwest) is in the tree
 
 ### Pending Todos
 
@@ -142,6 +145,7 @@ Recent decisions affecting current work:
 - Phase 3: gix 0.89 method names are unverified against a stale crate-status item (research/SUMMARY.md, Gaps); spike at phase start
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
 - Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
+- Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
 
 ## Deferred Items
 
@@ -153,6 +157,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T23:45:00.000Z
-Stopped at: Session resumed, proceeding to /gsd-autonomous --only 3 in .worktrees/phase-3 (feature/phase-3)
+Last session: 2026-10-27T01:48:07.071Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
