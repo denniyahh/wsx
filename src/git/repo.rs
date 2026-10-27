@@ -1267,9 +1267,10 @@ mod tests {
         assert_both_open(&ceiling_run(&scratch, &r1, &r1), &r1);
     }
 
-    #[test]
-    #[ignore = "child half of the ceiling tests; runs only when re-executed"]
-    fn ceiling_child() {
+    /// Prints what `Repo::discover` makes of the directory in `START_VAR`:
+    /// `result=opened` with `worktree`, `result=not_a_repo`,
+    /// `result=reftable` with `format`, or `result=other` with `error`.
+    fn print_discovery() {
         let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
         match Repo::discover(Path::new(&start)) {
             Ok(found) => {
@@ -1280,10 +1281,112 @@ mod tests {
                 testing::child_print("worktree", worktree);
             }
             Err(Error::NotARepo { .. }) => testing::child_print("result", "not_a_repo"),
+            Err(Error::Reftable { format, .. }) => {
+                testing::child_print("result", "reftable");
+                testing::child_print("format", format);
+            }
             Err(err) => {
                 testing::child_print("result", "other");
                 testing::child_print("error", err.to_string().replace('\n', "\\n"));
             }
         }
+    }
+
+    #[test]
+    #[ignore = "child half of the ceiling tests; runs only when re-executed"]
+    fn ceiling_child() {
+        print_discovery();
+    }
+
+    /// A one-commit files repository at `<root>/repo`, canonical, and the
+    /// scratch environment plus `START_VAR=<repo>`.
+    fn files_repo_and_env(scratch: &Scratch) -> (PathBuf, Env) {
+        let dir = scratch.root.join("repo");
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
+        write(&dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &dir, "a", T0).expect("commit a");
+        let dir = dir.canonicalize().expect("canonicalize the repository");
+        let mut env = scratch.env.clone();
+        env.push((START_VAR.into(), dir.clone().into()));
+        (dir, env)
+    }
+
+    /// With `env`, git reads `repo` as a files repository (`rev-parse
+    /// --show-ref-format` exits 0 printing `files`), and `Repo::discover`
+    /// in a re-executed `ref_storage_child` opens it; both outputs are
+    /// printed on failure.
+    fn assert_both_read_files(scratch: &Scratch, env: &Env, repo: &Path) {
+        let git = testing::git_in_env(env, repo, ["rev-parse", "--show-ref-format"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        let child = testing::reexec(&child_path("ref_storage_child"), env, &scratch.root, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        let both = format!(
+            "{}\n{}",
+            testing::failed_run("git rev-parse --show-ref-format", &git),
+            testing::failed_run("the ref-storage child", &child)
+        );
+        assert_eq!(git.status.code(), Some(0), "{both}");
+        assert_eq!(
+            String::from_utf8_lossy(&git.stdout).trim_end(),
+            "files",
+            "{both}"
+        );
+        let result = testing::marker(&child, "result").unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(result, "opened", "{both}");
+        assert_eq!(
+            testing::marker(&child, "worktree").unwrap_or_else(|err| panic!("{err}")),
+            repo.display().to_string(),
+            "{both}"
+        );
+    }
+
+    /// git reads `extensions.refStorage` from the repository's own config
+    /// only: set to `reftable` in global config, it leaves a files
+    /// repository readable to git, and to wsx.
+    #[test]
+    fn ref_storage_in_global_config_does_not_refuse_a_files_repo() {
+        let scratch = Scratch::new("ref-storage-global").expect("scratch");
+        let (repo, env) = files_repo_and_env(&scratch);
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(b"[extensions]\n\trefStorage = reftable\n");
+        write(&global, &config).expect("append extensions.refStorage");
+        assert_both_read_files(&scratch, &env, &repo);
+    }
+
+    /// The same for `extensions.refStorage = reftable` in the worktree's
+    /// `config.worktree`, which git 2.56.0 reads for other keys
+    /// (`extensions.worktreeConfig = true`) but not for the ref format.
+    #[test]
+    fn ref_storage_in_worktree_config_does_not_refuse_a_files_repo() {
+        let scratch = Scratch::new("ref-storage-worktree").expect("scratch");
+        let (repo, env) = files_repo_and_env(&scratch);
+        for args in [
+            ["config", "core.repositoryformatversion", "1"].as_slice(),
+            &["config", "extensions.worktreeConfig", "true"],
+            &["config", "--worktree", "extensions.refStorage", "reftable"],
+        ] {
+            git_ok(&scratch, &repo, args).unwrap_or_else(|err| panic!("{err}"));
+        }
+        assert_both_read_files(&scratch, &env, &repo);
+    }
+
+    /// The same for `extensions.refStorage = reftable` given through
+    /// `GIT_CONFIG_COUNT`.
+    #[test]
+    fn ref_storage_in_environment_config_does_not_refuse_a_files_repo() {
+        let scratch = Scratch::new("ref-storage-env").expect("scratch");
+        let (repo, mut env) = files_repo_and_env(&scratch);
+        env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+        env.push(("GIT_CONFIG_KEY_0".into(), "extensions.refStorage".into()));
+        env.push(("GIT_CONFIG_VALUE_0".into(), "reftable".into()));
+        assert_both_read_files(&scratch, &env, &repo);
+    }
+
+    #[test]
+    #[ignore = "child half of the ref-storage source tests; runs only when re-executed"]
+    fn ref_storage_child() {
+        print_discovery();
     }
 }
