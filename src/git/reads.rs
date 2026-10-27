@@ -105,15 +105,106 @@ impl Repo {
     }
 
     /// The files that differ between the trees of `from` and `to`, sorted by
-    /// path bytes.
+    /// path bytes, then kind, as `git diff-tree -r --no-renames` lists them:
+    /// no rename detection (a rename is a deletion plus an addition) and no
+    /// directory entries.
     pub fn tree_diff(&self, from: &[u8], to: &[u8]) -> Result<Vec<TreeChange>, Error> {
-        let _ = (from, to);
-        Ok(Vec::new())
+        use gix::prelude::FindExt;
+
+        let failed = |message: String| Error::Gix {
+            what: format!(
+                "diff {} {}",
+                String::from_utf8_lossy(from),
+                String::from_utf8_lossy(to)
+            ),
+            message,
+        };
+        let from_tree = self.tree_of(from).map_err(failed)?;
+        let to_tree = self.tree_of(to).map_err(failed)?;
+        let (mut from_buf, mut to_buf) = (Vec::new(), Vec::new());
+        let from_iter = self
+            .repo
+            .objects
+            .find_tree_iter(&from_tree, &mut from_buf)
+            .map_err(|err| failed(err.to_string()))?;
+        let to_iter = self
+            .repo
+            .objects
+            .find_tree_iter(&to_tree, &mut to_buf)
+            .map_err(|err| failed(err.to_string()))?;
+        let mut recorder = gix::diff::tree::Recorder::default();
+        gix::diff::tree(
+            from_iter,
+            to_iter,
+            gix::diff::tree::State::default(),
+            &self.repo.objects,
+            &mut recorder,
+        )
+        .map_err(|err| failed(err.to_string()))?;
+
+        let mut changes: Vec<TreeChange> = recorder
+            .records
+            .into_iter()
+            .filter_map(file_change)
+            .collect();
+        changes.sort_by(|one, two| one.path.cmp(&two.path).then(one.kind.cmp(&two.kind)));
+        Ok(changes)
+    }
+
+    /// The tree a revision peels to, or gix's message when it does not.
+    fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, String> {
+        let id = self.resolve(rev).map_err(|err| err.to_string())?;
+        let object = self.repo.find_object(id).map_err(|err| err.to_string())?;
+        let tree = object.peel_to_tree().map_err(|err| err.to_string())?;
+        Ok(tree.id)
     }
 
     /// The objects `revs` name, in order.
     fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
         revs.iter().map(|rev| self.resolve(rev)).collect()
+    }
+}
+
+/// The file change a gix tree-diff record stands for, or `None` for a
+/// directory entry (git's `-r` lists files only). gix reports a change of
+/// entry mode as a modification; it is a type change when the entry kind
+/// differs.
+fn file_change(record: gix::diff::tree::recorder::Change) -> Option<TreeChange> {
+    use gix::diff::tree::recorder::Change;
+
+    let (kind, mode, path) = match record {
+        Change::Addition {
+            entry_mode, path, ..
+        } => (ChangeKind::Added, entry_mode, path),
+        Change::Deletion {
+            entry_mode, path, ..
+        } => (ChangeKind::Deleted, entry_mode, path),
+        Change::Modification {
+            previous_entry_mode,
+            entry_mode,
+            path,
+            ..
+        } => {
+            let kind = if entry_class(previous_entry_mode) == entry_class(entry_mode) {
+                ChangeKind::Modified
+            } else {
+                ChangeKind::TypeChanged
+            };
+            (kind, entry_mode, path)
+        }
+    };
+    (!mode.is_tree()).then(|| TreeChange {
+        kind,
+        path: path.into(),
+    })
+}
+
+/// An entry's kind for type-change purposes: a plain and an executable blob
+/// are the same kind, as in git.
+fn entry_class(mode: gix::object::tree::EntryMode) -> gix::object::tree::EntryKind {
+    match mode.kind() {
+        gix::object::tree::EntryKind::BlobExecutable => gix::object::tree::EntryKind::Blob,
+        kind => kind,
     }
 }
 
