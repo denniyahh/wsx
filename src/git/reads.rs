@@ -121,8 +121,8 @@ impl Repo {
             ),
             message,
         };
-        let from_tree = self.tree_of(from).map_err(failed)?;
-        let to_tree = self.tree_of(to).map_err(failed)?;
+        let from_tree = self.tree_of(from)?;
+        let to_tree = self.tree_of(to)?;
         let (mut from_buf, mut to_buf) = (Vec::new(), Vec::new());
         let from_iter = self
             .repo
@@ -153,12 +153,20 @@ impl Repo {
         Ok(changes)
     }
 
-    /// The tree a revision peels to, or gix's message when it does not.
-    fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, String> {
-        let id = self.resolve(rev).map_err(|err| err.to_string())?;
-        let object = self.repo.find_object(id).map_err(|err| err.to_string())?;
-        let tree = object.peel_to_tree().map_err(|err| err.to_string())?;
-        Ok(tree.id)
+    /// The tree a revision peels to. Resolution errors are `resolve`'s,
+    /// unchanged, so the reftable refusal stays typed; an object that does
+    /// not peel to a tree is `Error::Gix` naming the revision.
+    fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
+        let id = self.resolve(rev)?;
+        self.repo
+            .find_object(id)
+            .map_err(|err| err.to_string())
+            .and_then(|object| object.peel_to_tree().map_err(|err| err.to_string()))
+            .map(|tree| tree.id)
+            .map_err(|message| Error::Gix {
+                what: format!("tree of {}", String::from_utf8_lossy(rev)),
+                message,
+            })
     }
 
     /// The commits `revs` name, in order, with annotated tags peeled.

@@ -598,6 +598,42 @@ mod tests {
         );
     }
 
+    /// With the configuration check bypassed, `tree_diff` on a reftable
+    /// repository keeps the reftable refusal from resolving its revisions,
+    /// not a generic diff error.
+    #[test]
+    fn tree_diff_keeps_the_reftable_refusal() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("reftable-diff").expect("scratch");
+        let (_files, table) = twins(&scratch);
+        let repo = open_unchecked(&table);
+        match repo.tree_diff(b"HEAD", b"HEAD") {
+            Err(Error::Reftable { format, .. }) => assert_eq!(format, "reftable"),
+            Err(other) => panic!("diff HEAD HEAD: expected a Reftable refusal, got {other}"),
+            Ok(changes) => {
+                panic!("diff HEAD HEAD on reftable: expected a refusal, got {changes:?}")
+            }
+        }
+    }
+
+    /// Control: the files twin diffs `HEAD` with itself through the same
+    /// path, to no changes.
+    #[test]
+    fn files_repo_diffs_head_through_the_same_path() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("files-diff").expect("scratch");
+        let (files, _table) = twins(&scratch);
+        let repo = open_unchecked(&files);
+        let changes = repo
+            .tree_diff(b"HEAD", b"HEAD")
+            .unwrap_or_else(|err| panic!("diff HEAD HEAD on the files twin: {err}"));
+        assert!(changes.is_empty(), "diff HEAD HEAD: {changes:?}");
+    }
+
     /// A ref that does not exist is an ordinary read error, never the
     /// reftable refusal.
     #[test]
