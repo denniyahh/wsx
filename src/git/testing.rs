@@ -364,3 +364,75 @@ pub fn criss_cross(scratch: &Scratch) -> Result<PathBuf, String> {
     }
     Ok(repo)
 }
+
+/// A main worktree and two linked worktrees of one repository, all canonical.
+pub struct Worktrees {
+    /// The main worktree, `<scratch root>/main`, on branch `main`.
+    pub main: PathBuf,
+    /// A linked worktree beside the main one, `<scratch root>/wt1`, on `wt1`.
+    pub wt1: PathBuf,
+    /// A linked worktree nested inside the main one,
+    /// `<main>/.worktrees/wt2`, on `wt2`: the layout wsx itself creates.
+    pub wt2: PathBuf,
+}
+
+/// Builds `Worktrees` in the scratch: `main` with one commit (`a.txt`,
+/// `b.txt` at `T0`) and `.worktrees/` in its `info/exclude`, then the linked
+/// worktrees `wt1` beside it and `wt2` nested inside it.
+pub fn linked_worktrees(scratch: &Scratch) -> Result<Worktrees, String> {
+    let main = scratch.root.join("main");
+    fs::create_dir_all(&main).map_err(|err| format!("create {}: {err}", main.display()))?;
+    git_ok(scratch, &main, ["init", "-q", "-b", "main"])?;
+    write(&main.join("a.txt"), b"a\n")?;
+    write(&main.join("b.txt"), b"b\n")?;
+    commit_all(scratch, &main, "base", T0)?;
+
+    let exclude = main.join(".git/info/exclude");
+    let mut patterns = match fs::read(&exclude) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(format!("read {}: {err}", exclude.display())),
+    };
+    if !patterns.is_empty() && !patterns.ends_with(b"\n") {
+        patterns.push(b'\n');
+    }
+    patterns.extend_from_slice(b".worktrees/\n");
+    write(&exclude, &patterns)?;
+
+    let wt1 = scratch.root.join("wt1");
+    let wt2 = main.join(".worktrees/wt2");
+    git_ok(
+        scratch,
+        &main,
+        [
+            OsStr::new("worktree"),
+            "add".as_ref(),
+            "-q".as_ref(),
+            "-b".as_ref(),
+            "wt1".as_ref(),
+            wt1.as_os_str(),
+        ],
+    )?;
+    git_ok(
+        scratch,
+        &main,
+        [
+            OsStr::new("worktree"),
+            "add".as_ref(),
+            "-q".as_ref(),
+            "-b".as_ref(),
+            "wt2".as_ref(),
+            wt2.as_os_str(),
+        ],
+    )?;
+
+    let canonical = |path: &Path| {
+        path.canonicalize()
+            .map_err(|err| format!("canonicalize {}: {err}", path.display()))
+    };
+    Ok(Worktrees {
+        main: canonical(&main)?,
+        wt1: canonical(&wt1)?,
+        wt2: canonical(&wt2)?,
+    })
+}

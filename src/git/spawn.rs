@@ -8,7 +8,7 @@
 //! Arguments pass through `Command::args`, never through a shell.
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -87,16 +87,30 @@ fn finish(mut command: Command, argv: Vec<OsString>, worktree: &Path) -> Result<
 
 /// Runs the `git` binary with a fixed environment snapshot.
 ///
-/// The git version check is cached per helper, not per process: each helper
-/// resolves `git` through its own snapshot's PATH, so two helpers may run two
-/// different binaries, and a check one of them passed says nothing about the
-/// other. Production builds one helper per process (`Git::from_process`), so
-/// there the check runs once per process, as CONTEXT decides.
+/// A child aimed at wsx's own worktree gets the whole snapshot, so inside a
+/// hook it sees the hook's `GIT_DIR` and `GIT_INDEX_FILE` exactly as git set
+/// them. A child aimed at any other worktree loses every variable
+/// `git rev-parse --local-env-vars` lists, so a hook's repository and index
+/// never redirect it. The helper adds nothing to what the caller asked for:
+/// no hook-skipping flag and no signing override.
+///
+/// The git version check and the `--local-env-vars` list are cached per
+/// helper, not per process: each helper resolves `git` through its own
+/// snapshot's PATH, so two helpers may run two different binaries, and what
+/// one of them learned says nothing about the other. Production builds one
+/// helper per process (`Git::from_process`), so there each runs once per
+/// process, as CONTEXT decides.
 pub struct Git {
     /// The complete environment every child gets, as ordered key/value pairs.
     env: Vec<(OsString, OsString)>,
+    /// wsx's own worktree, canonical; `None` counts every target as another
+    /// worktree.
+    own_worktree: Option<PathBuf>,
     /// Set once `git --version` has passed `MIN_GIT_VERSION`.
     version_checked: OnceLock<()>,
+    /// The names `git rev-parse --local-env-vars` printed, fetched on first
+    /// need.
+    local_env_vars: OnceLock<Vec<OsString>>,
 }
 
 impl Git {
@@ -104,7 +118,22 @@ impl Git {
     pub fn new(env: Vec<(OsString, OsString)>) -> Git {
         Git {
             env,
+            own_worktree: None,
             version_checked: OnceLock::new(),
+            local_env_vars: OnceLock::new(),
+        }
+    }
+
+    /// This helper with `worktree` as wsx's own worktree, whose children keep
+    /// the whole snapshot. `worktree` is expected canonical (`Repo::worktree()`
+    /// is) and must be a worktree root: own-versus-other is exact canonical
+    /// equality, so a subdirectory of the own worktree counts as another
+    /// worktree and loses the hook's environment (the safe direction). Without
+    /// an own worktree every child counts as aimed at another worktree.
+    pub fn with_own_worktree(self, worktree: PathBuf) -> Git {
+        Git {
+            own_worktree: Some(worktree),
+            ..self
         }
     }
 
@@ -122,10 +151,18 @@ impl Git {
         command
     }
 
-    /// The child for `args` in `worktree`: an empty environment plus the
-    /// snapshot, `worktree` as its working directory, stdin from `/dev/null`.
-    fn command(&self, worktree: &Path, args: &[OsString]) -> Command {
-        self.base_command(worktree, args)
+    /// The child for `args` in `worktree`: program `git`, `args` exactly as
+    /// given, `worktree` as passed for its working directory, stdin from
+    /// `/dev/null`, and an empty environment plus the snapshot. `worktree`
+    /// must be a worktree root: it is canonicalised (`Error::Io` on failure)
+    /// and compared for exact equality with the own worktree, so a
+    /// subdirectory of the own worktree counts as another worktree.
+    fn command(&self, worktree: &Path, args: &[OsString]) -> Result<Command, Error> {
+        let _target = std::fs::canonicalize(worktree).map_err(|source| Error::Io {
+            what: format!("canonicalize {}", worktree.display()),
+            source,
+        })?;
+        Ok(self.base_command(worktree, args))
     }
 
     /// Runs `git --version` unless this helper has already passed the check,
@@ -150,11 +187,13 @@ impl Git {
         }
     }
 
-    /// Runs `git <args>` in `worktree` and returns its stdout. The first run
-    /// on a helper checks the git version first, and a refused check spawns
-    /// nothing else. A child that cannot be started is `Error::Io`; one that
-    /// does not exit 0 is `Error::GitFailed` carrying its argv, exit code and
-    /// stderr.
+    /// Runs `git <args>` in `worktree` and returns its stdout. `worktree` must
+    /// be a worktree root: a child aimed anywhere but wsx's own worktree
+    /// (exact canonical equality, so a subdirectory of it counts as another
+    /// worktree) loses git's repo-local variables. The first run on a helper
+    /// checks the git version first, and a refused check spawns nothing else.
+    /// A child that cannot be started is `Error::Io`; one that does not exit 0
+    /// is `Error::GitFailed` carrying its argv, exit code and stderr.
     pub fn run<I, S>(&self, worktree: &Path, args: I) -> Result<Vec<u8>, Error>
     where
         I: IntoIterator<Item = S>,
@@ -165,19 +204,21 @@ impl Git {
             .map(|arg| arg.as_ref().to_os_string())
             .collect();
         self.ensure_version(worktree)?;
-        finish(self.command(worktree, &argv), argv, worktree)
+        let command = self.command(worktree, &argv)?;
+        finish(command, argv, worktree)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     use super::super::Error;
-    use super::super::testing::{self, Env, Scratch};
+    use super::super::testing::{self, Env, Scratch, Worktrees};
     use super::{Git, MIN_GIT_VERSION, parse_git_version};
 
     /// The directories searched for the real git, in PATH order.
@@ -410,5 +451,183 @@ mod tests {
             }
             other => panic!("a signal-killed child must be GitFailed, got {other:?}"),
         }
+    }
+
+    /// The planted variables of a hook running in wt1, at the fixture's real
+    /// paths.
+    fn hook_vars(worktrees: &Worktrees) -> Env {
+        let git_dir = worktrees.main.join(".git/worktrees/wt1");
+        vec![
+            ("GIT_DIR".into(), git_dir.clone().into()),
+            ("GIT_INDEX_FILE".into(), git_dir.join("index").into()),
+            ("GIT_WORK_TREE".into(), worktrees.wt1.clone().into()),
+            ("GIT_PREFIX".into(), OsString::new()),
+            ("GIT_CONFIG_PARAMETERS".into(), "'core.abbrev'='12'".into()),
+        ]
+    }
+
+    /// The scratch environment plus a wt1 hook's variables.
+    fn hook_snapshot(scratch: &Scratch, worktrees: &Worktrees) -> Env {
+        let mut env = scratch.env.clone();
+        env.extend(hook_vars(worktrees));
+        env
+    }
+
+    /// git's repo-local variable names, queried independently of the helper,
+    /// with every planted hook name asserted on it so a vacuous list cannot
+    /// pass a removal test.
+    fn local_env_var_list(scratch: &Scratch, worktrees: &Worktrees) -> BTreeSet<OsString> {
+        let stdout = testing::git_ok(scratch, &scratch.root, ["rev-parse", "--local-env-vars"])
+            .expect("git rev-parse --local-env-vars");
+        let names: BTreeSet<OsString> = String::from_utf8(stdout)
+            .expect("the list is ASCII")
+            .split_ascii_whitespace()
+            .map(OsString::from)
+            .collect();
+        for (name, _) in hook_vars(worktrees) {
+            assert!(names.contains(&name), "{name:?} is not on {names:?}");
+        }
+        names
+    }
+
+    /// `env` as a key-to-value map: environment order carries no meaning.
+    fn env_map(env: &Env) -> BTreeMap<OsString, OsString> {
+        env.iter().cloned().collect()
+    }
+
+    /// The environment a built command sets, as a map. Panics on a removal
+    /// entry: after `env_clear` the helper only ever adds pairs.
+    fn command_env(command: &std::process::Command) -> BTreeMap<OsString, OsString> {
+        command
+            .get_envs()
+            .map(|(key, value)| {
+                let value = value.unwrap_or_else(|| panic!("{key:?} is marked for removal"));
+                (key.to_os_string(), value.to_os_string())
+            })
+            .collect()
+    }
+
+    /// `snapshot` without the names on `removed`.
+    fn without(snapshot: &Env, removed: &BTreeSet<OsString>) -> BTreeMap<OsString, OsString> {
+        env_map(snapshot)
+            .into_iter()
+            .filter(|(key, _)| !removed.contains(key))
+            .collect()
+    }
+
+    #[test]
+    fn sibling_target_removes_local_env_vars() {
+        let scratch = Scratch::new("env-sibling").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).expect("linked worktrees");
+        let snapshot = hook_snapshot(&scratch, &worktrees);
+        let removed = local_env_var_list(&scratch, &worktrees);
+        let git = Git::new(snapshot.clone()).with_own_worktree(worktrees.wt1.clone());
+
+        let command = git
+            .command(&worktrees.wt2, &["status".into()])
+            .expect("build the child");
+        let env = command_env(&command);
+        for name in &removed {
+            assert!(
+                !env.contains_key(name),
+                "{name:?} reached a sibling's child"
+            );
+        }
+        assert_eq!(env, without(&snapshot, &removed));
+    }
+
+    #[test]
+    fn own_target_through_a_symlink_keeps_the_env() {
+        let scratch = Scratch::new("env-own-symlink").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).expect("linked worktrees");
+        let link = scratch.root.join("wt1-link");
+        std::os::unix::fs::symlink(&worktrees.wt1, &link).expect("symlink wt1-link -> wt1");
+        let snapshot = hook_snapshot(&scratch, &worktrees);
+        let git = Git::new(snapshot.clone()).with_own_worktree(worktrees.wt1.clone());
+
+        let command = git
+            .command(&link, &["status".into()])
+            .expect("build the child");
+        assert_eq!(command.get_current_dir(), Some(link.as_path()));
+        let env = command_env(&command);
+        assert!(env.contains_key(&OsString::from("GIT_DIR")));
+        assert_eq!(env, env_map(&snapshot));
+    }
+
+    #[test]
+    fn nested_sibling_counts_as_another_worktree() {
+        let scratch = Scratch::new("env-nested").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).expect("linked worktrees");
+        assert!(
+            worktrees.wt2.starts_with(&worktrees.main),
+            "wt2 {} must be nested in main {}",
+            worktrees.wt2.display(),
+            worktrees.main.display()
+        );
+        let snapshot = hook_snapshot(&scratch, &worktrees);
+        let removed = local_env_var_list(&scratch, &worktrees);
+        let git = Git::new(snapshot.clone()).with_own_worktree(worktrees.main.clone());
+
+        let command = git
+            .command(&worktrees.wt2, &["status".into()])
+            .expect("build the child");
+        let env = command_env(&command);
+        for name in &removed {
+            assert!(
+                !env.contains_key(name),
+                "{name:?} reached a nested sibling's child"
+            );
+        }
+        assert_eq!(env, without(&snapshot, &removed));
+    }
+
+    #[test]
+    fn child_gets_exact_argv_cwd_and_no_bypass() {
+        let scratch = Scratch::new("env-exact").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).expect("linked worktrees");
+        let snapshot = hook_snapshot(&scratch, &worktrees);
+        let removed = local_env_var_list(&scratch, &worktrees);
+        let git = Git::new(snapshot.clone()).with_own_worktree(worktrees.wt1.clone());
+        let args: Vec<OsString> = ["commit", "-q", "-m", "message"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+
+        for (target, expected_env) in [
+            (&worktrees.wt2, without(&snapshot, &removed)),
+            (&worktrees.wt1, env_map(&snapshot)),
+        ] {
+            let command = git.command(target, &args).expect("build the child");
+            assert_eq!(command.get_program(), "git");
+            assert_eq!(command.get_args().collect::<Vec<_>>(), args);
+            assert_eq!(command.get_current_dir(), Some(target.as_path()));
+            assert_eq!(
+                command_env(&command),
+                expected_env,
+                "env for {}",
+                target.display()
+            );
+        }
+    }
+
+    #[test]
+    fn killed_list_query_is_a_failure_naming_its_argv() {
+        let scratch = Scratch::new("env-list-killed").expect("scratch");
+        let repo = init_repo(&scratch);
+        let env = fake_git(&scratch, &kill_on("rev-parse --local-env-vars"));
+        let result = Git::new(env).run(&repo, ["rev-parse", "--absolute-git-dir"]);
+        match result {
+            Err(Error::GitFailed { argv, status, .. }) => {
+                assert_eq!(argv, ["rev-parse", "--local-env-vars"]);
+                assert_eq!(status, None, "a signal-killed child has no exit code");
+            }
+            other => panic!("a killed list query must be GitFailed naming it, got {other:?}"),
+        }
+        assert!(
+            !log_lines(&scratch)
+                .iter()
+                .any(|line| line == "rev-parse --absolute-git-dir"),
+            "the requested command ran without the removal list"
+        );
     }
 }
