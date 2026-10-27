@@ -104,7 +104,7 @@ completed: 2026-10-27
 | Control | Expected | Observed |
 |---------|----------|----------|
 | Copy with a planted `gix::open(".")` test | clippy fails with ``use of a disallowed method `gix::open` `` | rc 101, exactly that error and no other disallowed-method hit |
-| Copy with `path = "gix::open_misspelled"` in clippy.toml | clippy fails with `this lint expectation is unfulfilled` | rc 101, one unfulfilled expectation at `src/git/repo.rs:137`, the `gix::open` call's expect; clippy also printed the `does not refer to a reachable function` warning that alone would not fail the gate |
+| Copy with `path = "gix::open_misspelled"` in clippy.toml | clippy fails with `this lint expectation is unfulfilled` | rc 101, one unfulfilled expectation at `src/git/repo.rs:137`, the `gix::open` call's expect; clippy also printed the `does not refer to a reachable function` warning, which alone leaves clippy at rc 0 (measured in RESEARCH Pitfall 2, not re-measured here) |
 | `sha256_repo_opens` with `--object-format=sha1` (in place, then restored from a backup copy) | the length assertion fails | rc 100, `merge-base id baec2491... is not SHA-256 length` (40 characters) |
 
 Both clippy controls built into `target/gsd/ban-control` from a copy under the session scratchpad; each `EXIT` trap removed its copy and that build tree.
