@@ -519,14 +519,14 @@ fn hook_child() { /* Repo::discover(cwd); print MARKER worktree=… common=… i
 | A3 | Harness `outcome.rs` snapshots refs through `git` and therefore works on reftable | Reftable scenario | The oracle-side recording fails; the executor would see it on the first run |
 | A4 | The combined wsx graph (gix + tempfile dev) passes cargo-deny with the four-license allow list | cargo-deny | `scripts/check.sh deps` fails; add the license it names |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **The inclusive-ceiling divergence (Pitfall 3, rows 1 and 3).**
+1. **The inclusive-ceiling divergence (Pitfall 3, rows 1 and 3).** RESOLVED: wsx matches git; 03-CONTEXT "Decided after research" (`GIT_CEILING_DIRECTORIES` matches git), implemented and tested against git with a control in 03-10.
    - What we know: with `GIT_CEILING_DIRECTORIES=<dir>`, gix finds `<dir>/.git`; git does not.
    - Unclear: whether wsx must match git here. Only users who set ceilings are affected.
    - Recommendation (planner's call, within discretion): after discovery, when `GIT_DIR` is unset and a ceiling equals the found worktree (canonical) while the start dir differs, refuse as not-a-repo. Add a gix-vs-git test with a control. Otherwise document the divergence.
-2. **`-c safe.directory` / `GIT_CONFIG_COUNT` honoured by git but not gix (Pitfall 5).** wsx is stricter (fail-closed), which is consistent with GIT-04's intent. The refusal message should name the global-config fix (`git config --global --add safe.directory <path>`), exactly as git prints it. Recommend accepting this and recording it in the code docs.
-3. **The reftable scenario's expected exit code.** IF-01 lands in phase 5. Phase 3 must still put a non-zero `exit` in `verdict(..)` to satisfy `is_refusal`. Use 1 as a placeholder and let phase 5 correct it.
+2. **`-c safe.directory` / `GIT_CONFIG_COUNT` honoured by git but not gix (Pitfall 5).** RESOLVED: accepted as a recorded divergence; 03-CONTEXT "Decided after research" (`safe.directory` given only through `-c`/`GIT_CONFIG_COUNT`), pinned by a test and the refusal message in 03-09. wsx is stricter (fail-closed), which is consistent with GIT-04's intent. The refusal message should name the global-config fix (`git config --global --add safe.directory <path>`), exactly as git prints it. Recommend accepting this and recording it in the code docs.
+3. **The reftable scenario's expected exit code.** RESOLVED: adopted as recommended; 03-02 records refusal exit 1 as a placeholder, and its STATE.md blocker makes phase 5 replace it with the IF-01 code. IF-01 lands in phase 5. Phase 3 must still put a non-zero `exit` in `verdict(..)` to satisfy `is_refusal`. Use 1 as a placeholder and let phase 5 correct it.
 
 ## Environment Availability
 
