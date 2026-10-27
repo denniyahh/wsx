@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "child half of the hook sibling tests; runs only when re-executed"]
+    #[ignore = "child half of the sibling tests; runs only when re-executed"]
     fn linked_hook_siblings_child() {
         print_siblings();
     }
@@ -819,7 +819,9 @@ mod tests {
     /// Siblings come sorted by canonical worktree path, not in gix's order
     /// (the main repository first, then linked worktrees by git dir): a
     /// linked worktree at `<root>/aa` sorts before `<root>/main`, and opened
-    /// from wt2 the siblings are aa, main, wt1.
+    /// from wt2 the siblings are aa, main, wt1. The child is re-executed
+    /// with the scratch environment, so a `GIT_DIR` in the test process's
+    /// own environment cannot redirect its discovery.
     #[test]
     fn siblings_are_sorted_by_worktree_path() {
         let scratch = Scratch::new("siblings-order").expect("scratch");
@@ -832,22 +834,29 @@ mod tests {
             ["worktree", "add", "-q", "-b", "aa", aa_arg],
         )
         .expect("git worktree add aa");
-
-        let repo = Repo::discover(&worktrees.wt2).expect("discover wt2");
-        let siblings: Vec<PathBuf> = repo
-            .siblings()
-            .expect("open the sibling worktrees")
-            .iter()
-            .map(|sibling| {
-                sibling
-                    .worktree()
-                    .expect("a sibling worktree")
-                    .to_path_buf()
-            })
-            .collect();
+        let mut env = scratch.env.clone();
+        env.push((testing::SIBLING_VAR.into(), worktrees.wt2.clone().into()));
+        let output = testing::reexec(
+            &child_path("linked_hook_siblings_child"),
+            &env,
+            &worktrees.wt2,
+            b"",
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
         assert_eq!(
-            siblings,
-            [aa, worktrees.main.clone(), worktrees.wt1.clone()]
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the siblings child", &output)
         );
+
+        let expected = [&aa, &worktrees.main, &worktrees.wt1];
+        assert_eq!(fact(&output, "sibling_count"), expected.len().to_string());
+        for (i, worktree) in expected.iter().enumerate() {
+            assert_eq!(
+                fact(&output, &format!("sibling_{i}_worktree")),
+                worktree.display().to_string()
+            );
+        }
     }
 }
