@@ -85,9 +85,28 @@ impl fmt::Display for Error {
             Error::NotARepo { start, reason } => {
                 write!(f, "not a git repository: {} ({reason})", start.display())
             }
-            Error::ForeignOwner { .. } => f.write_str("ForeignOwner"),
-            Error::Reftable { .. } => f.write_str("Reftable"),
-            Error::GitTooOld { .. } => f.write_str("GitTooOld"),
+            // The fix line is git's own: a global `safe.directory` is the one
+            // both git and gix honour (gix ignores `-c safe.directory`).
+            Error::ForeignOwner { path } => write!(
+                f,
+                "refusing {path}: it is owned by another user, and git refuses such a repository too\n\
+                 To trust it, run:\n\
+                 \tgit config --global --add safe.directory {path}",
+                path = path.display()
+            ),
+            Error::Reftable { path, format } => write!(
+                f,
+                "refusing {}: its refs use the '{format}' storage format (extensions.refStorage); \
+                 this version of wsx reads only the files backend and cannot read {format} repositories",
+                path.display()
+            ),
+            Error::GitTooOld {
+                found,
+                required: (major, minor),
+            } => write!(
+                f,
+                "git {found} is too old: wsx needs git {major}.{minor} or newer"
+            ),
             Error::GitFailed {
                 argv,
                 status,
