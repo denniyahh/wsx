@@ -222,7 +222,7 @@ mod tests {
     use std::path::Path;
 
     use super::super::spawn::Git;
-    use super::super::testing::{Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
     use super::super::{Error, ObjectId};
     use super::{AheadBehind, ChangeKind, Repo, TreeChange};
 
@@ -354,6 +354,9 @@ mod tests {
 
     #[test]
     fn merge_base_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("merge-base").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let canonical = repo_dir.canonicalize().expect("canonicalize fixture");
@@ -409,6 +412,9 @@ mod tests {
 
     #[test]
     fn merge_base_moves_with_the_pair() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("merge-base-moves").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -452,6 +458,9 @@ mod tests {
 
     #[test]
     fn ahead_behind_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("ahead-behind").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -482,6 +491,9 @@ mod tests {
 
     #[test]
     fn ahead_behind_changes_with_the_pair() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("ahead-behind-moves").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -514,6 +526,9 @@ mod tests {
 
     #[test]
     fn range_walk_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("range-walk").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -542,6 +557,9 @@ mod tests {
 
     #[test]
     fn range_walk_changes_with_the_hidden_tip() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("range-walk-moves").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -574,6 +592,9 @@ mod tests {
 
     #[test]
     fn tree_diff_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("tree-diff").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -605,6 +626,9 @@ mod tests {
 
     #[test]
     fn tree_diff_changes_with_the_pair() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("tree-diff-moves").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -630,6 +654,9 @@ mod tests {
 
     #[test]
     fn tree_diff_of_a_revision_with_itself_is_empty() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("tree-diff-self").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -664,6 +691,9 @@ mod tests {
 
     #[test]
     fn a_commit_with_itself_is_its_own_merge_base_and_level() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("self-pair").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -701,6 +731,9 @@ mod tests {
 
     #[test]
     fn parent_and_child_share_the_parent_as_merge_base() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("parent-child").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -741,6 +774,9 @@ mod tests {
 
     #[test]
     fn unrelated_histories_have_no_merge_base() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("unrelated").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         git_ok(&scratch, &repo_dir, ["switch", "-q", "--orphan", "lone"])
@@ -772,6 +808,9 @@ mod tests {
 
     #[test]
     fn range_walk_with_every_tip_hidden_is_empty() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("walk-hidden").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -790,6 +829,9 @@ mod tests {
 
     #[test]
     fn range_walk_without_tips_is_empty() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("walk-no-tips").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
@@ -808,6 +850,9 @@ mod tests {
 
     #[test]
     fn an_executable_bit_change_is_a_modification() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("exec-bit").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let a_txt = repo_dir.join("a.txt");
@@ -833,6 +878,9 @@ mod tests {
 
     #[test]
     fn repeated_reads_return_equal_values() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("repeated").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");

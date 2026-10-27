@@ -405,6 +405,9 @@ mod tests {
     /// naming reftable and saying wsx cannot read it.
     #[test]
     fn reftable_repo_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("reftable").expect("scratch");
         let (_files, table) = twins(&scratch);
         let (format, message) = refused_format(Repo::discover(&table.join("sub")), "reftable twin");
@@ -417,6 +420,9 @@ mod tests {
     /// subdirectory.
     #[test]
     fn files_backend_twin_opens() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("files-twin").expect("scratch");
         let (files, _table) = twins(&scratch);
         let repo = Repo::discover(&files.join("sub")).expect("the files twin opens");
@@ -427,6 +433,9 @@ mod tests {
     /// check reads configuration, not refs.
     #[test]
     fn empty_reftable_repo_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("empty-reftable").expect("scratch");
         let empty = scratch.root.join("empty");
         let empty_arg = empty.to_str().expect("UTF-8 scratch path");
@@ -443,6 +452,9 @@ mod tests {
     /// `files` set explicitly, as git writes it, opens.
     #[test]
     fn explicit_files_ref_storage_opens() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("explicit-files").expect("scratch");
         let dir = ref_storage_repo(&scratch, "repo", "files");
         git_ok(&scratch, &dir, ["rev-parse", "HEAD"]).expect("git still reads the repository");
@@ -453,6 +465,9 @@ mod tests {
     /// `Files` is not `files`: wsx refuses it, as git does.
     #[test]
     fn miscased_ref_storage_is_refused_as_git_refuses_it() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("miscased").expect("scratch");
         let dir = ref_storage_repo(&scratch, "repo", "Files");
         let (format, _message) = refused_format(Repo::discover(&dir), "miscased Files");
@@ -492,6 +507,9 @@ mod tests {
     /// error.
     #[test]
     fn reftable_ref_decode_maps_to_the_refusal() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("reftable-decode").expect("scratch");
         let (_files, table) = twins(&scratch);
         let repo = open_unchecked(&table);
@@ -506,6 +524,9 @@ mod tests {
     /// the id git prints.
     #[test]
     fn files_repo_resolves_head_through_the_same_path() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("files-decode").expect("scratch");
         let (files, _table) = twins(&scratch);
         let repo = open_unchecked(&files);
@@ -522,6 +543,9 @@ mod tests {
     /// reftable refusal.
     #[test]
     fn unknown_revision_is_not_reported_as_reftable() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("unknown-rev").expect("scratch");
         let (files, _table) = twins(&scratch);
         let repo = open_unchecked(&files);
@@ -540,6 +564,9 @@ mod tests {
     /// discover variant fails before climbing towards the wsx checkout.
     #[test]
     fn banned_gix_entry_points_refuse_a_missing_path() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("ban-pin").expect("scratch");
         let missing = scratch.root.join("does-not-exist");
         #[expect(
@@ -663,6 +690,9 @@ mod tests {
     /// would fail.
     #[test]
     fn sha256_repo_opens() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
         let scratch = Scratch::new("sha256").expect("scratch");
         let repo_dir = scratch.root.join("repo");
         let repo_arg = repo_dir.to_str().expect("UTF-8 scratch path");

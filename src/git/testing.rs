@@ -616,6 +616,88 @@ pub fn marker(output: &Output, key: &str) -> Result<String, String> {
         })
 }
 
+/// Set in the environment of a test `rerun_scrubbed` re-executes, so the
+/// re-executed test reports that it ran.
+const RERUN_VAR: &str = "WSX_TEST_RERUN";
+
+/// The names `git rev-parse --local-env-vars` prints, the variables that aim
+/// git at one repository (`GIT_DIR`, `GIT_INDEX_FILE`, ...). An error when
+/// git fails or the list lacks `GIT_DIR`, so an empty list cannot turn the
+/// scrub into a no-op.
+fn local_env_vars() -> Result<Vec<OsString>, String> {
+    let env: Env = vec![
+        ("PATH".into(), HERMETIC_PATH.into()),
+        ("LC_ALL".into(), "C".into()),
+    ];
+    let args = argv(["rev-parse", "--local-env-vars"]);
+    let root = Path::new("/");
+    let stdout = checked(root, &args, spawn_git(&env, root, &args)?)?;
+    let names: Vec<OsString> = stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|name| !name.is_empty())
+        .map(|name| OsStr::from_bytes(name).to_os_string())
+        .collect();
+    if names.iter().any(|name| name == "GIT_DIR") {
+        Ok(names)
+    } else {
+        Err(format!(
+            "git rev-parse --local-env-vars did not list GIT_DIR: {names:?}"
+        ))
+    }
+}
+
+/// Keeps the repository-local git variables of the test runner away from a
+/// test that discovers a repository in its own process: a suite run from a
+/// git hook, or a shell that exports `GIT_DIR`, would otherwise aim
+/// `Repo::discover` at that repository instead of the test's fixture.
+///
+/// Call it first in such a test, as `if testing::rerun_scrubbed() { return;
+/// }`. When the process environment holds none of the variables
+/// `git rev-parse --local-env-vars` lists, it returns `false` and the test
+/// runs here. Otherwise it re-executes the calling test with the same
+/// environment minus those variables, relays the child's output, panics
+/// with it unless the child exited 0 and reported that it ran the test, and
+/// returns `true`. The test is named by its thread: libtest runs each test
+/// on a thread named after its full path.
+pub fn rerun_scrubbed() -> bool {
+    let local = local_env_vars().unwrap_or_else(|err| panic!("{err}"));
+    let test = std::thread::current()
+        .name()
+        .filter(|name| name.contains("::"))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            panic!("rerun_scrubbed must run on libtest's thread, named after the test's full path")
+        });
+    if !std::env::vars_os().any(|(key, _)| local.contains(&key)) {
+        if std::env::var_os(RERUN_VAR).is_some() {
+            child_print("rerun", &test);
+        }
+        return false;
+    }
+    let mut env: Env = std::env::vars_os()
+        .filter(|(key, _)| !local.contains(key))
+        .collect();
+    env.push((RERUN_VAR.into(), "1".into()));
+    let cwd = std::env::current_dir().expect("read the working directory");
+    let output = reexec(&test, &env, &cwd, b"").unwrap_or_else(|err| panic!("{err}"));
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let what = format!("{test}, re-executed without the repository-local git variables");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        failed_run(&what, &output)
+    );
+    assert_eq!(
+        marker(&output, "rerun").as_deref(),
+        Ok(test.as_str()),
+        "{}",
+        failed_run(&what, &output)
+    );
+    true
+}
+
 /// The user-namespace runner for a non-root test: inner uid 0 is the test
 /// user, inner uid 1 the first subordinate uid. Absolute, because a user
 /// PATH can resolve a different `unshare` first.
@@ -870,6 +952,17 @@ fn reexec_of_an_unknown_child_has_no_marker() {
     );
 }
 
+/// A one-commit repository at `<root>/<name>`, canonical.
+fn one_commit_repo(scratch: &Scratch, name: &str) -> PathBuf {
+    let dir = scratch.root.join(name);
+    fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create {name}: {err}"));
+    git_ok(scratch, &dir, ["init", "-q"]).unwrap_or_else(|err| panic!("{err}"));
+    write(&dir.join("a.txt"), b"a\n").unwrap_or_else(|err| panic!("{err}"));
+    commit_all(scratch, &dir, name, T0).unwrap_or_else(|err| panic!("{err}"));
+    dir.canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize {name}: {err}"))
+}
+
 /// The libtest filters for the modules whose tests discover a repository in
 /// the test process itself.
 const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests::"];
@@ -906,12 +999,7 @@ fn libtest_counts(stdout: &str) -> Option<(usize, usize)> {
 #[test]
 fn discovering_tests_pass_with_a_runner_git_dir() {
     let scratch = Scratch::new("runner-git-dir").expect("scratch");
-    let decoy = scratch.root.join("decoy");
-    fs::create_dir_all(&decoy).expect("create the decoy");
-    git_ok(&scratch, &decoy, ["init", "-q"]).expect("git init the decoy");
-    write(&decoy.join("d.txt"), b"d\n").expect("write d.txt");
-    commit_all(&scratch, &decoy, "decoy", T0).expect("commit in the decoy");
-    let git_dir = decoy.join(".git");
+    let git_dir = one_commit_repo(&scratch, "decoy").join(".git");
 
     let exe = std::env::current_exe().expect("locate the test executable");
     // Not `command`: the point is the runner's own environment, inherited,
@@ -932,4 +1020,106 @@ fn discovering_tests_pass_with_a_runner_git_dir() {
         output.status.code(),
         libtest_report(&stdout)
     );
+}
+
+/// The variable naming the directory a discovery child discovers from.
+const DISCOVER_VAR: &str = "WSX_TEST_DISCOVER";
+
+/// The full libtest path of a child half in this module.
+fn testing_child(name: &str) -> String {
+    format!("git::testing::{name}")
+}
+
+/// A fixture and a decoy repository, and the scratch environment plus
+/// `DISCOVER_VAR=<fixture>` and the decoy's `GIT_DIR` and `GIT_INDEX_FILE`,
+/// as a git hook in the decoy would export them.
+fn decoy_env(scratch: &Scratch) -> (PathBuf, PathBuf, Env) {
+    let fixture = one_commit_repo(scratch, "fixture");
+    let decoy_git_dir = one_commit_repo(scratch, "decoy").join(".git");
+    let mut env = scratch.env.clone();
+    env.push((DISCOVER_VAR.into(), fixture.clone().into()));
+    env.push(("GIT_DIR".into(), decoy_git_dir.clone().into()));
+    env.push(("GIT_INDEX_FILE".into(), decoy_git_dir.join("index").into()));
+    (fixture, decoy_git_dir, env)
+}
+
+/// Re-executes the discovery child `child` with `env` from the scratch
+/// root, checks it exited 0, and returns its output.
+fn run_discovery_child(scratch: &Scratch, child: &str, env: &Env) -> Output {
+    let output = reexec(&testing_child(child), env, &scratch.root, b"")
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        failed_run(child, &output)
+    );
+    output
+}
+
+/// The `git_dir` fact of a discovery child, failing with its output.
+fn discovered_git_dir(output: &Output) -> String {
+    marker(output, "git_dir").unwrap_or_else(|err| panic!("{err}"))
+}
+
+/// Prints the git dir `Repo::discover` finds from `DISCOVER_VAR`.
+fn print_discovered_git_dir() {
+    let start = std::env::var_os(DISCOVER_VAR).expect("the parent set the start directory");
+    let repo = super::repo::Repo::discover(Path::new(&start))
+        .unwrap_or_else(|err| panic!("discover {}: {err}", Path::new(&start).display()));
+    child_print("git_dir", repo.git_dir().display());
+}
+
+/// With a decoy's `GIT_DIR` in the runner's environment, a test that calls
+/// `rerun_scrubbed` first is re-executed without it and discovers its own
+/// fixture.
+#[test]
+fn rerun_scrubbed_discovers_the_fixture_under_a_runner_git_dir() {
+    let scratch = Scratch::new("rerun-scrubbed").expect("scratch");
+    let (fixture, _decoy, env) = decoy_env(&scratch);
+    let child = "scrubbed_discovery_child";
+    let output = run_discovery_child(&scratch, child, &env);
+    assert_eq!(
+        marker(&output, "rerun").as_deref(),
+        Ok(testing_child(child).as_str()),
+        "{}",
+        failed_run(child, &output)
+    );
+    assert_eq!(
+        discovered_git_dir(&output),
+        fixture.join(".git").display().to_string(),
+        "{}",
+        failed_run(child, &output)
+    );
+}
+
+/// Control: the same environment makes a test that does not call
+/// `rerun_scrubbed` discover the decoy, so the decoy is a real hazard.
+#[test]
+fn a_runner_git_dir_redirects_unscrubbed_discovery() {
+    let scratch = Scratch::new("rerun-unscrubbed").expect("scratch");
+    let (_fixture, decoy, env) = decoy_env(&scratch);
+    let child = "unscrubbed_discovery_child";
+    let output = run_discovery_child(&scratch, child, &env);
+    assert_eq!(
+        discovered_git_dir(&output),
+        decoy.display().to_string(),
+        "{}",
+        failed_run(child, &output)
+    );
+}
+
+#[test]
+#[ignore = "child half of rerun_scrubbed_discovers_the_fixture_under_a_runner_git_dir; runs only when re-executed"]
+fn scrubbed_discovery_child() {
+    if rerun_scrubbed() {
+        return;
+    }
+    print_discovered_git_dir();
+}
+
+#[test]
+#[ignore = "child half of a_runner_git_dir_redirects_unscrubbed_discovery; runs only when re-executed"]
+fn unscrubbed_discovery_child() {
+    print_discovered_git_dir();
 }
