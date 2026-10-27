@@ -128,7 +128,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A reftable repository is refused with a message naming reftable (a `regression:` scenario), while the same history in a files-backend repository opens (control)
   4. A repository owned by another user is refused, matching git's own refusal on that repository
 
-**Plans**: 7/10 plans executed
+**Plans**: 8/10 plans executed
 **Wave 1**
 - [x] 03-01-PLAN.md — Tracer: gix 0.90.0 pin and licenses, `src/git/` skeleton, merge-base from a subdirectory equals git's; full error enum
 - [x] 03-02-PLAN.md — Harness `regression:` scenario for reftable with the oracle side recorded; phase 5 obligation in STATE.md
@@ -143,7 +143,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 03-07-PLAN.md — Re-exec test support; null stdin with a control; commit and merge through the helper run hooks and are signed
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 03-08-PLAN.md — Real hooks: worktree resolution inside a hook, siblings, sibling scrub with a leak control, own index kept
+- [x] 03-08-PLAN.md — Real hooks: worktree resolution inside a hook, siblings, sibling scrub with a leak control, own index kept
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 03-09-PLAN.md — Foreign-owner refusal against a really foreign uid, matching git; `safe.directory` control
@@ -322,7 +322,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
-| 3. Git adapter | 7/10 | In Progress | - |
+| 3. Git adapter | 8/10 | In Progress | - |
 | 4. Repo model | 0/TBD | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |

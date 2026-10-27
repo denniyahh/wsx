@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
 status: executing
-stopped_at: Completed 03-07-PLAN.md
-last_updated: "2026-10-27T02:40:39.127Z"
+stopped_at: Completed 03-08-PLAN.md
+last_updated: "2026-10-27T02:52:02.779Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: 0f927c2b6ba3f75768a76359beb3d1b6c272b280
+state_head: 36789f616872cd9a4f582f0ccde1f7d8074d9d61
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 29
+  completed_plans: 30
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 3 (Git adapter) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 3 execution started
 
@@ -85,6 +85,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 03 P05 | 6 min | 2 tasks | 2 files |
 | Phase 03 P06 | 3 min | 2 tasks | 1 files |
 | Phase 03 P07 | 8 min | 3 tasks | 3 files |
+| Phase 03 P08 | 8min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -148,6 +149,7 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-06: the reftable backstop maps on gix_error is_unsupported(), observed true for the reftable HEAD decode error and false for a missing branch; no message-text match
 - [Phase 03]: An empty --local-env-vars list fails closed as the new Error::GitEmptyOutput (GitFailed would render 'exited 0', which does not name the cause)
 - [Phase 03]: testing::reexec is the re-exec harness for 03-08..03-10: parents assert a WSXCHILD marker line, never the exit status alone
+- [Phase 03]: 03-08: Repo::siblings opens other worktrees only via gix main_repo()/worktrees(), sorted by canonical worktree path; with_removal_disabled is cfg(test) only and skips the whole removal branch
 
 ### Pending Todos
 
@@ -173,6 +175,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T02:40:38.935Z
-Stopped at: Completed 03-07-PLAN.md
+Last session: 2026-10-27T02:52:02.582Z
+Stopped at: Completed 03-08-PLAN.md
 Resume file: None
