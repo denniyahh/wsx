@@ -85,15 +85,34 @@ impl Repo {
         &self.common_dir
     }
 
-    /// The object a revspec (`main`, `feat~3`, a hex id) names.
+    /// The object a revspec (`main`, `feat~3`, a hex id) names. A ref gix
+    /// cannot decode because of its storage backend is the reftable refusal,
+    /// never a generic read error.
     pub(super) fn resolve(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        self.repo
-            .rev_parse_single(rev)
-            .map(|id| id.detach())
-            .map_err(|err| Error::Gix {
+        match self.repo.rev_parse_single(rev) {
+            Ok(id) => Ok(id.detach()),
+            Err(err) if err.is_unsupported() => Err(self.unsupported_backend()),
+            Err(err) => Err(Error::Gix {
                 what: format!("resolve {}", String::from_utf8_lossy(rev)),
                 message: err.to_string(),
-            })
+            }),
+        }
+    }
+
+    /// The backstop behind `refuse_ref_storage`: the refusal for a ref whose
+    /// storage backend gix reports as unsupported, naming the configured
+    /// `extensions.refStorage`, or `unsupported` when none is set.
+    fn unsupported_backend(&self) -> Error {
+        Error::Reftable {
+            path: self
+                .worktree
+                .clone()
+                .unwrap_or_else(|| self.git_dir.clone()),
+            format: ref_storage(&self.repo).map_or_else(
+                || "unsupported".to_owned(),
+                |value| String::from_utf8_lossy(&value).into_owned(),
+            ),
+        }
     }
 }
 
