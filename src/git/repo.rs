@@ -231,7 +231,9 @@ mod tests {
 
     use super::super::Error;
     use super::super::spawn::Git;
-    use super::super::testing::{self, Scratch, T0, TICK, commit_all, git, git_ok, write};
+    use super::super::testing::{
+        self, Env, ForeignOwned, Scratch, T0, TICK, commit_all, git, git_ok, write,
+    };
     use super::Repo;
 
     /// The trimmed stdout of `git <args>` run in `dir`.
@@ -857,6 +859,173 @@ mod tests {
                 fact(&output, &format!("sibling_{i}_worktree")),
                 worktree.display().to_string()
             );
+        }
+    }
+
+    /// The variable a foreign-owner test hands its child: the repository
+    /// the child discovers.
+    const REPO_VAR: &str = "WSX_TEST_REPO";
+
+    /// The line of git's dubious-ownership refusal that carries its fix.
+    const GIT_FIX: &str = "git config --global --add safe.directory";
+
+    /// A one-commit repository at `<root>/repo`, canonical, then really
+    /// owned by another uid. Bind the guard after the scratch, so it drops
+    /// first and the scratch stays deletable.
+    fn foreign_repo(scratch: &Scratch) -> (PathBuf, ForeignOwned) {
+        let dir = scratch.root.join("repo");
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
+        write(&dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &dir, "a", T0).expect("commit a");
+        let dir = dir.canonicalize().expect("canonicalize the repository");
+        let guard = ForeignOwned::new(&dir);
+        (dir, guard)
+    }
+
+    /// Re-executes `foreign_owner_child` from the scratch root with `env`
+    /// plus `REPO_VAR=<repo>`, and checks it exited 0.
+    fn discover_in_child(scratch: &Scratch, env: &Env, repo: &Path) -> Output {
+        let mut env = env.clone();
+        env.push((REPO_VAR.into(), repo.into()));
+        let output = testing::reexec(&child_path("foreign_owner_child"), &env, &scratch.root, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the foreign-owner child", &output)
+        );
+        output
+    }
+
+    /// The trimmed first line of `text` containing `needle`.
+    fn line_with(text: &str, needle: &str) -> String {
+        text.lines()
+            .find(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("no line containing `{needle}` in:\n{text}"))
+            .trim()
+            .to_owned()
+    }
+
+    /// The child's `result` fact, failing with its whole output otherwise.
+    fn child_result(output: &Output) -> String {
+        testing::marker(output, "result")
+            .unwrap_or_else(|err| panic!("{err}\n{}", testing::failed_run("the child", output)))
+    }
+
+    /// A repository really owned by another uid is refused by both: git
+    /// exits 128 on dubious ownership, and wsx's `Repo::discover` returns
+    /// `ForeignOwner` whose fix line is the one git prints.
+    #[test]
+    fn foreign_owner_refused() {
+        let scratch = Scratch::new("foreign-owner").expect("scratch");
+        let (repo, mut guard) = foreign_repo(&scratch);
+
+        let output = git(&scratch, &repo, ["rev-parse", "--absolute-git-dir"]).expect("spawn git");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(128), "git stderr: {stderr}");
+        assert!(
+            stderr.contains("detected dubious ownership"),
+            "git stderr: {stderr}"
+        );
+
+        let child = discover_in_child(&scratch, &scratch.env, &repo);
+        assert_eq!(
+            child_result(&child),
+            "foreign_owner",
+            "{}",
+            testing::failed_run("the foreign-owner child", &child)
+        );
+        assert_eq!(fact(&child, "fix"), line_with(&stderr, GIT_FIX));
+
+        guard.restore().expect("give the repository back");
+    }
+
+    /// Control: the same repository listed as `safe.directory` in the
+    /// child's global config opens for git and for wsx.
+    #[test]
+    fn safe_directory_in_global_config_opens_a_foreign_repo() {
+        let scratch = Scratch::new("foreign-safe-global").expect("scratch");
+        let (repo, mut guard) = foreign_repo(&scratch);
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(format!("[safe]\n\tdirectory = {}\n", repo.display()).as_bytes());
+        write(&global, &config).expect("append safe.directory");
+
+        let output = git(&scratch, &repo, ["rev-parse", "--absolute-git-dir"]).expect("spawn git");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "git stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let child = discover_in_child(&scratch, &scratch.env, &repo);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the foreign-owner child", &child)
+        );
+        assert_eq!(fact(&child, "worktree"), repo.display().to_string());
+
+        guard.restore().expect("give the repository back");
+    }
+
+    /// Recorded divergence: `safe.directory` given only through
+    /// `GIT_CONFIG_COUNT` makes git open the repository, while wsx still
+    /// refuses it, because gix reads `safe.directory` only from global and
+    /// system config. The stricter direction.
+    #[test]
+    fn command_line_safe_directory_does_not_trust_a_foreign_repo() {
+        let scratch = Scratch::new("foreign-safe-env").expect("scratch");
+        let (repo, mut guard) = foreign_repo(&scratch);
+        let mut env = scratch.env.clone();
+        env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+        env.push(("GIT_CONFIG_KEY_0".into(), "safe.directory".into()));
+        env.push(("GIT_CONFIG_VALUE_0".into(), repo.clone().into()));
+
+        let output = testing::git_in_env(&env, &repo, ["rev-parse", "--absolute-git-dir"])
+            .expect("spawn git");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "git stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let child = discover_in_child(&scratch, &env, &repo);
+        assert_eq!(
+            child_result(&child),
+            "foreign_owner",
+            "{}",
+            testing::failed_run("the foreign-owner child", &child)
+        );
+
+        guard.restore().expect("give the repository back");
+    }
+
+    #[test]
+    #[ignore = "child half of the foreign-owner tests; runs only when re-executed"]
+    fn foreign_owner_child() {
+        let repo = std::env::var_os(REPO_VAR).expect("the parent set the repository path");
+        match Repo::discover(Path::new(&repo)) {
+            Ok(found) => {
+                testing::child_print("result", "opened");
+                let worktree = found
+                    .worktree()
+                    .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string());
+                testing::child_print("worktree", worktree);
+            }
+            Err(err @ Error::ForeignOwner { .. }) => {
+                testing::child_print("result", "foreign_owner");
+                testing::child_print("fix", line_with(&err.to_string(), "safe.directory"));
+            }
+            Err(err) => {
+                testing::child_print("result", "other");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
         }
     }
 }
