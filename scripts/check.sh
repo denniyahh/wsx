@@ -15,6 +15,16 @@ set -euo pipefail
 # (to list the .rs files), and it says so when git or a work tree is missing.
 CDPATH="" cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# A checkout's own .tools/bin (WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh
+# install ...) goes first on PATH, so the pinned gate tools win over another
+# copy earlier on PATH, such as a package manager's newer build. cargo follows
+# PATH order for its subcommands, so `cargo nextest` runs the same copy. The
+# version checks below still apply to whatever is found.
+if [ -d .tools/bin ]; then
+    PATH="$PWD/.tools/bin:$PATH"
+    export PATH
+fi
+
 usage() {
     cat >&2 <<'EOF'
 usage: scripts/check.sh [all|fmt|clippy|test [filters...]|deps|coverage [filters...]]

@@ -21,7 +21,12 @@ required.
 
    Each download is checked against a pinned sha256 before anything is
    extracted. The binaries go into `$WSX_TOOLS_DIR`, or cargo's `bin`
-   directory by default, which must be on your `PATH`. If you already have
+   directory by default, which must be on your `PATH`. If another copy of a
+   tool comes earlier on your `PATH` (a package manager's newer build, for
+   example), install the pins into the checkout instead with
+   `WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh install cargo-nextest
+   cargo-deny`: `scripts/check.sh` puts the git-ignored `.tools/bin` first on
+   `PATH` whenever it exists. If you already have
    them, `scripts/install-tools.sh verify cargo-nextest cargo-deny gitleaks`
    fails unless each one is the pinned version. The versions are pinned in
    that script and nowhere else.

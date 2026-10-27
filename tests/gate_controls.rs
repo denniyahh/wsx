@@ -6,6 +6,8 @@
 //!   cargo-llvm-cov never installs a toolchain component.
 //! - The nextest pin is checked on the binary cargo runs, not on another copy
 //!   found by a different search (T-01-07).
+//! - A checkout's `.tools/bin` wins over a shadowing nextest earlier on PATH,
+//!   with the counterpart showing the same shadow is refused without it.
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
 //!   caller's working directory.
 //! - A filter that matches nothing fails even with `NEXTEST_NO_TESTS=pass`
@@ -70,14 +72,33 @@ fn minimal_path(name: &str, tools: &[&str]) -> PathBuf {
     dir
 }
 
-fn check_sh() -> PathBuf {
-    Path::new(REPO_ROOT).join("scripts/check.sh")
+/// A scratch checkout holding copies of the gate scripts and the toolchain
+/// pin, unique per caller. check.sh puts its checkout's `.tools/bin` first on
+/// PATH, so a test that sets PATH itself runs a copy: in this checkout a
+/// developer's installed tools would join the PATH the test controls.
+fn scratch_checkout(name: &str) -> PathBuf {
+    let checkout = fresh_dir(name);
+    fs::create_dir_all(checkout.join("scripts")).expect("create the scratch scripts dir");
+    for file in [
+        "scripts/check.sh",
+        "scripts/install-tools.sh",
+        "rust-toolchain.toml",
+    ] {
+        fs::copy(Path::new(REPO_ROOT).join(file), checkout.join(file))
+            .unwrap_or_else(|err| panic!("copy {file}: {err}"));
+    }
+    checkout
+}
+
+/// check.sh in a scratch checkout named `name` (see `scratch_checkout`).
+fn check_sh(name: &str) -> PathBuf {
+    scratch_checkout(name).join("scripts/check.sh")
 }
 
 /// Runs `check.sh <target>` with `PATH` set to `path_dir` alone.
-fn check_sh_with_path(target: &str, path_dir: &Path) -> Output {
+fn check_sh_with_path(name: &str, target: &str, path_dir: &Path) -> Output {
     Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh(name))
         .arg(target)
         .env("PATH", path_dir)
         .output()
@@ -89,7 +110,7 @@ fn check_sh_with_path(target: &str, path_dir: &Path) -> Output {
 fn assert_missing_tool_named(target: &str, present: &[&str], missing: &str) {
     let dir_name = format!("missing-tool-{target}-{missing}");
     let path_dir = minimal_path(&dir_name, present);
-    let output = check_sh_with_path(target, &path_dir);
+    let output = check_sh_with_path(&format!("{dir_name}-checkout"), target, &path_dir);
     let stdout = text(output.stdout, "check.sh stdout");
     let stderr = text(output.stderr, "check.sh stderr");
 
@@ -206,7 +227,7 @@ fn coverage_runs_cargo_llvm_cov_with_setup_disabled() {
     let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
 
     let output = Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh("coverage-setup-checkout"))
         .args(["coverage", "-E", "test(=some::test)"])
         .env("PATH", path)
         .env_remove("CARGO_LLVM_COV_SETUP")
@@ -283,7 +304,7 @@ fn nextest_pin_is_checked_on_the_binary_cargo_runs() {
     let path = env::join_paths([&stub_dir, &cargo_home_bin, &tools]).expect("join PATH");
 
     let output = Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh("cargo-resolution-checkout"))
         .arg("test")
         .env("PATH", path)
         .env("CARGO_HOME", &cargo_home)
@@ -309,6 +330,110 @@ fn nextest_pin_is_checked_on_the_binary_cargo_runs() {
     assert!(
         !stdout.contains("check.sh: test OK"),
         "check.sh test must not report success, got stdout {stdout:?}"
+    );
+}
+
+/// A stand-in for the pinned nextest installed in a checkout's `.tools/bin`.
+/// Version queries, direct or through cargo, go to the real pinned binary;
+/// anything else stands in for a test run that runs nothing and exits 0.
+fn repo_tools_nextest_stub(real: &Path) -> String {
+    format!(
+        "#!/bin/bash\n\
+         if [ \"$1\" = --version ] || [ \"$2\" = --version ]; then exec '{}' \"$@\"; fi\n\
+         echo \"REPO-TOOLS cargo-nextest ran: $*\"\n",
+        real.display()
+    )
+}
+
+/// A scratch checkout (see `scratch_checkout`) with a shadowing
+/// `cargo-nextest`, a package manager's newer build, ahead of everything else
+/// on PATH. Returns the checkout and that PATH.
+fn shadowed_nextest_checkout(name: &str) -> (PathBuf, std::ffi::OsString) {
+    let checkout = scratch_checkout(&format!("{name}-checkout"));
+    let stub_dir = fresh_dir(&format!("{name}-shadow"));
+    let real = on_path("cargo-nextest");
+    let stub = stub_dir.join("cargo-nextest");
+    fs::write(&stub, nextest_stub(&real)).expect("write shadowing cargo-nextest stub");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let tools = minimal_path(
+        &format!("{name}-tools"),
+        &["bash", "cargo", "rustc", "dirname"],
+    );
+    let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
+    (checkout, path)
+}
+
+fn checkout_check_sh_test(
+    checkout: &Path,
+    path: &std::ffi::OsStr,
+) -> (Option<i32>, String, String) {
+    // An empty CARGO_HOME: cargo puts $CARGO_HOME/bin first when it is absent
+    // from PATH, so a runner's own installed nextest (the container's
+    // /usr/local/cargo/bin) would otherwise beat both stand-ins.
+    let cargo_home = checkout.join(".cargo-home");
+    fs::create_dir_all(&cargo_home).expect("create the empty CARGO_HOME");
+    let output = Command::new("/bin/bash")
+        .arg(checkout.join("scripts/check.sh"))
+        .arg("test")
+        .env("PATH", path)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("spawn /bin/bash scripts/check.sh test in the scratch checkout");
+    (
+        output.status.code(),
+        text(output.stdout, "check.sh stdout"),
+        text(output.stderr, "check.sh stderr"),
+    )
+}
+
+#[test]
+fn repo_tools_dir_wins_over_a_shadowing_nextest() {
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-wins");
+    let repo_tools = checkout.join(".tools/bin");
+    fs::create_dir_all(&repo_tools).expect("create .tools/bin");
+    let pinned = repo_tools.join("cargo-nextest");
+    fs::write(&pinned, repo_tools_nextest_stub(&on_path("cargo-nextest")))
+        .expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).expect("chmod pinned stub");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "check.sh test must run the checkout's .tools/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("REPO-TOOLS cargo-nextest ran: nextest run"),
+        "the .tools/bin nextest must be the one cargo runs, got stdout {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("STUB cargo-nextest ran"),
+        "the shadowing nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn shadowing_nextest_is_refused_without_a_repo_tools_dir() {
+    // The counterpart: the same checkout and PATH with no .tools/bin, so the
+    // shadowing build is the one cargo would run and the pin check refuses it.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-absent");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the shadowing nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stub'"),
+        "the refusal must name the shadowing version, got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("STUB cargo-nextest ran"),
+        "the shadowing nextest must never run, got stdout {stdout:?}"
     );
 }
 
@@ -355,8 +480,10 @@ fn no_match_filter_fails_even_when_env_allows_no_tests() {
         text(bare.stderr, "nextest stderr")
     );
 
+    // This checkout's own check.sh, not a scratch copy: the nested run needs
+    // the real manifest, and it keeps the caller's PATH.
     let gated = nested_nextest_command("/bin/bash", &target_dir)
-        .arg(check_sh())
+        .arg(Path::new(REPO_ROOT).join("scripts/check.sh"))
         .args(["test", "-E", NO_MATCH_FILTER])
         .output()
         .expect("spawn /bin/bash scripts/check.sh test");
