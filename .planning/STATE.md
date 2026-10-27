@@ -5,10 +5,10 @@ current_phase: 3
 current_phase_name: Git adapter
 status: executing
 stopped_at: Completed 03-09-PLAN.md
-last_updated: "2026-10-27T02:59:43.935Z"
+last_updated: "2026-10-27T03:18:06.552Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: e0180e7d4ef65e0db8015219f959a2a183eb2df6
+state_head: ae6938819aa66e3c5b67ae0c3cd0dcb43c6ee1f8
 progress:
   total_phases: 15
   completed_phases: 2
@@ -162,7 +162,6 @@ Recent decisions affecting current work:
 ### Blockers/Concerns
 
 - Phase 12: MIG-03 covers the 0.1.0 projects on the owner's work PC, which are not on this machine (checked 2026-10-20); their expected results must be recorded and checked there
-- Phase 3: gix 0.89 method names are unverified against a stale crate-status item (research/SUMMARY.md, Gaps); spike at phase start
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
 - Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
 - Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
