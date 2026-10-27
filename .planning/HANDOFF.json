@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-10-27T08:34:37.939Z",
+  "phase": "3",
+  "phase_name": "Git adapter",
+  "phase_dir": ".planning/phases/03-git-adapter",
+  "plan": 10,
+  "task": 0,
+  "total_tasks": 0,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "Smart discuss (16 decisions) + post-research decisions", "status": "done", "commit": "5ae9285"},
+    {"id": 2, "name": "Research, validation strategy, pattern map, 10 plans (2 plan-check rounds)", "status": "done", "commit": "f71e83b"},
+    {"id": 3, "name": "Execute plans 03-01..03-10 (6 waves, sequential, TDD)", "status": "done", "commit": "1a34613"},
+    {"id": 4, "name": "Nyquist validation (compliant, 0 gaps)", "status": "done", "commit": "ad78bb8"},
+    {"id": 5, "name": "Security audit (28 threats closed, 1 accepted AR-03-01)", "status": "done", "commit": "7fead4a"},
+    {"id": 6, "name": "Deep code review (2 critical, 4 warning, 5 info)", "status": "done", "commit": "4bfa678"},
+    {"id": 7, "name": "Code-review fix iteration 1: CR-01, CR-02, WR-01..04 fixed test-first; check.sh all 278 passed (orchestrator re-ran)", "status": "done", "commit": "6e067e2"}
+  ],
+  "remaining_tasks": [
+    {"id": 8, "name": "Code-review --auto iteration 2: deep re-review of the 10 files in 03-REVIEW.md files_reviewed_list; fix again if not clean (max 3 total); then record 03-REVIEW-DISPOSITION.md", "status": "not_started"},
+    {"id": 9, "name": "execute:post gate tdd.review-checkpoint (TDD_MODE=true: blocking if any plan misses RED/GREEN)", "status": "not_started"},
+    {"id": 10, "name": "Regression gate (execute-phase/steps/regression-gate.md)", "status": "not_started"},
+    {"id": 11, "name": "gsd-verifier -> 03-VERIFICATION.md; route on verification.status", "status": "not_started"},
+    {"id": 12, "name": "If passed: phase.complete + transition; then ask owner before any push/PR/merge", "status": "not_started"}
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Decide the cargo-nextest pin mismatch: host linuxbrew cargo-nextest 0.9.150 shadows the repo pin 0.9.148 (scripts/install-tools.sh). A: fix on host / UDE, keep pin (recommended). B: bump the repo pin to 0.9.150.", "context": "scripts/check.sh test refuses on this host as-is; executors use a pinned copy in the worktree's gitignored target/gsd-tools via PATH", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Granularity stays fine for phase 3 onward", "rationale": "Owner 2026-10-26", "phase": "3"},
+    {"decision": "Unclassified GIT-04 edge ('who is another user') settled by 'as git does'; SUDO_UID only stricter", "rationale": "Orchestrator, requirement text", "phase": "3"},
+    {"decision": "GIT_DIR-hermetic unit tests fixed in 03-10 at the test level (re-exec scrubbed), not via check.sh", "rationale": "Orchestrator; owner's hermeticity rule", "phase": "3"},
+    {"decision": "Empty --local-env-vars list fails closed (GitEmptyOutput, 03-07)", "rationale": "Orchestrator; avoids silent fail-open", "phase": "3"},
+    {"decision": "extensions.refStorage read from repository config only (03-10)", "rationale": "git 2.56.0 ignores global/worktree/env values", "phase": "3"},
+    {"decision": "WR-04: a stale sibling worktree keeps failing closed (StaleWorktree error naming git worktree prune); revisit in phase 5 if a caller needs skip-and-report", "rationale": "Orchestrator; reversible, fail-closed default", "phase": "3"}
+  ],
+  "uncommitted_files": ["?? .planning/state.json"],
+  "next_action": "In .worktrees/phase-3: run /gsd-code-review 3 --files=Cargo.toml,clippy.toml,deny.toml,src/git/mod.rs,src/git/reads.rs,src/git/repo.rs,src/git/spawn.rs,src/git/testing.rs,src/main.rs,tests/harness/check.rs --depth=deep (incremental scoping would otherwise find nothing), then --fix --auto if not clean; then continue verify-phase-goal from the tdd.review-checkpoint gate.",
+  "context_notes": "Phase 3 autonomous run (--only 3) paused at 67% context between the code-review fix pass and the re-review. All 10 plans executed and summarized; GIT-01..04 marked Complete in REQUIREMENTS.md by 03-10. Gate green at 6e067e2 (278 passed, 55 skipped). Owner wants approval before every push/PR/merge."
+}
