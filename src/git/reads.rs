@@ -221,9 +221,9 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    use super::super::ObjectId;
     use super::super::spawn::Git;
-    use super::super::testing::{Scratch, criss_cross};
+    use super::super::testing::{Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
+    use super::super::{Error, ObjectId};
     use super::{AheadBehind, ChangeKind, Repo, TreeChange};
 
     /// The first line of a git command's stdout, without its newline.
@@ -659,6 +659,222 @@ mod tests {
             String::from_utf8_lossy(&raw),
             "",
             "git diff-tree feat feat printed something"
+        );
+    }
+
+    #[test]
+    fn a_commit_with_itself_is_its_own_merge_base_and_level() {
+        let scratch = Scratch::new("self-pair").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let f4 = git_line(&scratch, &repo_dir, &["rev-parse", "feat"]);
+        let from_git = git_line(&scratch, &repo_dir, &["merge-base", "feat", "feat"]);
+        let from_gix = repo
+            .merge_base(b"feat", b"feat")
+            .expect("gix merge-base feat feat")
+            .map(|id| id.to_string());
+        assert_eq!(
+            from_gix,
+            Some(from_git.clone()),
+            "merge-base feat feat: gix against git's {from_git}"
+        );
+        assert_eq!(from_git, f4, "git merge-base feat feat against F4 {f4}");
+
+        let level_git = git_ahead_behind(&scratch, &repo_dir, "feat", "feat");
+        let level = repo
+            .ahead_behind(b"feat", b"feat")
+            .expect("gix ahead/behind feat feat");
+        assert_eq!(
+            level, level_git,
+            "ahead/behind feat feat: gix {level:?} against git {level_git:?}"
+        );
+        assert_eq!(
+            level,
+            AheadBehind {
+                ahead: 0,
+                behind: 0
+            },
+            "ahead/behind feat feat"
+        );
+    }
+
+    #[test]
+    fn parent_and_child_share_the_parent_as_merge_base() {
+        let scratch = Scratch::new("parent-child").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let parent = git_line(&scratch, &repo_dir, &["rev-parse", "main~1"]);
+        let from_git = git_line(&scratch, &repo_dir, &["merge-base", "main~1", "main"]);
+        let from_gix = repo
+            .merge_base(b"main~1", b"main")
+            .expect("gix merge-base main~1 main")
+            .map(|id| id.to_string());
+        assert_eq!(
+            from_gix,
+            Some(from_git.clone()),
+            "merge-base main~1 main: gix against git's {from_git}"
+        );
+        assert_eq!(
+            from_git, parent,
+            "git merge-base main~1 main against main~1 {parent}"
+        );
+
+        let step_git = git_ahead_behind(&scratch, &repo_dir, "main", "main~1");
+        let step = repo
+            .ahead_behind(b"main", b"main~1")
+            .expect("gix ahead/behind main main~1");
+        assert_eq!(
+            step, step_git,
+            "ahead/behind main main~1: gix {step:?} against git {step_git:?}"
+        );
+        assert_eq!(
+            step,
+            AheadBehind {
+                ahead: 1,
+                behind: 0
+            },
+            "ahead/behind main main~1"
+        );
+    }
+
+    #[test]
+    fn unrelated_histories_have_no_merge_base() {
+        let scratch = Scratch::new("unrelated").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        git_ok(&scratch, &repo_dir, ["switch", "-q", "--orphan", "lone"])
+            .expect("switch to orphan branch lone");
+        write(&repo_dir.join("lone.txt"), b"lone\n").expect("write lone.txt");
+        commit_all(&scratch, &repo_dir, "l1 lone", T0 + 7 * TICK).expect("commit on lone");
+        git_ok(&scratch, &repo_dir, ["switch", "-q", "main"]).expect("switch back to main");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_gix = repo
+            .merge_base(b"main", b"lone")
+            .expect("gix merge-base main lone");
+        assert_eq!(from_gix, None, "merge-base main lone from gix");
+
+        let from_git = Git::new(scratch.env.clone()).run(&repo_dir, ["merge-base", "main", "lone"]);
+        match from_git {
+            Err(Error::GitFailed {
+                status: Some(1),
+                ref stderr,
+                ..
+            }) => assert_eq!(
+                String::from_utf8_lossy(stderr),
+                "",
+                "git merge-base main lone stderr"
+            ),
+            other => panic!("git merge-base main lone: expected exit 1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn range_walk_with_every_tip_hidden_is_empty() {
+        let scratch = Scratch::new("walk-hidden").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let walked = repo
+            .range_walk(&[b"feat"], &[b"feat"])
+            .expect("gix walk feat --not feat");
+        assert_eq!(walked, BTreeSet::new(), "walk feat --not feat from gix");
+        let from_git = git_stdout(&scratch, &repo_dir, &["rev-list", "feat", "--not", "feat"]);
+        assert_eq!(
+            String::from_utf8_lossy(&from_git),
+            "",
+            "git rev-list feat --not feat printed something"
+        );
+    }
+
+    #[test]
+    fn range_walk_without_tips_is_empty() {
+        let scratch = Scratch::new("walk-no-tips").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let walked = repo
+            .range_walk(&[], &[b"main"])
+            .expect("gix walk --not main");
+        assert_eq!(walked, BTreeSet::new(), "walk --not main from gix");
+        let from_git = git_stdout(&scratch, &repo_dir, &["rev-list", "--not", "main"]);
+        assert_eq!(
+            String::from_utf8_lossy(&from_git),
+            "",
+            "git rev-list --not main printed something"
+        );
+    }
+
+    #[test]
+    fn an_executable_bit_change_is_a_modification() {
+        let scratch = Scratch::new("exec-bit").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let a_txt = repo_dir.join("a.txt");
+        std::fs::set_permissions(&a_txt, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap_or_else(|err| panic!("chmod 755 {}: {err}", a_txt.display()));
+        commit_all(&scratch, &repo_dir, "c3 exec", T0 + 7 * TICK).expect("commit the mode change");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_gix = repo
+            .tree_diff(b"main~1", b"main")
+            .expect("gix diff main~1 main");
+        let from_git = git_tree_diff(&scratch, &repo_dir, "main~1", "main");
+        assert_eq!(
+            from_gix, from_git,
+            "diff main~1 main: gix against git diff-tree --no-renames"
+        );
+        assert_eq!(
+            from_gix,
+            vec![change(ChangeKind::Modified, "a.txt")],
+            "diff main~1 main after chmod +x a.txt"
+        );
+    }
+
+    #[test]
+    fn repeated_reads_return_equal_values() {
+        let scratch = Scratch::new("repeated").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let base = || {
+            repo.merge_base(b"main", b"feat")
+                .expect("gix merge-base main feat")
+        };
+        let (first, second) = (base(), base());
+        assert_eq!(
+            first, second,
+            "merge-base main feat twice: {first:?} then {second:?}"
+        );
+
+        let level = || {
+            repo.ahead_behind(b"main", b"feat")
+                .expect("gix ahead/behind main feat")
+        };
+        let (first, second) = (level(), level());
+        assert_eq!(
+            first, second,
+            "ahead/behind main feat twice: {first:?} then {second:?}"
+        );
+
+        let walk = || {
+            repo.range_walk(&[b"feat"], &[b"main"])
+                .expect("gix walk feat --not main")
+        };
+        let (first, second) = (walk(), walk());
+        assert_eq!(
+            first, second,
+            "walk feat --not main twice: {first:?} then {second:?}"
+        );
+
+        let diff = || {
+            repo.tree_diff(b"main", b"feat")
+                .expect("gix diff main feat")
+        };
+        let (first, second) = (diff(), diff());
+        assert_eq!(
+            first, second,
+            "diff main feat twice: {first:?} then {second:?}"
         );
     }
 }
