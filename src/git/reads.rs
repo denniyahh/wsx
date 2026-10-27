@@ -7,11 +7,24 @@ use super::{Error, ObjectId};
 impl Repo {
     /// The merge-base of `one` and `two`, or `None` when they share no
     /// history. On a criss-cross history with several best bases, this is the
-    /// one gix picks first; the tests pin that it equals `git merge-base`'s.
+    /// one gix picks first; the tests pin that it equals `git merge-base`'s on
+    /// one such history, which shows gix can match git there, not that it
+    /// always does.
     pub fn merge_base(&self, one: &[u8], two: &[u8]) -> Result<Option<ObjectId>, Error> {
-        let _one = self.resolve(one)?;
-        let _two = self.resolve(two)?;
-        Ok(None)
+        let one_id = self.resolve(one)?;
+        let two_id = self.resolve(two)?;
+        let base = self
+            .repo
+            .merge_base(one_id, two_id)
+            .map_err(|err| Error::Gix {
+                what: format!(
+                    "merge-base {} {}",
+                    String::from_utf8_lossy(one),
+                    String::from_utf8_lossy(two)
+                ),
+                message: err.to_string(),
+            })?;
+        Ok(base.map(|id| ObjectId::from_gix(&id)))
     }
 }
 
@@ -114,13 +127,27 @@ mod tests {
         );
         assert_eq!(from_git, f1, "git merge-base main feat~3 against F1 {f1}");
 
-        let unmoved = repo
-            .merge_base(b"main", b"feat")
-            .expect("gix merge-base main feat")
+        // git's single base for main/feat is also F1 (the newer of the two
+        // criss-cross bases), so the answer must be moved by a pair below the
+        // cross: main~2 is C1, an ancestor of feat, so the base becomes C1.
+        let c1 = git_line(&scratch, &repo_dir, &["rev-parse", "main~2"]);
+        let from_git_c1 = git_line(&scratch, &repo_dir, &["merge-base", "main~2", "feat"]);
+        let other = repo
+            .merge_base(b"main~2", b"feat")
+            .expect("gix merge-base main~2 feat")
             .map(|id| id.to_string());
+        assert_eq!(
+            other,
+            Some(from_git_c1.clone()),
+            "gix merge-base main~2 feat against git's {from_git_c1}"
+        );
+        assert_eq!(
+            from_git_c1, c1,
+            "git merge-base main~2 feat against C1 {c1}"
+        );
         assert_ne!(
-            moved, unmoved,
-            "merge-base main feat~3 {moved:?} against main feat {unmoved:?}"
+            moved, other,
+            "merge-base main feat~3 {moved:?} against main~2 feat {other:?}"
         );
     }
 }

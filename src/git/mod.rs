@@ -16,13 +16,11 @@
 //! Every refusal names its cause: an `Error` renders a message a user can act
 //! on without reading wsx's source.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no caller until phase 5's wsx check; phase 5 removes this attribute"
-    )
-)]
+// Nothing in `main` calls this module until phase 5's `wsx check`, which
+// removes this attribute. `cfg_attr(not(test), ...)`: the tests use every
+// item, so on the test target the expectation would be unfulfilled. The
+// reason is short so rustfmt keeps the attribute on one line.
+#![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 
 mod reads;
 mod repo;
