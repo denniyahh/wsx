@@ -125,6 +125,9 @@ pub struct Git {
     /// wsx's own worktree, canonical; `None` counts every target as another
     /// worktree.
     own_worktree: Option<PathBuf>,
+    /// Whether children aimed at another worktree lose git's
+    /// `--local-env-vars` list; always `true` outside the leak control.
+    remove_local_env: bool,
     /// Set once `git --version` has passed `MIN_GIT_VERSION`.
     version_checked: OnceLock<()>,
     /// The names `git rev-parse --local-env-vars` printed, fetched on first
@@ -138,6 +141,7 @@ impl Git {
         Git {
             env,
             own_worktree: None,
+            remove_local_env: true,
             version_checked: OnceLock::new(),
             local_env_vars: OnceLock::new(),
         }
@@ -165,6 +169,17 @@ impl Git {
     pub fn with_own_worktree(self, worktree: PathBuf) -> Git {
         Git {
             own_worktree: Some(worktree),
+            ..self
+        }
+    }
+
+    /// This helper with the removal switched off, so every child keeps the
+    /// whole snapshot. It exists only for the leak control that proves the
+    /// hook tests detect a leak, and is not in the shipped binary.
+    #[cfg(test)]
+    pub fn with_removal_disabled(self) -> Git {
+        Git {
+            remove_local_env: false,
             ..self
         }
     }
@@ -221,7 +236,7 @@ impl Git {
             what: format!("canonicalize {}", worktree.display()),
             source,
         })?;
-        if self.own_worktree.as_deref() == Some(target.as_path()) {
+        if !self.remove_local_env || self.own_worktree.as_deref() == Some(target.as_path()) {
             return Ok(self.base_command(worktree, args));
         }
         let removed = self.removal_list(worktree)?;
@@ -1060,6 +1075,148 @@ mod tests {
         assert_eq!(
             log_lines(&scratch).last().map(String::as_str),
             Some("rev-parse --absolute-git-dir")
+        );
+    }
+
+    /// The trimmed stdout of `git <args>` run in `dir` through `helper`.
+    fn helper_line(helper: &Git, dir: &Path, args: &[&str]) -> String {
+        let stdout = helper
+            .run(dir, args)
+            .unwrap_or_else(|err| panic!("git {args:?} in {}: {err}", dir.display()));
+        String::from_utf8(stdout)
+            .expect("git printed UTF-8")
+            .trim_end()
+            .to_owned()
+    }
+
+    /// The canonical git dir git reports in `dir` through `helper`:
+    /// `rev-parse --absolute-git-dir`, which `GIT_DIR` redirects.
+    fn helper_git_dir(helper: &Git, dir: &Path) -> String {
+        let reported = PathBuf::from(helper_line(
+            helper,
+            dir,
+            &["rev-parse", "--absolute-git-dir"],
+        ));
+        reported
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", reported.display()))
+            .display()
+            .to_string()
+    }
+
+    /// The index git reports in `dir` through `helper`: `rev-parse
+    /// --git-path index`, which `GIT_INDEX_FILE` redirects, a relative answer
+    /// taken against `dir`, its parent directory canonicalised.
+    fn helper_index(helper: &Git, dir: &Path) -> String {
+        let reported = PathBuf::from(helper_line(
+            helper,
+            dir,
+            &["rev-parse", "--git-path", "index"],
+        ));
+        testing::canonical_parent(dir, &reported)
+            .unwrap_or_else(|err| panic!("{err}"))
+            .display()
+            .to_string()
+    }
+
+    /// The hook's own index, from the raw `GIT_INDEX_FILE` the child printed,
+    /// asserted to be a partial commit's `next-index-*` file in wt1's git dir.
+    fn hook_index(output: &Output, worktrees: &Worktrees) -> String {
+        let raw =
+            testing::marker(output, "env_GIT_INDEX_FILE").unwrap_or_else(|err| panic!("{err}"));
+        let index = testing::canonical_parent(&worktrees.wt1, Path::new(&raw))
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            index.parent(),
+            Some(worktrees.main.join(".git/worktrees/wt1").as_path())
+        );
+        let name = index.file_name().expect("the index has a file name");
+        assert!(
+            name.to_string_lossy().starts_with("next-index-"),
+            "a partial commit's hook index is a next-index-* file, got {}",
+            index.display()
+        );
+        index.display().to_string()
+    }
+
+    /// wt1's partial commit with its pre-commit hook running
+    /// `linked_hook_spawn_child`; the worktrees and the commit's output.
+    fn spawn_hook_commit(name: &str) -> (Scratch, Worktrees, Output) {
+        let scratch = Scratch::new(name).expect("scratch");
+        let (worktrees, output) =
+            testing::linked_hook_commit(&scratch, "git::spawn::tests::linked_hook_spawn_child")
+                .unwrap_or_else(|err| panic!("{err}"));
+        (scratch, worktrees, output)
+    }
+
+    /// From inside wt1's pre-commit hook, a child aimed at wt2 through
+    /// `Git::from_process` reports wt2's git dir and wt2's index.
+    #[test]
+    fn sibling_child_env_scrubbed() {
+        let (_scratch, worktrees, output) = spawn_hook_commit("hook-scrubbed");
+        let wt2_git_dir = worktrees.main.join(".git/worktrees/wt2");
+        assert_eq!(
+            testing::marker(&output, "scrubbed_git_dir").unwrap_or_else(|err| panic!("{err}")),
+            wt2_git_dir.display().to_string()
+        );
+        assert_eq!(
+            testing::marker(&output, "scrubbed_index").unwrap_or_else(|err| panic!("{err}")),
+            wt2_git_dir.join("index").display().to_string()
+        );
+    }
+
+    /// The control for `sibling_child_env_scrubbed`: the same two commands
+    /// through the same helper with the removal disabled report wt1's git dir
+    /// and the hook's index, so the hook test detects a leak.
+    #[test]
+    fn sibling_child_leaks_without_removal() {
+        let (_scratch, worktrees, output) = spawn_hook_commit("hook-leaked");
+        assert_eq!(
+            testing::marker(&output, "leaked_git_dir").unwrap_or_else(|err| panic!("{err}")),
+            worktrees
+                .main
+                .join(".git/worktrees/wt1")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            testing::marker(&output, "leaked_index").unwrap_or_else(|err| panic!("{err}")),
+            hook_index(&output, &worktrees)
+        );
+    }
+
+    /// From the same hook, a child aimed at wt1 itself keeps the hook's
+    /// environment and reports the partial commit's `next-index-*` index.
+    #[test]
+    fn own_worktree_child_keeps_hook_index() {
+        let (_scratch, worktrees, output) = spawn_hook_commit("hook-own");
+        assert_eq!(
+            testing::marker(&output, "own_index").unwrap_or_else(|err| panic!("{err}")),
+            hook_index(&output, &worktrees)
+        );
+    }
+
+    #[test]
+    #[ignore = "child half of the hook spawn tests; runs only when re-executed"]
+    fn linked_hook_spawn_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the hook's repository");
+        let wt1 = repo
+            .worktree()
+            .expect("the hooked repository has a worktree");
+        let wt2 = PathBuf::from(
+            std::env::var_os(testing::SIBLING_VAR).expect("the parent set the sibling path"),
+        );
+        let git = Git::from_process(&repo);
+        let leaky = Git::from_process(&repo).with_removal_disabled();
+        testing::child_print("scrubbed_git_dir", helper_git_dir(&git, &wt2));
+        testing::child_print("scrubbed_index", helper_index(&git, &wt2));
+        testing::child_print("leaked_git_dir", helper_git_dir(&leaky, &wt2));
+        testing::child_print("leaked_index", helper_index(&leaky, &wt2));
+        testing::child_print("own_index", helper_index(&git, wt1));
+        testing::child_print(
+            "env_GIT_INDEX_FILE",
+            testing::env_or_unset("GIT_INDEX_FILE"),
         );
     }
 }
