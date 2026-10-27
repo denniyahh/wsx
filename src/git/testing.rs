@@ -616,6 +616,234 @@ pub fn marker(output: &Output, key: &str) -> Result<String, String> {
         })
 }
 
+/// The user-namespace runner for a non-root test: inner uid 0 is the test
+/// user, inner uid 1 the first subordinate uid. Absolute, because a user
+/// PATH can resolve a different `unshare` first.
+const UNSHARE: &str = "/usr/bin/unshare";
+
+/// The arguments before the inner command of every `UNSHARE` run.
+const UNSHARE_ARGS: [&str; 3] = ["--map-root-user", "--map-users=auto", "--map-groups=auto"];
+
+/// The owner a non-root test gives a fixture: inner uid and gid 1, which
+/// `--map-users=auto` maps to the first subordinate id.
+const INNER_FOREIGN: &str = "1:1";
+
+/// The owner a root test gives a fixture: `nobody`.
+const ROOT_FOREIGN: &str = "65534:65534";
+
+/// A fixture really owned by another uid until it is restored.
+///
+/// `new` makes the tree at `path` world-readable, then hands it to another
+/// uid: as root with `chown -R 65534:65534`, otherwise with `chown -R 1:1`
+/// inside `/usr/bin/unshare --map-root-user --map-users=auto
+/// --map-groups=auto`. When neither works it panics naming what is missing:
+/// a foreign-owner test fails, it never skips. `restore` gives the tree back
+/// to its original owner, and `Drop` does so when a test did not, so the
+/// scratch directory stays deletable. Declare the guard after the `Scratch`
+/// that holds `path`, so the guard drops first.
+pub struct ForeignOwned {
+    /// The root of the foreign-owned tree.
+    path: PathBuf,
+    /// The original owner, which is the test's own uid.
+    uid: u32,
+    /// The original group.
+    gid: u32,
+    /// Whether ownership was given back.
+    restored: bool,
+}
+
+impl ForeignOwned {
+    /// Makes the tree at `path`, owned by the test user, owned by another
+    /// uid; panics with the failing command and what is missing when that
+    /// cannot be done, or when the owner did not change.
+    pub fn new(path: &Path) -> ForeignOwned {
+        use std::os::unix::fs::MetadataExt;
+
+        let (uid, gid) = owner(path).unwrap_or_else(|err| panic!("{err}"));
+        run_tool(&["chmod", "-R", "go+rX"], path).unwrap_or_else(|err| panic!("{err}"));
+        // Built before the chown: a partial chown must be given back too.
+        let guard = ForeignOwned {
+            path: path.to_path_buf(),
+            uid,
+            gid,
+            restored: false,
+        };
+        let changed = if uid == 0 {
+            run_tool(&["chown", "-R", ROOT_FOREIGN], path)
+        } else {
+            run_tool(&unshare_chown(INNER_FOREIGN), path)
+        };
+        if let Err(err) = changed {
+            panic!(
+                "cannot make {} foreign-owned: {err}\n{}",
+                path.display(),
+                missing_mechanism(uid)
+            );
+        }
+        let now = fs::metadata(path)
+            .unwrap_or_else(|err| panic!("stat {}: {err}", path.display()))
+            .uid();
+        assert_ne!(
+            now,
+            uid,
+            "{} is still owned by uid {uid} after the chown\n{}",
+            path.display(),
+            missing_mechanism(uid)
+        );
+        guard
+    }
+
+    /// Gives the tree back to its original owner recursively and checks the
+    /// owner is the test's uid again.
+    pub fn restore(&mut self) -> Result<(), String> {
+        if self.uid == 0 {
+            run_tool(
+                &["chown", "-R", &format!("{}:{}", self.uid, self.gid)],
+                &self.path,
+            )?;
+        } else {
+            // Inner root is the test user and its primary group.
+            run_tool(&unshare_chown("0:0"), &self.path)?;
+        }
+        let (now, _) = owner(&self.path)?;
+        if now != self.uid {
+            return Err(format!(
+                "{} is owned by uid {now} after the restore, expected {}",
+                self.path.display(),
+                self.uid
+            ));
+        }
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl Drop for ForeignOwned {
+    fn drop(&mut self) {
+        if !self.restored
+            && let Err(err) = self.restore()
+        {
+            eprintln!(
+                "warning: could not give {} back to uid {}: {err}",
+                self.path.display(),
+                self.uid
+            );
+        }
+    }
+}
+
+/// The uid and gid owning `path`.
+fn owner(path: &Path) -> Result<(u32, u32), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    fs::metadata(path)
+        .map(|meta| (meta.uid(), meta.gid()))
+        .map_err(|err| format!("stat {}: {err}", path.display()))
+}
+
+/// The argv of `chown -R <ids>` run as inner root of a user namespace.
+fn unshare_chown(ids: &str) -> Vec<&str> {
+    let mut args = vec![UNSHARE];
+    args.extend(UNSHARE_ARGS);
+    args.extend(["chown", "-R", ids]);
+    args
+}
+
+/// Runs `argv` followed by `path` with only the hermetic PATH and `LC_ALL=C`,
+/// in `/`; an error naming the command, its exit status and stderr unless it
+/// exits 0.
+fn run_tool(argv: &[&str], path: &Path) -> Result<(), String> {
+    let env: Env = vec![
+        ("PATH".into(), HERMETIC_PATH.into()),
+        ("LC_ALL".into(), "C".into()),
+    ];
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| "run_tool: empty argv".to_owned())?;
+    let rendered = format!("{} {}", argv.join(" "), path.display());
+    let output = command(program, Path::new("/"), &env)
+        .args(args)
+        .arg(path)
+        .output()
+        .map_err(|err| format!("spawn `{rendered}`: {err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{rendered}` exited {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ))
+    }
+}
+
+/// What a foreign-owner fixture needs that this host lacks, as a sentence.
+/// Root needs only the `CHOWN` capability; a user needs `/usr/bin/unshare`,
+/// `newuidmap` and `newgidmap`, and subordinate ids in `/etc/subuid` and
+/// `/etc/subgid`.
+fn missing_mechanism(uid: u32) -> String {
+    if uid == 0 {
+        return "running as root: the chown needs the CHOWN capability".to_owned();
+    }
+    let mut missing = Vec::new();
+    for tool in [UNSHARE, "/usr/bin/newuidmap", "/usr/bin/newgidmap"] {
+        if !Path::new(tool).exists() {
+            missing.push(tool.to_owned());
+        }
+    }
+    let name = Command::new("/usr/bin/id")
+        .arg("-un")
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    for file in ["/etc/subuid", "/etc/subgid"] {
+        let listed = fs::read_to_string(file).is_ok_and(|content| {
+            content.lines().any(|line| {
+                let owner = line.split(':').next().unwrap_or("");
+                owner == uid.to_string() || name.as_deref() == Some(owner)
+            })
+        });
+        if !listed {
+            missing.push(format!("an {file} entry for uid {uid}"));
+        }
+    }
+    if missing.is_empty() {
+        "every prerequisite is present (unshare, newuidmap, newgidmap, subordinate ids); \
+         user namespaces may be restricted on this host"
+            .to_owned()
+    } else {
+        format!("missing: {}", missing.join(", "))
+    }
+}
+
+#[test]
+fn foreign_guard_changes_and_restores_the_owner() {
+    use std::os::unix::fs::MetadataExt;
+
+    let scratch = Scratch::new("foreign-guard").expect("scratch");
+    let repo = scratch.root.join("repo");
+    let repo_arg = repo.to_str().expect("UTF-8 scratch path");
+    git_ok(&scratch, &scratch.root, ["init", "-q", repo_arg]).expect("git init");
+    let head = repo.join(".git/HEAD");
+    let uid_of = |path: &Path| {
+        fs::metadata(path)
+            .unwrap_or_else(|err| panic!("stat {}: {err}", path.display()))
+            .uid()
+    };
+    let uid = uid_of(&repo);
+
+    let mut guard = ForeignOwned::new(&repo);
+    assert_ne!(uid_of(&repo), uid, "the repository is still the test's");
+    assert_ne!(uid_of(&head), uid, ".git/HEAD is still the test's");
+
+    guard.restore().expect("restore the owner");
+    assert_eq!(uid_of(&repo), uid, "the repository was not given back");
+    assert_eq!(uid_of(&head), uid, ".git/HEAD was not given back");
+}
+
 #[test]
 fn reexec_of_an_unknown_child_has_no_marker() {
     let scratch = Scratch::new("reexec-unknown").expect("scratch");
