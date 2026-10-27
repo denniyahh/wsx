@@ -10,6 +10,8 @@
 //!   with the counterpart showing the same shadow is refused without it.
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
 //!   caller's working directory.
+//! - It hides the checkout's `.tools` from the container, with the
+//!   counterpart that a checkout without one gets no mask.
 //! - A filter that matches nothing fails even with `NEXTEST_NO_TESTS=pass`
 //!   (HARN-04), with the bare-nextest counterpart showing that the env var
 //!   would otherwise turn it green.
@@ -612,16 +614,25 @@ fn fixture_repo(repo: &Path, image: &str) {
     );
 }
 
-#[test]
-fn container_gate_mounts_its_own_checkout_not_the_callers() {
+/// The image a `container_gate_args` fixture's own Dockerfile pins.
+const OWN_IMAGE: &str = "example/own:1.0.0-1-trixie";
+
+/// Runs a copy of `check-in-container.sh fmt` from a caller repository, with
+/// a stub docker that records its arguments, and returns the canonical root
+/// of the checkout holding the copy and the recorded arguments, one per line.
+/// With `tools_dir`, that checkout holds a `.tools/bin` directory, as after
+/// `WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh install ...`.
+fn container_gate_args(name: &str, tools_dir: bool) -> (PathBuf, String) {
     // Fixture repositories rather than this checkout: they are owned by the
     // test's user, so git trusts them inside the container as well.
-    let root = fresh_dir("container-gate");
+    let root = fresh_dir(name);
     let own = root.join("own");
     let caller = root.join("caller");
-    let own_image = "example/own:1.0.0-1-trixie";
-    fixture_repo(&own, own_image);
+    fixture_repo(&own, OWN_IMAGE);
     fixture_repo(&caller, "example/caller:1.0.0-1-trixie");
+    if tools_dir {
+        fs::create_dir_all(own.join(".tools/bin")).expect("create the fixture .tools/bin");
+    }
     let script = own.join("scripts/check-in-container.sh");
     fs::create_dir_all(own.join("scripts")).expect("create fixture scripts dir");
     fs::copy(
@@ -661,19 +672,60 @@ fn container_gate_mounts_its_own_checkout_not_the_callers() {
     );
 
     let args = fs::read_to_string(&log).expect("read docker stub log");
+    let own_root = fs::canonicalize(&own).expect("canonicalize fixture repo");
+    (own_root, args)
+}
+
+#[test]
+fn container_gate_mounts_its_own_checkout_not_the_callers() {
+    let (own_root, args) = container_gate_args("container-gate", false);
     let mount = args
         .lines()
         .find_map(|arg| arg.strip_suffix(":/workspace:ro"))
         .unwrap_or_else(|| panic!("no read-only /workspace mount in docker args {args:?}"));
-    let own_root = fs::canonicalize(&own).expect("canonicalize fixture repo");
     assert_eq!(
         Path::new(mount),
         own_root,
         "the gate must mount the checkout holding the script, not the caller's"
     );
     assert!(
-        args.lines().any(|arg| arg == own_image),
+        args.lines().any(|arg| arg == OWN_IMAGE),
         "the image must come from the script's own Dockerfile, got docker args {args:?}"
+    );
+}
+
+/// The `--tmpfs` mount that hides the checkout's `.tools` in the container.
+const TOOLS_MASK: [&str; 2] = ["--tmpfs", "/workspace/.tools:ro"];
+
+/// Whether the recorded docker `args` hold `TOOLS_MASK` as consecutive
+/// arguments.
+fn masks_tools(args: &str) -> bool {
+    args.lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == TOOLS_MASK)
+}
+
+#[test]
+fn container_gate_masks_a_checkout_tools_dir() {
+    // check.sh puts /workspace/.tools/bin first on PATH, so without the mask
+    // the container would run the host's tools ahead of the pinned,
+    // checksum-verified builds it installs.
+    let (_own_root, args) = container_gate_args("container-gate-tools", true);
+    assert!(
+        masks_tools(&args),
+        "a checkout with .tools must get {TOOLS_MASK:?}, got docker args {args:?}"
+    );
+}
+
+#[test]
+fn container_gate_adds_no_tools_mask_without_a_tools_dir() {
+    // The counterpart: docker cannot create a mount point inside the
+    // read-only bind, so a checkout without .tools gets no mask.
+    let (_own_root, args) = container_gate_args("container-gate-no-tools", false);
+    assert!(
+        !args.lines().any(|arg| arg.contains("/workspace/.tools")),
+        "a checkout without .tools must get no .tools mount, got docker args {args:?}"
     );
 }
 
