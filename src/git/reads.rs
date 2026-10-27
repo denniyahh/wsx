@@ -41,25 +41,58 @@ impl Repo {
     }
 
     /// How many commits `first` has that `second` lacks, and the reverse.
+    /// gix has no ahead/behind query, so each side is a walk from one
+    /// revision with the other hidden, as `git rev-list --count` counts.
     pub fn ahead_behind(&self, first: &[u8], second: &[u8]) -> Result<AheadBehind, Error> {
-        let _ = (first, second);
         Ok(AheadBehind {
-            ahead: 0,
-            behind: 0,
+            ahead: self.range_walk(&[first], &[second])?.len(),
+            behind: self.range_walk(&[second], &[first])?.len(),
         })
     }
 
     /// Every commit reachable from one of `tips` and from none of `hidden`
     /// (`git rev-list <tips> --not <hidden>`). The result is a set: no walk
-    /// order is promised.
+    /// order is promised (gix walks breadth-first topologically, git
+    /// reverse-chronologically). No tips is the empty set, without a walk.
     pub fn range_walk(
         &self,
         tips: &[&[u8]],
         hidden: &[&[u8]],
     ) -> Result<BTreeSet<ObjectId>, Error> {
-        let _ = (tips, hidden);
-        Ok(BTreeSet::new())
+        if tips.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let tip_ids = self.resolve_all(tips)?;
+        let hidden_ids = self.resolve_all(hidden)?;
+        let failed = |message: String| Error::Gix {
+            what: format!("walk {} --not {}", render_revs(tips), render_revs(hidden)),
+            message,
+        };
+        let walk = self
+            .repo
+            .rev_walk(tip_ids)
+            .with_hidden(hidden_ids)
+            .all()
+            .map_err(|err| failed(err.to_string()))?;
+        walk.map(|info| {
+            info.map(|info| ObjectId::from_gix(&info.id))
+                .map_err(|err| failed(err.to_string()))
+        })
+        .collect()
     }
+
+    /// The objects `revs` name, in order.
+    fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
+        revs.iter().map(|rev| self.resolve(rev)).collect()
+    }
+}
+
+/// `revs` as one space-separated line for a message.
+fn render_revs(revs: &[&[u8]]) -> String {
+    revs.iter()
+        .map(|rev| String::from_utf8_lossy(rev))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
