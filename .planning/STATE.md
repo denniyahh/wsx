@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
 status: executing
-stopped_at: Completed 03-08-PLAN.md
-last_updated: "2026-10-27T02:52:02.779Z"
+stopped_at: Completed 03-09-PLAN.md
+last_updated: "2026-10-27T02:59:43.935Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: 36789f616872cd9a4f582f0ccde1f7d8074d9d61
+state_head: e0180e7d4ef65e0db8015219f959a2a183eb2df6
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 30
+  completed_plans: 31
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 3 (Git adapter) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
 Last activity: 2026-10-26 — Phase 3 execution started
 
@@ -86,6 +86,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 03 P06 | 3 min | 2 tasks | 1 files |
 | Phase 03 P07 | 8 min | 3 tasks | 3 files |
 | Phase 03 P08 | 8min | 3 tasks | 3 files |
+| Phase 03 P09 | 5min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -150,6 +151,8 @@ Recent decisions affecting current work:
 - [Phase 03]: An empty --local-env-vars list fails closed as the new Error::GitEmptyOutput (GitFailed would render 'exited 0', which does not name the cause)
 - [Phase 03]: testing::reexec is the re-exec harness for 03-08..03-10: parents assert a WSXCHILD marker line, never the exit status alone
 - [Phase 03]: 03-08: Repo::siblings opens other worktrees only via gix main_repo()/worktrees(), sorted by canonical worktree path; with_removal_disabled is cfg(test) only and skips the whole removal branch
+- [Phase 03]: 03-09: ForeignOwner carries the canonical worktree (git dir if bare); git prints the same path, so the fix lines are equal
+- [Phase 03]: 03-09: refuse_untrusted refuses unless gix git_dir_trust() is Trust::Full, before refuse_ref_storage; -c/GIT_CONFIG_COUNT safe.directory and SUDO_UID divergences documented
 
 ### Pending Todos
 
@@ -175,6 +178,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T02:52:02.582Z
-Stopped at: Completed 03-08-PLAN.md
+Last session: 2026-10-27T02:59:43.690Z
+Stopped at: Completed 03-09-PLAN.md
 Resume file: None
