@@ -1054,4 +1054,154 @@ mod tests {
             }
         }
     }
+
+    /// The variable a ceiling test hands its child: the directory the child
+    /// discovers from.
+    const START_VAR: &str = "WSX_TEST_START";
+
+    /// `<root>/r1`, canonical, made with `git init -q` and one commit holding
+    /// `inner/deeper/z.txt`, so `r1/inner` and `r1/inner/deeper` exist.
+    fn ceiling_repo(scratch: &Scratch) -> PathBuf {
+        let r1 = scratch.root.join("r1");
+        std::fs::create_dir_all(&r1).expect("create r1");
+        git_ok(scratch, &r1, ["init", "-q"]).expect("git init r1");
+        write(&r1.join("inner/deeper/z.txt"), b"z").expect("write z.txt");
+        commit_all(scratch, &r1, "z", T0).expect("commit z");
+        r1.canonicalize().expect("canonicalize r1")
+    }
+
+    /// What git and wsx each found from one start under one ceiling.
+    struct CeilingRun {
+        /// `git rev-parse --absolute-git-dir` run in the start directory.
+        git: Output,
+        /// `ceiling_child` re-executed with the same environment.
+        child: Output,
+    }
+
+    impl CeilingRun {
+        /// Both outputs, for a failure message.
+        fn both(&self) -> String {
+            format!(
+                "{}\n{}",
+                testing::failed_run("git rev-parse --absolute-git-dir", &self.git),
+                testing::failed_run("the ceiling child", &self.child)
+            )
+        }
+    }
+
+    /// Runs git and `ceiling_child` from `start` with the scratch
+    /// environment, its `GIT_CEILING_DIRECTORIES` replaced by `ceiling`.
+    fn ceiling_run(scratch: &Scratch, ceiling: &Path, start: &Path) -> CeilingRun {
+        let mut env: Env = scratch
+            .env
+            .iter()
+            .filter(|(key, _)| key != "GIT_CEILING_DIRECTORIES")
+            .cloned()
+            .collect();
+        env.push(("GIT_CEILING_DIRECTORIES".into(), ceiling.into()));
+        let git = testing::git_in_env(&env, start, ["rev-parse", "--absolute-git-dir"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        env.push((START_VAR.into(), start.into()));
+        let child = testing::reexec(&child_path("ceiling_child"), &env, &scratch.root, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        CeilingRun { git, child }
+    }
+
+    /// The child's `result`, failing with both outputs when it printed none.
+    fn ceiling_result(run: &CeilingRun) -> String {
+        testing::marker(&run.child, "result").unwrap_or_else(|err| panic!("{err}\n{}", run.both()))
+    }
+
+    /// git found no repository (exit 128), then wsx returned `NotARepo`.
+    fn assert_both_hidden(run: &CeilingRun) {
+        assert_eq!(run.git.status.code(), Some(128), "{}", run.both());
+        assert_eq!(ceiling_result(run), "not_a_repo", "{}", run.both());
+    }
+
+    /// git found `<r1>/.git` (exit 0), then wsx opened worktree `r1`.
+    fn assert_both_open(run: &CeilingRun, r1: &Path) {
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(
+            String::from_utf8_lossy(&run.git.stdout).trim_end(),
+            r1.join(".git").display().to_string(),
+            "{}",
+            run.both()
+        );
+        assert_eq!(ceiling_result(run), "opened", "{}", run.both());
+        assert_eq!(
+            testing::marker(&run.child, "worktree").unwrap_or_else(|err| panic!("{err}")),
+            r1.display().to_string(),
+            "{}",
+            run.both()
+        );
+    }
+
+    /// With the ceiling at the repository's own top level, discovery from
+    /// `r1/inner` finds nothing in git, and none in wsx, although gix alone
+    /// searches the ceiling directory and finds `r1/.git`.
+    #[test]
+    fn ceiling_at_the_repository_root_hides_it_like_git() {
+        let scratch = Scratch::new("ceiling-root").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        assert_both_hidden(&ceiling_run(&scratch, &r1, &r1.join("inner")));
+    }
+
+    /// The same from two levels below the ceiling, `r1/inner/deeper`.
+    #[test]
+    fn ceiling_at_the_repository_root_hides_it_two_levels_down() {
+        let scratch = Scratch::new("ceiling-root-deeper").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        assert_both_hidden(&ceiling_run(&scratch, &r1, &r1.join("inner/deeper")));
+    }
+
+    /// Control: with the ceiling at `r1`'s parent, which is not a
+    /// repository, git and wsx both find `r1` from `r1/inner`.
+    #[test]
+    fn ceiling_above_the_repository_lets_wsx_and_git_find_it() {
+        let scratch = Scratch::new("ceiling-above").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        let parent = r1.parent().expect("r1 has a parent");
+        assert_both_open(&ceiling_run(&scratch, parent, &r1.join("inner")), &r1);
+    }
+
+    /// git applies a ceiling only to directories above the start, so a
+    /// ceiling equal to the start `r1/inner` does not stop git or wsx from
+    /// finding `r1`.
+    #[test]
+    fn ceiling_equal_to_the_start_directory_does_not_stop_discovery() {
+        let scratch = Scratch::new("ceiling-start").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        let inner = r1.join("inner");
+        assert_both_open(&ceiling_run(&scratch, &inner, &inner), &r1);
+    }
+
+    /// Starting in the ceiling directory that holds the repository opens it
+    /// for git and for wsx: the ceiling hides a repository only when
+    /// discovery had to climb into it.
+    #[test]
+    fn starting_in_a_ceiling_that_holds_the_repository_opens_it() {
+        let scratch = Scratch::new("ceiling-in-root").expect("scratch");
+        let r1 = ceiling_repo(&scratch);
+        assert_both_open(&ceiling_run(&scratch, &r1, &r1), &r1);
+    }
+
+    #[test]
+    #[ignore = "child half of the ceiling tests; runs only when re-executed"]
+    fn ceiling_child() {
+        let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
+        match Repo::discover(Path::new(&start)) {
+            Ok(found) => {
+                testing::child_print("result", "opened");
+                let worktree = found
+                    .worktree()
+                    .map_or_else(|| "<none>".to_owned(), |path| path.display().to_string());
+                testing::child_print("worktree", worktree);
+            }
+            Err(Error::NotARepo { .. }) => testing::child_print("result", "not_a_repo"),
+            Err(err) => {
+                testing::child_print("result", "other");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
+    }
 }
