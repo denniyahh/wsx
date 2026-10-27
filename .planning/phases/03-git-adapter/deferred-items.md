@@ -16,3 +16,8 @@ Out-of-scope discoveries logged during execution. Not fixed by the plan that fou
 - **Possible fix (owner's call):** `scripts/check.sh` unsets the repository-local git variables
   (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, ...) before invoking nextest,
   or tests that need the process environment assert it is clean first.
+- **Recount at 03-07 (2026-10-27):** with `GIT_DIR` and `GIT_INDEX_FILE` set to this checkout's,
+  `scripts/check.sh test` gives `236 tests run: 212 passed, 24 failed, 44 skipped`: 15 in
+  `git::reads::tests` and 9 in `git::repo::tests`, six of them 03-06's reftable tests. No
+  `git::spawn` or `git::testing` test fails. 03-07 changed neither `reads.rs` nor `repo.rs`;
+  its re-executed children start from `env_clear()`, so they do not see the caller's `GIT_DIR`.
