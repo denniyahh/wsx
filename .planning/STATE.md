@@ -5,10 +5,10 @@ current_phase: 3
 current_phase_name: Git adapter
 status: executing
 stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-10-27T01:48:07.256Z"
+last_updated: "2026-10-27T01:51:45.148Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: f60c8cda4f541b5c0228446461640d43c58951ae
+state_head: d07d44c747307c87c94a7025d882889e53623f5c
 progress:
   total_phases: 15
   completed_phases: 2
@@ -146,6 +146,7 @@ Recent decisions affecting current work:
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
 - Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
 - Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
+- Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
 
 ## Deferred Items
 
