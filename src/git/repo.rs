@@ -107,7 +107,9 @@ impl Repo {
     /// hook's `GIT_DIR` and `GIT_INDEX_FILE`.
     ///
     /// A gix failure to list or open one is `Error::Gix`; a sibling whose
-    /// directory is gone fails canonicalisation as `Error::Io` naming it.
+    /// directory is gone fails canonicalisation as `Error::Io` naming it. A
+    /// sibling git would refuse as owned by another user is
+    /// `Error::ForeignOwner` naming it (see `refuse_untrusted_sibling`).
     pub fn siblings(&self) -> Result<Vec<Repo>, Error> {
         let mut opened = vec![self.repo.main_repo().map_err(|err| self.list_failed(err))?];
         for proxy in self.repo.worktrees().map_err(|err| self.list_failed(err))? {
@@ -125,6 +127,7 @@ impl Repo {
                 None => sibling.git_dir == self.git_dir,
             };
             if !is_self {
+                refuse_untrusted_sibling(&sibling.repo)?;
                 siblings.push(sibling);
             }
         }
@@ -257,6 +260,37 @@ fn refuse_at_ceiling(start: &Path, repo: &gix::Repository) -> Result<(), Error> 
 /// uid's repositories.
 fn refuse_untrusted(repo: &gix::Repository) -> Result<(), Error> {
     if repo.git_dir_trust() == gix::sec::Trust::Full {
+        Ok(())
+    } else {
+        Err(Error::ForeignOwner {
+            path: refusal_path(repo)?,
+        })
+    }
+}
+
+/// Refuses a sibling worktree git would refuse as owned by another user.
+/// gix opens every sibling with the discovering repository's trust already
+/// set to full, so it re-checks only the sibling's worktree: one owned by
+/// another user and not listed in `safe.directory` comes back with reduced
+/// trust and its config dropped, refused here as `discover` refuses. A bare
+/// sibling (the main repository of linked worktrees) has no worktree, so
+/// gix checks nothing for it; its git dir must then be owned by the current
+/// user, as gix's `Trust::from_path_ownership` decides.
+///
+/// One divergence from git is accepted: a foreign bare sibling listed in
+/// `safe.directory` is still refused, because gix applies `safe.directory`
+/// to a sibling only through its worktree. The stricter direction.
+fn refuse_untrusted_sibling(repo: &gix::Repository) -> Result<(), Error> {
+    refuse_untrusted(repo)?;
+    if repo.workdir().is_some() {
+        return Ok(());
+    }
+    let ownership =
+        gix::sec::Trust::from_path_ownership(repo.git_dir()).map_err(|source| Error::Io {
+            what: format!("read the owner of {}", repo.git_dir().display()),
+            source,
+        })?;
+    if ownership == gix::sec::Trust::Full {
         Ok(())
     } else {
         Err(Error::ForeignOwner {
@@ -1137,6 +1171,246 @@ mod tests {
             Err(err @ Error::ForeignOwner { .. }) => {
                 testing::child_print("result", "foreign_owner");
                 testing::child_print("fix", line_with(&err.to_string(), "safe.directory"));
+            }
+            Err(err) => {
+                testing::child_print("result", "other");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
+    }
+
+    /// Appends `path` to `safe.directory` in the scratch global config.
+    fn trust_globally(scratch: &Scratch, path: &Path) {
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(format!("[safe]\n\tdirectory = {}\n", path.display()).as_bytes());
+        write(&global, &config).expect("append safe.directory");
+    }
+
+    /// The exit code of `git rev-parse --absolute-git-dir` in `dir`, and
+    /// its stderr.
+    fn git_opens(scratch: &Scratch, dir: &Path) -> (Option<i32>, String) {
+        let output = git(scratch, dir, ["rev-parse", "--absolute-git-dir"]).expect("spawn git");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    /// Checks git refuses `dir` as owned by another user.
+    fn assert_git_refuses_ownership(scratch: &Scratch, dir: &Path) {
+        let (code, stderr) = git_opens(scratch, dir);
+        assert_eq!(code, Some(128), "git in {}: {stderr}", dir.display());
+        assert!(
+            stderr.contains("detected dubious ownership"),
+            "git in {}: {stderr}",
+            dir.display()
+        );
+    }
+
+    /// Checks git opens `dir`.
+    fn assert_git_opens(scratch: &Scratch, dir: &Path) {
+        let (code, stderr) = git_opens(scratch, dir);
+        assert_eq!(code, Some(0), "git in {}: {stderr}", dir.display());
+    }
+
+    /// Re-executes `sibling_trust_child` in `start` with the scratch
+    /// environment, and checks it exited 0.
+    fn siblings_in_child(scratch: &Scratch, start: &Path) -> Output {
+        let output = testing::reexec(&child_path("sibling_trust_child"), &scratch.env, start, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the sibling-trust child", &output)
+        );
+        output
+    }
+
+    /// A linked sibling worktree really owned by another uid is refused by
+    /// `siblings()`, naming that worktree, as git refuses it. gix itself
+    /// opens such a sibling with reduced trust and its config dropped.
+    #[test]
+    fn a_foreign_owned_sibling_worktree_is_refused() {
+        let scratch = Scratch::new("foreign-sibling").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let mut guard = ForeignOwned::new(&worktrees.wt1);
+        assert_git_refuses_ownership(&scratch, &worktrees.wt1);
+
+        let child = siblings_in_child(&scratch, &worktrees.main);
+        assert_eq!(
+            child_result(&child),
+            "foreign_owner",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+        assert_eq!(fact(&child, "path"), worktrees.wt1.display().to_string());
+
+        guard.restore().expect("give the worktree back");
+    }
+
+    /// Control: the same foreign sibling listed as `safe.directory` in
+    /// global config opens for git, and `siblings()` returns both linked
+    /// worktrees, sorted by path (wt2 is nested inside main).
+    #[test]
+    fn a_foreign_sibling_worktree_in_safe_directory_opens() {
+        let scratch = Scratch::new("foreign-sibling-safe").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let mut guard = ForeignOwned::new(&worktrees.wt1);
+        trust_globally(&scratch, &worktrees.wt1);
+        assert_git_opens(&scratch, &worktrees.wt1);
+
+        let child = siblings_in_child(&scratch, &worktrees.main);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+        let common = worktrees.main.join(".git/worktrees");
+        let expected = [common.join("wt2"), common.join("wt1")];
+        assert_eq!(fact(&child, "sibling_count"), expected.len().to_string());
+        for (i, git_dir) in expected.iter().enumerate() {
+            assert_eq!(
+                fact(&child, &format!("sibling_{i}_git_dir")),
+                git_dir.display().to_string()
+            );
+        }
+
+        guard.restore().expect("give the worktree back");
+    }
+
+    /// A bare repository `<root>/r.git`, cloned from a one-commit
+    /// repository, with the linked worktree `<root>/wt` on branch `wt`;
+    /// both canonical.
+    fn bare_with_worktree(scratch: &Scratch) -> (PathBuf, PathBuf) {
+        let src = scratch.root.join("src");
+        std::fs::create_dir_all(&src).expect("create src");
+        git_ok(scratch, &src, ["init", "-q", "-b", "main"]).expect("git init src");
+        write(&src.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &src, "a", T0).expect("commit a");
+        let bare = scratch.root.join("r.git");
+        let wt = scratch.root.join("wt");
+        let (src_arg, bare_arg, wt_arg) = (
+            src.to_str().expect("UTF-8 scratch path"),
+            bare.to_str().expect("UTF-8 scratch path"),
+            wt.to_str().expect("UTF-8 scratch path"),
+        );
+        git_ok(
+            scratch,
+            &scratch.root,
+            ["clone", "-q", "--bare", src_arg, bare_arg],
+        )
+        .expect("git clone --bare");
+        git_ok(
+            scratch,
+            &bare,
+            ["worktree", "add", "-q", "-b", "wt", wt_arg],
+        )
+        .expect("git worktree add wt");
+        (
+            bare.canonicalize().expect("canonicalize r.git"),
+            wt.canonicalize().expect("canonicalize wt"),
+        )
+    }
+
+    /// A bare main repository really owned by another uid is refused as a
+    /// sibling of a linked worktree the user trusts through
+    /// `safe.directory`: git opens the worktree and refuses the bare
+    /// repository. gix opens that sibling with the worktree's full trust
+    /// and checks nothing, as it has no worktree.
+    #[test]
+    fn a_foreign_owned_bare_main_repository_is_refused_as_a_sibling() {
+        let scratch = Scratch::new("foreign-bare-main").expect("scratch");
+        let (bare, wt) = bare_with_worktree(&scratch);
+        let mut guard = ForeignOwned::new(&bare);
+        trust_globally(&scratch, &wt);
+        assert_git_opens(&scratch, &wt);
+        assert_git_refuses_ownership(&scratch, &bare);
+
+        let child = siblings_in_child(&scratch, &wt);
+        assert_eq!(
+            child_result(&child),
+            "foreign_owner",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+        assert_eq!(fact(&child, "path"), bare.display().to_string());
+
+        guard.restore().expect("give the bare repository back");
+    }
+
+    /// Control: the same layout, owned by the test user, opens the bare
+    /// main repository as the one sibling.
+    #[test]
+    fn an_owned_bare_main_repository_opens_as_a_sibling() {
+        let scratch = Scratch::new("owned-bare-main").expect("scratch");
+        let (bare, wt) = bare_with_worktree(&scratch);
+        assert_git_opens(&scratch, &bare);
+
+        let child = siblings_in_child(&scratch, &wt);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+        assert_eq!(fact(&child, "sibling_count"), "1");
+        assert_eq!(
+            fact(&child, "sibling_0_git_dir"),
+            bare.display().to_string()
+        );
+    }
+
+    /// Recorded divergence: a foreign bare main repository listed in global
+    /// `safe.directory` opens for git, but `siblings()` still refuses it.
+    /// gix checks `safe.directory` for a sibling only against its worktree,
+    /// and a bare repository has none, so wsx checks ownership alone. The
+    /// stricter direction.
+    #[test]
+    fn safe_directory_does_not_trust_a_foreign_bare_main_sibling() {
+        let scratch = Scratch::new("foreign-bare-main-safe").expect("scratch");
+        let (bare, wt) = bare_with_worktree(&scratch);
+        let mut guard = ForeignOwned::new(&bare);
+        trust_globally(&scratch, &wt);
+        trust_globally(&scratch, &bare);
+        assert_git_opens(&scratch, &bare);
+
+        let child = siblings_in_child(&scratch, &wt);
+        assert_eq!(
+            child_result(&child),
+            "foreign_owner",
+            "{}",
+            testing::failed_run("the sibling-trust child", &child)
+        );
+
+        guard.restore().expect("give the bare repository back");
+    }
+
+    /// Prints what `siblings()` returns from the repository discovered in
+    /// the working directory: `result=opened` with `sibling_count` and each
+    /// `sibling_<i>_git_dir`, `result=foreign_owner` with `path`, or
+    /// `result=other` with `error`.
+    #[test]
+    #[ignore = "child half of the sibling-trust tests; runs only when re-executed"]
+    fn sibling_trust_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the starting worktree");
+        match repo.siblings() {
+            Ok(siblings) => {
+                testing::child_print("result", "opened");
+                testing::child_print("sibling_count", siblings.len());
+                for (i, sibling) in siblings.iter().enumerate() {
+                    testing::child_print(
+                        &format!("sibling_{i}_git_dir"),
+                        sibling.git_dir().display(),
+                    );
+                }
+            }
+            Err(Error::ForeignOwner { path }) => {
+                testing::child_print("result", "foreign_owner");
+                testing::child_print("path", path.display());
             }
             Err(err) => {
                 testing::child_print("result", "other");
