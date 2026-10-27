@@ -1,8 +1,9 @@
 ---
 phase: 03-git-adapter
-reviewed: 2026-10-27T03:30:30Z
+reviewed: 2026-10-27T17:53:55Z
 depth: deep
-files_reviewed: 10
+iteration: 2
+files_reviewed: 12
 files_reviewed_list:
   - Cargo.toml
   - clippy.toml
@@ -14,283 +15,255 @@ files_reviewed_list:
   - src/git/testing.rs
   - src/main.rs
   - tests/harness/check.rs
+  - scripts/check.sh
+  - tests/gate_controls.rs
 findings:
-  critical: 2
-  warning: 4
-  info: 5
-  total: 11
+  critical: 0
+  warning: 5
+  info: 2
+  total: 7
 status: issues_found
 ---
 
-# Phase 3: Code Review Report
+# Phase 3: Code Review Report (iteration 2)
 
-**Reviewed:** 2026-10-27T03:30:30Z
+**Reviewed:** 2026-10-27T17:53:55Z
 **Depth:** deep
-**Files Reviewed:** 10
+**Files Reviewed:** 12
 **Status:** issues_found
 
 ## Summary
 
-I reviewed the git layer (`src/git/`) across `repo.rs`, `spawn.rs`, `reads.rs` and `testing.rs`,
-plus the config, deny and harness changes. I traced the call chains into gix 0.90.0 and
-gix-diff 0.70.0 source in the cargo registry.
+This is a re-review after iteration 1's fixes (CR-01, CR-02, WR-01..04 in 03-REVIEW-FIX.md)
+and two later commits: e478d3f, which turns off auto-maintenance in the test fixtures, and
+0bdcc33, which adds the checkout's `.tools/bin` to check.sh's PATH. I did not re-report any of
+iteration 1's fixed items. None of the fixes was found wrong.
 
-The `Repo::discover` entry point and the spawn helper's env removal are sound for the cases the
-tests exercise. Two fail-open paths sit outside what the tests reach. I reproduced both with a
-scratch gix 0.90.0 probe under `target/` (since removed), each with a negative control:
+No blocker was found. There are five warnings:
 
-1. `Repo::siblings()` opens a sibling worktree owned by another user with gix `Trust::Reduced`
-   and returns it with no refusal. git refuses the same worktree with "detected dubious
-   ownership". The refusal applies only to the repository `discover` opened, never to siblings.
-2. `Repo::range_walk` does not peel revisions. An annotated tag given as a hidden revision is
-   silently ignored, so the walk returns commits git excludes. An annotated tag given as a tip
-   or to `merge_base` is an error, where git peels it and answers.
+- Three are discovery divergences from git in `Repo::discover`. Each one was **measured**: a
+  throwaway probe binary built against the pinned gix 0.90.0, with the same open options as
+  `open_gix` and a verbatim copy of `refuse_at_ceiling`'s logic, was run next to git 2.56.0 on
+  scratch repos under `target/`. The probe and the repos were removed afterwards.
+  - The ceiling check compares against the wrong directory.
+  - An absolute `GIT_DIR` gives git and wsx different worktrees.
+  - gix ignores `GIT_OBJECT_DIRECTORY`.
+- Two come from 0bdcc33's `.tools/bin` change:
+  - The container gate picks up the host's tools.
+  - A stale `.tools/bin` gets a fix suggestion that does not fix it.
 
-Neither has a caller until phase 5, which is the only reason they are not live defects today.
+  These two were worked out by reading the scripts and checking the image's user. They were
+  **not** run in the container, because the brief says not to run `check-in-container.sh`.
 
-What this review does not establish:
-- I did not run the phase's test suite.
-- The bare-repository ceiling gap (WR-02) and the relative-environment divergence (WR-03) come
-  from reading the code and git/gix semantics. I did not reproduce them.
+The e478d3f change itself is sound. The scratch global config disables `maintenance.auto` and
+`gc.auto`. Every other test that writes `.gitconfig` appends to it, so the setting survives.
+The trace2 test has a real counterpart: I confirmed by hand that the trace contains
+`"maintenance","run","--auto"` when auto-maintenance is on. Both new gate tests
+(`repo_tools_dir_wins_over_a_shadowing_nextest`) and the maintenance counterpart were run alone
+through `scripts/check.sh test -E 'test(=...)'` and pass.
 
-## Narrative Findings (AI reviewer)
+The rest of the scope was checked and is fine:
 
-## Critical Issues
-
-### CR-01: `siblings()` opens a foreign-owned sibling worktree with reduced trust, without refusing it
-
-**File:** `src/git/repo.rs:111-137` (no trust check on the siblings it opens; compare `refuse_untrusted` at `:258-266`, applied only in `discover`)
-
-**Issue:** `siblings()` opens each sibling through `main_repo()` and
-`Proxy::into_repo_with_possibly_inaccessible_worktree()`. Both clone the parent's options, and
-those carry `git_dir_trust = Some(Full)` because the parent passed `refuse_untrusted`. Each
-sibling then goes into `open_from_paths`. There, a worktree not owned by the current user is
-checked against `safe.directory`. With `bail_if_untrusted: false`, which `default_for_level`
-sets, a failed check silently lowers trust to `Reduced` (gix-0.90.0
-`src/open/repository.rs:397-423`). `siblings()` never reads `git_dir_trust()`.
-
-The result is that a foreign-owned sibling comes back as an ordinary `Repo`, and gix has
-silently dropped its config. That is exactly the case CONTEXT `<specifics>` rules out: "a
-foreign-owned repo must never open with dropped config. gix silently drops config in a repo with
-reduced trust; git refuses."
-
-Also, `main_repo()` passes the pre-set `Full` trust to `open_opts`. That skips the git-dir
-ownership probe (`options.git_dir_trust.is_none()` at `open/repository.rs:110-115`). A bare main
-repository owned by another user is therefore never downgraded at all.
-
-Reproduced with gix 0.90.0, using the same trust map and discover call as `open_gix`. Fixture:
-`main`, plus linked worktrees `wt1` and `wt2`; `wt2` was chowned to subordinate uid 524288 with
-`unshare --map-root-user --map-users=auto`, and the probe was opened from `wt1`.
-- Control, everything owned by the test user: both siblings are `trust Full`.
-- With `wt2` foreign: `sibling .../sib/wt2 owner uid 524288 trust Reduced`. The open succeeded.
-- `git -C wt2 status` in the same state fails with `fatal: detected dubious ownership`.
-
-No test covers a foreign-owned sibling. The foreign-owner tests only discover the foreign
-repository directly.
-
-**Fix:** Apply the same refusal to every repository `siblings()` opens, before wrapping it. Add a
-test with a `ForeignOwned` linked worktree, plus a control that lists it in global
-`safe.directory`.
-
-```rust
-for repo in opened {
-    refuse_untrusted(&repo)?;          // ForeignOwner naming the sibling, as git would
-    let sibling = Repo::from_gix(repo)?;
-    // ...
-}
-```
-
-`refuse_untrusted` alone does not cover the bare-main case. There, the git-dir ownership of the
-main repository should be checked explicitly, for example with
-`gix::sec::Trust::from_path_ownership(common_dir)` when `main.workdir()` is `None`.
-
-### CR-02: `range_walk` silently ignores an annotated tag in `hidden`, and tags as tips or merge-base inputs fail where git answers
-
-**File:** `src/git/repo.rs:151-160` (`resolve` returns the unpeeled object), `src/git/reads.rs:80-105` (`range_walk`), `src/git/reads.rs:49-64` (`merge_base`), `src/git/reads.rs:69-74` (`ahead_behind`)
-
-**Issue:** `resolve` returns whatever `rev_parse_single` names, without peeling. For an annotated
-tag, that is the tag object. The commit queries then pass that id straight to gix, and git peels
-it in the same place. Reproduced with gix 0.90.0 on a two-commit repo with `v1` an annotated tag
-on the first commit:
-
-| Query | git | gix with the unpeeled tag id |
-|---|---|---|
-| `rev-list HEAD --not v1` | 1 commit | `rev_walk([HEAD]).with_hidden([tag])` returns **both** commits, `Ok` (silently wrong) |
-| same, hidden = `v1^{commit}` (control) | 1 commit | 1 commit |
-| `rev-list v1` | 1 commit | `Err("Expected object of kind commit but got tag")` |
-| `merge-base v1 HEAD` | the first commit | `Err("Commit <tag-id> could not be found for merge-base traversal")` |
-
-The hidden-side case is a silent wrong answer: `range_walk(&[b"main"], &[b"v1.0"])` returns
-history that `v1.0` already contains. Phase 9's replay ("commits on the workspace not on the
-base") is the kind of caller that depends on exactly this set. `ahead_behind` fails closed only
-by accident, because its second walk puts the tag on the tip side and errors. The `merge_base`
-error message also says the commit "could not be found", which misleads.
-
-**Fix:** Peel to a commit for every commit query. Keep `tree_of`'s own `peel_to_tree`. Add
-differential tests with an annotated tag as a tip, as a hidden revision, and as a merge-base
-input.
-
-```rust
-/// The commit a revspec names, peeling tags as git's commit-taking commands do.
-pub(super) fn resolve_commit(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-    let id = self.resolve(rev)?;
-    self.repo
-        .find_object(id)
-        .and_then(|object| object.peel_to_commit())   // map errors to Error::Gix naming `rev`
-        .map(|commit| commit.id)
-        .map_err(/* ... */)
-}
-```
-
-Use `resolve_commit` in `merge_base` and `resolve_all`.
+- `clippy.toml` bans every public open/discover entry point that wsx's feature set compiles.
+  `Submodule::open` needs the `attributes` feature, which is off.
+- `deny.toml` and `Cargo.toml` are consistent with CONTEXT.
+- `main.rs` is unchanged.
+- The `reftable_refused` harness scenario follows the regression rules. When phase 5 enables
+  the Rust side, `rust_stderr` is enforced.
+- With a bogus hook `GIT_DIR`, `git rev-parse --local-env-vars` still works (measured), so the
+  spawn helper's removal-list query cannot be broken by the hook environment.
 
 ## Warnings
 
-### WR-01: `tree_diff` turns the reftable refusal into a generic `Error::Gix`
+### WR-01: The ceiling check compares against the worktree, not the directory where discovery found the repository
 
-**File:** `src/git/reads.rs:122-123`, `src/git/reads.rs:155-160`
+**File:** `src/git/repo.rs:239-266` (the `found` value comes from `refusal_path`, lines 403-405)
+**Issue:** `refuse_at_ceiling` decides "git would not have found this" by testing whether a
+ceiling entry equals `refusal_path(repo)`, the worktree. The directory git stops in, though,
+is the one holding `.git`, or the git dir itself when the start is inside it. Two settings move
+the worktree away from that directory: `core.worktree` in the repo config, and
+`GIT_WORK_TREE` without `GIT_DIR`. Measured with gix 0.90.0 and git 2.56.0, starting in
+`r1/inner` with `GIT_CEILING_DIRECTORIES=r1`:
 
-**Issue:** `tree_of` maps every `resolve` error to `String` (`.map_err(|err| err.to_string())`),
-and `tree_diff` wraps that string in `Error::Gix { what: "diff ..", .. }`. The `resolve`
-docstring promises that a backend decode failure is "the reftable refusal, never a generic read
-error". `merge_base` and `range_walk` keep that promise by propagating with `?`; `tree_diff`
-does not. When the backstop fires (for example, a repo where `refuse_ref_storage` was bypassed
-through a gix/git difference in config parsing), the typed `Error::Reftable` is lost. Phase 5
-then maps it to the wrong IF-01 exit code. `NotARepo`, `Io` and the other variants are flattened
-the same way.
+| setup | git | gix workdir | wsx (copied logic) |
+|---|---|---|---|
+| plain (control) | `fatal: not a git repository` | `r1` | refused at ceiling (correct) |
+| `GIT_WORK_TREE=<elsewhere>` | `fatal: not a git repository` | `<elsewhere>` | **opens** |
+| `r2/.git/config` `core.worktree=<wt2>`, start `r2/inner`, ceiling `r2` | `fatal: not a git repository` | `<wt2>` | **opens** |
+| start `r1/.git/objects`, ceiling `r1` | finds `r1/.git` (exit 0) | `r1` | **refused** |
 
-**Fix:** Make `tree_of` return `Result<gix::ObjectId, Error>`. Propagate `resolve` errors
-unchanged, and map only the `find_object`/`peel_to_tree` failures to `Error::Gix`:
+The first two failing rows are the unsafe direction. wsx then reads, through gix, a repository
+the user fenced off with a ceiling, while its own git children aimed at that "worktree" find no
+repository. That breaks the locked decision that `GIT_CEILING_DIRECTORIES` "matches git".
+The last row is the stricter direction iteration 1 noted as "not reproduced"; it is now
+reproduced and has the same root cause.
+**Fix:** compare the ceilings with the directory discovery stopped in, not with the worktree:
 
 ```rust
-fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-    let id = self.resolve(rev)?;
-    let gix_err = |err: &dyn std::fmt::Display| Error::Gix { what: format!("tree of {}", String::from_utf8_lossy(rev)), message: err.to_string() };
-    let object = self.repo.find_object(id).map_err(|e| gix_err(&e))?;
-    Ok(object.peel_to_tree().map_err(|e| gix_err(&e))?.id)
-}
+// in refuse_at_ceiling, replacing `let found = refusal_path(repo)?;`
+let start_dir = canonical(start)?;
+let git_dir = canonical(repo.git_dir())?;
+let found = if start_dir.starts_with(&git_dir) {
+    git_dir // git recognises the git dir itself while climbing (bare, or inside .git)
+} else {
+    start_dir
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+        .unwrap_or(git_dir)
+};
 ```
 
-Add a test: on the reftable twin opened through `open_unchecked`, `tree_diff(b"HEAD", b"HEAD")`
-is `Error::Reftable`.
+Add git-oracle tests for the `GIT_WORK_TREE` and `core.worktree` rows: git exits 128, so wsx must
+refuse. Add one for the inside-`.git` row: git opens, so wsx must open. Keep the existing ceiling
+tests as controls.
 
-### WR-02: The `GIT_CEILING_DIRECTORIES` check is skipped for bare repositories, so wsx opens a repository git would not find
+### WR-02: An absolute `GIT_DIR` without `GIT_WORK_TREE` gives git and wsx different worktrees below the root
 
-**File:** `src/git/repo.rs:212-221`
+**File:** `src/git/repo.rs:341-384` (`REPO_PATH_VARS`, `refuse_relative_repo_env`)
+**Issue:** iteration 1's WR-03 fix refuses a *relative* `GIT_DIR` below the worktree root.
+One of its own reasons was that "git takes `main/sub` as the worktree, where gix takes
+`main`". The same divergence happens with an *absolute* `GIT_DIR`, and nothing refuses it.
+Measured from `r1/inner` with `GIT_DIR=<abs>/r1/.git` and no `GIT_WORK_TREE`:
 
-**Issue:** `refuse_at_ceiling` returns `Ok(())` when `repo.workdir()` is `None`. gix's
-divergence (it searches the ceiling directory itself) is not specific to worktrees. Starting
-inside `r.git/objects` with ceiling `r.git`, gix would find the bare `r.git` and git would not.
-CONTEXT ("Decided after research") says the check "refuses as not-a-repo where git would", with
-no bare exception. The docstring records the gap, but that does not make it consistent with the
-locked decision. Not reproduced; inferred from the measured table in the docstring and from the
-code path.
+- `git rev-parse --show-toplevel` prints `r1/inner`, because git takes the cwd as the
+  worktree root.
+- gix reports `workdir=r1`.
+- `refuse_relative_repo_env` returns early for absolute values, and `refuse_at_ceiling` skips
+  whenever `GIT_DIR` is set, so `Repo::discover` opens with worktree `r1`.
 
-**Fix:** Compare the ceiling entries against the directory discovery actually found: the
-worktree for a non-bare repo, otherwise the canonical `git_dir`. Refuse when that equals a
-ceiling entry and the start is not that directory. Add a bare-repo case with a git-side oracle
-and a control.
+Scenario: a user with `GIT_DIR` exported runs wsx from a subdirectory. wsx and its own-worktree
+children (which run at `r1`) treat `r1` as the worktree. The user's `git status` in the same
+shell treats `r1/inner` as the root and every file outside it as deleted. So wsx's view
+disagrees with git's for the same environment, which the module doc
+(`src/git/mod.rs:4-7`, "honours `GIT_DIR` ... the way git does") rules out. Inside hooks this
+does not happen, because git runs hooks at the worktree root.
+**Fix:** apply the cwd-equals-worktree condition whenever `GIT_DIR` is set and neither
+`GIT_WORK_TREE` nor `core.worktree` is, whether the value is relative or absolute:
 
-### WR-03: Own-worktree children keep relative `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` but run in a different directory than the one gix resolved them from
+```rust
+let git_dir_sets_worktree = std::env::var_os("GIT_DIR").is_some()
+    && std::env::var_os("GIT_WORK_TREE").is_none()
+    && repo.config_snapshot().string("core.worktree").is_none();
+if relative.is_none() && !git_dir_sets_worktree {
+    return Ok(());
+}
+// ...then the existing cwd == worktree comparison, with an error naming GIT_DIR.
+```
 
-**File:** `src/git/spawn.rs:155-161` (`from_process` snapshot), `src/git/spawn.rs:234-245`, `src/git/spawn.rs:92-105` (`current_dir(worktree)`)
+Add a git-oracle test: absolute `GIT_DIR` from `main/sub` must be refused. The existing
+`a_relative_index_at_the_worktree_root_opens_like_git` and the hook tests act as controls.
 
-**Issue:** `Repo::discover` resolves relative `GIT_DIR` and `GIT_INDEX_FILE` against the process
-cwd (`repo.rs:290-292`; gix anchors at the cwd when opening). The spawn helper gives an
-own-worktree child the raw snapshot unchanged, but runs it with `current_dir` set to the
-worktree root. If wsx runs from a subdirectory with a relative value (for example,
-`cd sub && GIT_DIR=../.git wsx ...`), its gix reads use one repository and index while its git
-writes resolve another. In hooks, git runs at the worktree root, so the two agree. That is why
-the hook tests pass, and also why they cannot catch this. Not reproduced.
+### WR-03: gix ignores `GIT_OBJECT_DIRECTORY`, so wsx reads a different object store than git
 
-**Fix:** In `from_process`, rewrite the repository-path variables in the snapshot to absolute
-values: `GIT_DIR` and `GIT_COMMON_DIR` as `repo.git_dir()`/`common_dir()`, `GIT_INDEX_FILE` as
-`repo.index_path()`, and `GIT_WORK_TREE` as the worktree. Rewrite each only when it was set.
-Alternatively, refuse a relative value when the process cwd is not the worktree root. Add a
-re-exec test from a subdirectory with a relative `GIT_INDEX_FILE`.
+**File:** `src/git/repo.rs:46-64` (`open_gix`), `src/git/repo.rs:341-348` (`REPO_PATH_VARS`)
+**Issue:** measured at `r1` with `GIT_OBJECT_DIRECTORY=<abs>/emptyobjs`, an empty store:
 
-### WR-04: One stale (prunable) linked worktree makes `siblings()` fail for the whole repository
+- `git cat-file -t HEAD` fails ("could not get object info").
+- gix reports `objects=r1/.git/objects` and resolves `HEAD` to its commit.
 
-**File:** `src/git/repo.rs:113-122`
+So gix ignores the variable entirely. Two consequences:
 
-**Issue:** `into_repo_with_possibly_inaccessible_worktree()` deliberately opens a worktree whose
-directory is gone. `Repo::from_gix` then calls `canonical(workdir)` and fails with `Error::Io`,
-and `?` aborts the whole list. A worktree directory deleted by hand, without
-`git worktree prune`, is common. `git worktree list` shows it as `prunable` and carries on. Once
-phase 5+ calls `siblings()`, every wsx command in such a repository fails, and the error names a
-`canonicalize` call rather than the stale worktree.
+- **Inside a receive-pack quarantine** (`pre-receive`/`update` hooks), git exports
+  `GIT_OBJECT_DIRECTORY` as the incoming directory. There, gix cannot see the pushed objects
+  and wsx fails with a generic `Error::Gix`, not a named refusal.
+- **With a user override**, gix reads objects that git, and so wsx's own git children, cannot
+  see. Reads and writes then disagree.
 
-**Fix:** Decide the policy explicitly:
-- Skip missing-directory siblings and report them as prunable through a wsx type, the way
-  `git worktree list` does.
-- Or keep failing closed, but with a dedicated error naming the worktree and suggesting
-  `git worktree prune`.
+Neither case is refused or recorded as a divergence in CONTEXT. `GIT_ALTERNATE_OBJECT_DIRECTORIES`
+was not measured.
+**Fix:** refuse in `Repo::discover` when `GIT_OBJECT_DIRECTORY` is set, with a typed error that
+names the variable. Alternatively, record it as a divergence in CONTEXT "Decided after
+research" and in `open_gix`'s docstring. Measure `GIT_ALTERNATE_OBJECT_DIRECTORIES` the same way
+and treat it to match. Pin the result with a git-oracle test and a control without the
+variable.
 
-Either way, add a test that deletes `wt2` and asserts the chosen behaviour.
+### WR-04: The container gate runs the host's `.tools/bin` binaries ahead of the tools it just installed
+
+**File:** `scripts/check.sh:23-26`, together with `scripts/check-in-container.sh:141,146`
+(outside the listed files, but it is the path 0bdcc33 changes the behaviour of)
+**Issue:** `check-in-container.sh` bind-mounts the whole checkout at `/workspace`, so a host
+`.tools/bin` is mounted too. Inside the container it:
+
+1. installs the pinned, checksum-verified nextest and deny into `/usr/local/cargo/bin`;
+2. runs `scripts/check.sh`, which finds `/workspace/.tools/bin` and puts it first on PATH.
+
+The image runs as root (verified: `docker image inspect ... {{.Config.User}}` gives `root`), so
+the host's mode-0700 `.tools` is readable. The container gate therefore runs host-installed
+binaries that it checks only by version string, not by checksum. That defeats "the same gate in
+the pinned image CI uses".
+
+Concrete failure: a branch bumps `CARGO_NEXTEST_VERSION` in `install-tools.sh`, and the
+developer's `.tools/bin` still holds the old build. `check-in-container.sh` installs the new
+version, then `verify-cargo` reports the old one and the container gate fails, while CI (no
+`.tools/`) passes. The commit message gives "the container mounts the checkout read-only" as the
+reason for leaving the install default unchanged, but it did not consider that check.sh inside
+the container reads `.tools/bin` too. This was reasoned from the scripts and the image config,
+not run, because the brief says not to run `check-in-container.sh`.
+**Fix:** mask the directory in the container. Docker cannot create a mount point inside the
+read-only bind, so mask it only when it exists, the same way the script already handles
+`target/`:
+
+```bash
+TOOLS_MASK=()
+if [ -e "$REPO_ROOT/.tools" ]; then
+    TOOLS_MASK=(--tmpfs /workspace/.tools:ro)
+fi
+# ... docker run ... "${TOOLS_MASK[@]}" ...
+```
+
+Add a gate_controls test in the style of `container_gate_mounts_its_own_checkout_not_the_callers`:
+with a fixture `.tools/` present, the stub docker log must contain the mask, and without one it
+must not.
+
+### WR-05: A stale `.tools/bin` gets a fix suggestion that cannot fix it
+
+**File:** `scripts/check.sh:23-26`; the message comes from `scripts/install-tools.sh:126,131,140`
+(install destination at line 209)
+**Issue:** when `.tools/bin` holds a tool at a version other than the pin, `verify-cargo` fails
+with `...; run scripts/install-tools.sh install cargo-nextest`. Without `WSX_TOOLS_DIR`, that
+command installs into `${CARGO_HOME:-~/.cargo}/bin`, which `.tools/bin` still shadows.
+install-tools.sh then prints `installed cargo-nextest <pin>`, because it checks
+`$DEST/cargo-nextest` directly. The next `check.sh test` fails with the same error and the same
+advice. Following the printed fix makes no progress. This fails closed (no false green), but
+the gate gives wrong advice.
+**Fix:** when check.sh has prepended `.tools/bin`, give the right destination. Two options:
+
+- Have check.sh set `WSX_TOOLS_DIR="$PWD/.tools/bin"` alongside the PATH change, and have
+  install-tools.sh's three messages print `WSX_TOOLS_DIR=$WSX_TOOLS_DIR scripts/install-tools.sh
+  install $tool` when `WSX_TOOLS_DIR` is set.
+- Or have check.sh print a one-line note after a failed verify that `.tools/bin` is first on
+  PATH, and how to refill it.
+
+Add a scratch-checkout test whose stale `.tools/bin` stub must make stderr name `.tools/bin`.
 
 ## Info
 
-### IN-01: Any non-empty `--local-env-vars` answer is accepted as the removal list
+### IN-01: The maintenance counterpart test starts a detached background writer in a scratch tree it deletes immediately
 
-**File:** `src/git/spawn.rs:211-222`; enshrined by `one_name_list_query_lets_the_command_run` at `src/git/spawn.rs:1068-1079`
+**File:** `src/git/testing.rs:1170-1180` (with `commit_starts_auto_maintenance`, 1137-1156)
+**Issue:** with `maintenance.auto=true`, git 2.56.0 starts `git maintenance run --auto --quiet
+--detach` (argv measured from trace2). That is the same detached writer e478d3f removes from
+the fixtures, and it runs while `Scratch`'s `TempDir` is being deleted. `TempDir`'s drop swallows
+removal errors, so a race would leave a `git-unit-auto-maintenance-on-*` tree under `target/tmp`
+rather than fail. That was not reproduced: 7 runs, no leftover, no `maintenance.lock` seen.
+**Fix:** pass `maintenance.autoDetach=false` with `maintenance.auto=true` in the counterpart.
+git then runs `maintenance run --auto --quiet --no-detach` in the foreground (measured), and the
+trace still contains `"maintenance","run","--auto"`, so the assertion is unchanged.
 
-**Issue:** The fail-closed guard rejects only an empty list. A broken or substituted `git` that
-prints only `GIT_DIR` passes, and `GIT_INDEX_FILE` then reaches a sibling's child. Test support
-already demands `GIT_DIR` on the list (`testing.rs:640`); production is weaker than its own test
-harness.
+### IN-02: `.tools/bin` shadows every command check.sh runs, not only the pinned tools
 
-**Fix:** Require at least `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` on
-the list. Otherwise return a refusal naming what is missing. Invert the one-name test into a
-refusal test.
-
-### IN-02: `run` spawns `git --version` before it canonicalises the target
-
-**File:** `src/git/spawn.rs:285-286`
-
-**Issue:** If the target directory is missing, the first error is
-`spawn git --version in <dir>: No such file or directory`, from the version check. The message
-blames the version probe rather than the bad target.
-
-**Fix:** Canonicalise `worktree` (the first line of `command`) before `ensure_version`, or have
-the version check run in a directory that exists.
-
-### IN-03: The clippy ban list's "every public open/discover entry point" claim omits `gix::init*`, and the sanctioned sibling paths bypass the refusals
-
-**File:** `clippy.toml:27-35`
-
-**Issue:** `gix::init`, `gix::init_bare` and the `ThreadSafeRepository::init*` functions return
-an open repository at an arbitrary path, and they are not banned. `worktrees_including_main()`
-and `Proxy::into_repo()` are allowed, and they reach the same unchecked sibling path as CR-01.
-
-**Fix:** Ban the `init*` functions, or narrow the comment's claim. Note in the reasons that the
-sibling paths need the `siblings()` refusal from CR-01.
-
-### IN-04: The stderr of a successful git child is captured and discarded
-
-**File:** `src/git/spawn.rs:74-88`
-
-**Issue:** `Command::output()` captures both streams. On exit 0, only stdout is returned. Hook
-output, `git commit` warnings and signing notices from the user's own hooks never reach the
-user. This is a visible change from "a git command the user typed" (module doc, `mod.rs:9-11`).
-
-**Fix:** Inherit stderr for write commands, or return it alongside stdout so the caller can
-relay it. Record the choice before phase 9's replay depends on it.
-
-### IN-05: In-process discovering tests scrub only the `--local-env-vars` variables
-
-**File:** `src/git/testing.rs:662-699`
-
-**Issue:** Tests that call `rerun_scrubbed()` run `Repo::discover` in the test process. That
-process still has the runner's `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`,
-`GIT_CEILING_DIRECTORIES` and `SUDO_UID`, which gix reads. Unlike the re-executed children, the
-in-process tests are not hermetic for global config or ceilings. A developer config (for example
-`safe.directory = *`, or a ceiling above `target/`) can change their outcome.
-
-**Fix:** Have `rerun_scrubbed` re-execute whenever the process environment differs from the
-scratch environment's keys, or re-execute these tests with `scratch.env` as the hook tests do.
+**File:** `scripts/check.sh:18-26`
+**Issue:** the comment says "the version checks below still apply to whatever is found". That
+holds only for cargo-nextest, cargo-deny and cargo-llvm-cov. A `cargo`, `rustc`, `rustfmt`,
+`git` or `xargs` placed in the git-ignored `.tools/bin` would run first for every gate target,
+unchecked. Nothing in the repo puts them there today, so this is a documentation and
+hardening gap, not a defect.
+**Fix:** narrow the comment to the three pinned tools. Optionally, have check.sh refuse a
+`.tools/bin` that contains anything other than the names install-tools.sh can install.
 
 ---
 
-_Reviewed: 2026-10-27T03:30:30Z_
+_Reviewed: 2026-10-27T17:53:55Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: deep_
