@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: 3
 current_phase_name: Git adapter
-status: executing
-stopped_at: Completed 03-09-PLAN.md
-last_updated: "2026-10-27T03:18:06.552Z"
+status: verifying
+stopped_at: Completed 03-10-PLAN.md
+last_updated: "2026-10-27T03:19:39.450Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: ae6938819aa66e3c5b67ae0c3cd0dcb43c6ee1f8
+state_head: b60ac39c206dd5367c7883215fd1e7e44b90bc74
 progress:
   total_phases: 15
   completed_phases: 2
   total_plans: 32
-  completed_plans: 31
+  completed_plans: 32
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 
 Phase: 3 (Git adapter) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-26 — Phase 3 execution started
 
 Progress: [█░░░░░░░░░] 13%
@@ -87,6 +87,7 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 03 P07 | 8 min | 3 tasks | 3 files |
 | Phase 03 P08 | 8min | 3 tasks | 3 files |
 | Phase 03 P09 | 5min | 2 tasks | 2 files |
+| Phase 03 P10 | 17min | 4 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -153,6 +154,9 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-08: Repo::siblings opens other worktrees only via gix main_repo()/worktrees(), sorted by canonical worktree path; with_removal_disabled is cfg(test) only and skips the whole removal branch
 - [Phase 03]: 03-09: ForeignOwner carries the canonical worktree (git dir if bare); git prints the same path, so the fix lines are equal
 - [Phase 03]: 03-09: refuse_untrusted refuses unless gix git_dir_trust() is Trust::Full, before refuse_ref_storage; -c/GIT_CONFIG_COUNT safe.directory and SUDO_UID divergences documented
+- [Phase 03]: GIT_CEILING_DIRECTORIES: refuse_at_ceiling refuses as NotARepo when a canonical ceiling entry equals the found worktree and the start differs (gix searches the ceiling dir; git does not)
+- [Phase 03]: Discovering unit tests call testing::rerun_scrubbed first: re-run without git rev-parse --local-env-vars variables when the runner has any; production discovery still honours GIT_DIR
+- [Phase 03]: extensions.refStorage is read from gix Source::Local only; git 2.56.0 ignores it in global config, config.worktree and GIT_CONFIG_COUNT
 
 ### Pending Todos
 
@@ -177,6 +181,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-27T02:59:43.690Z
-Stopped at: Completed 03-09-PLAN.md
+Last session: 2026-10-27T03:19:39.252Z
+Stopped at: Completed 03-10-PLAN.md
 Resume file: None
