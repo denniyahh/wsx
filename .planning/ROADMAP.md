@@ -128,10 +128,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A reftable repository is refused with a message naming reftable (a `regression:` scenario), while the same history in a files-backend repository opens (control)
   4. A repository owned by another user is refused, matching git's own refusal on that repository
 
-**Plans**: 1/10 plans executed
+**Plans**: 2/10 plans executed
 **Wave 1**
 - [x] 03-01-PLAN.md — Tracer: gix 0.90.0 pin and licenses, `src/git/` skeleton, merge-base from a subdirectory equals git's; full error enum
-- [ ] 03-02-PLAN.md — Harness `regression:` scenario for reftable with the oracle side recorded; phase 5 obligation in STATE.md
+- [x] 03-02-PLAN.md — Harness `regression:` scenario for reftable with the oracle side recorded; phase 5 obligation in STATE.md
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 03-03-PLAN.md — ahead/behind, range walk and tree diff equal git's, each with a control
@@ -322,7 +322,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
-| 3. Git adapter | 1/10 | In Progress | - |
+| 3. Git adapter | 2/10 | In Progress | - |
 | 4. Repo model | 0/TBD | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
