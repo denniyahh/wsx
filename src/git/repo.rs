@@ -176,9 +176,17 @@ impl Repo {
     }
 }
 
-/// The configured `extensions.refStorage`, or `None` when it is not set.
+/// The `extensions.refStorage` of the repository's own config (gix's
+/// `Source::Local`, the common dir's `config`), or `None` when it is not set
+/// there. git reads repository extensions from that file alone: measured with
+/// git 2.56.0, a `reftable` value in global config, in `config.worktree` or
+/// through `GIT_CONFIG_COUNT` leaves a files repository readable.
 fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
-    repo.config_snapshot().string("extensions.refStorage")
+    repo.config_snapshot()
+        .plumbing()
+        .string_filter("extensions.refStorage", |meta| {
+            meta.source == gix::config::Source::Local
+        })
 }
 
 /// Refuses, as not a repository, a repository git would not have found
