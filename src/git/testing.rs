@@ -869,3 +869,67 @@ fn reexec_of_an_unknown_child_has_no_marker() {
         "a zero-test run produced a marker; stdout: {stdout}"
     );
 }
+
+/// The libtest filters for the modules whose tests discover a repository in
+/// the test process itself.
+const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests::"];
+
+/// The `test result:` line and every failed test name in a libtest run's
+/// stdout, for a failure message.
+fn libtest_report(stdout: &str) -> String {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with("test result:") || line.ends_with("... FAILED"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The passed and failed counts of a libtest run's `test result:` line.
+fn libtest_counts(stdout: &str) -> Option<(usize, usize)> {
+    let result = stdout
+        .lines()
+        .find(|line| line.starts_with("test result:"))?;
+    let count = |label: &str| {
+        result
+            .split(';')
+            .find_map(|part| part.trim().strip_suffix(label))
+            .and_then(|number| number.trim().rsplit(' ').next()?.parse().ok())
+    };
+    Some((count(" passed")?, count(" failed")?))
+}
+
+/// Every test that discovers a repository in its own process passes when
+/// the runner's environment carries another repository's `GIT_DIR` and
+/// `GIT_INDEX_FILE`, as a suite run from inside a git hook does: those
+/// suites are re-executed with the runner's environment plus both
+/// variables aimed at a decoy repository.
+#[test]
+fn discovering_tests_pass_with_a_runner_git_dir() {
+    let scratch = Scratch::new("runner-git-dir").expect("scratch");
+    let decoy = scratch.root.join("decoy");
+    fs::create_dir_all(&decoy).expect("create the decoy");
+    git_ok(&scratch, &decoy, ["init", "-q"]).expect("git init the decoy");
+    write(&decoy.join("d.txt"), b"d\n").expect("write d.txt");
+    commit_all(&scratch, &decoy, "decoy", T0).expect("commit in the decoy");
+    let git_dir = decoy.join(".git");
+
+    let exe = std::env::current_exe().expect("locate the test executable");
+    // Not `command`: the point is the runner's own environment, inherited,
+    // plus the two variables a hook would export.
+    let output = Command::new(&exe)
+        .args(DISCOVERING_SUITES)
+        .env("GIT_DIR", &git_dir)
+        .env("GIT_INDEX_FILE", git_dir.join("index"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("re-execute the discovering suites");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let counts = libtest_counts(&stdout);
+    assert!(
+        output.status.code() == Some(0) && matches!(counts, Some((passed, 0)) if passed > 0),
+        "with GIT_DIR={} the suites exited {:?}, counts (passed, failed) {counts:?}\n{}",
+        git_dir.display(),
+        output.status.code(),
+        libtest_report(&stdout)
+    );
+}
