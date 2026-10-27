@@ -30,6 +30,10 @@ impl Repo {
     /// The only gix open or discover call in wsx. Trust is mapped without a
     /// bail, so a repository of reduced trust still opens here; the refusal is
     /// wsx's own check after discovery.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the single sanctioned way wsx opens a repository; see clippy.toml"
+    )]
     fn open_gix(start: &Path) -> Result<gix::Repository, Error> {
         let trust_map = gix::sec::trust::Mapping {
             full: gix::open::Options::default_for_level(gix::sec::Trust::Full),
@@ -98,4 +102,149 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
         what: format!("canonicalize {}", path.display()),
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use gix::sec::trust::DefaultForLevel;
+
+    use super::super::testing::Scratch;
+
+    /// The trust mapping `open_gix` passes: each level's default options.
+    fn trust_map() -> gix::sec::trust::Mapping<gix::open::Options> {
+        gix::sec::trust::Mapping {
+            full: gix::open::Options::default_for_level(gix::sec::Trust::Full),
+            reduced: gix::open::Options::default_for_level(gix::sec::Trust::Reduced),
+        }
+    }
+
+    /// Default upwards-discovery options.
+    fn upwards() -> gix::discover::upwards::Options<'static> {
+        gix::discover::upwards::Options::default()
+    }
+
+    /// Calls every gix open/discover entry point `clippy.toml` bans, each
+    /// under its own expectation, so the ban list cannot go stale silently:
+    /// a renamed entry point stops compiling, and a misspelled ban path
+    /// leaves that call's expectation unfulfilled, which `-D warnings`
+    /// turns into an error. The start path does not exist, so every
+    /// discover variant fails before climbing towards the wsx checkout.
+    #[test]
+    fn banned_gix_entry_points_refuse_a_missing_path() {
+        let scratch = Scratch::new("ban-pin").expect("scratch");
+        let missing = scratch.root.join("does-not-exist");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let open = gix::open(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let open_opts = gix::open_opts(&missing, gix::open::Options::default()).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let discover = gix::discover(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let discover_opts =
+            gix::discover_opts(&missing, upwards(), gix::open::Options::default()).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let discover_env = gix::discover_with_environment_overrides(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let open_env = gix::open_with_environment_overrides(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_open = gix::ThreadSafeRepository::open(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_open_opts =
+            gix::ThreadSafeRepository::open_opts(&missing, gix::open::Options::default()).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_open_env =
+            gix::ThreadSafeRepository::open_with_environment_overrides(&missing, trust_map())
+                .is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_discover = gix::ThreadSafeRepository::discover(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_discover_opts =
+            gix::ThreadSafeRepository::discover_opts(&missing, upwards(), trust_map()).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_discover_env =
+            gix::ThreadSafeRepository::discover_with_environment_overrides(&missing).is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let ts_discover_env_opts =
+            gix::ThreadSafeRepository::discover_with_environment_overrides_opts(
+                &missing,
+                upwards(),
+                trust_map(),
+            )
+            .is_err();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's gix ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let options_open = gix::open::Options::default().open(&missing).is_err();
+        for (entry_point, refused) in [
+            ("gix::open", open),
+            ("gix::open_opts", open_opts),
+            ("gix::discover", discover),
+            ("gix::discover_opts", discover_opts),
+            ("gix::discover_with_environment_overrides", discover_env),
+            ("gix::open_with_environment_overrides", open_env),
+            ("gix::ThreadSafeRepository::open", ts_open),
+            ("gix::ThreadSafeRepository::open_opts", ts_open_opts),
+            (
+                "gix::ThreadSafeRepository::open_with_environment_overrides",
+                ts_open_env,
+            ),
+            ("gix::ThreadSafeRepository::discover", ts_discover),
+            ("gix::ThreadSafeRepository::discover_opts", ts_discover_opts),
+            (
+                "gix::ThreadSafeRepository::discover_with_environment_overrides",
+                ts_discover_env,
+            ),
+            (
+                "gix::ThreadSafeRepository::discover_with_environment_overrides_opts",
+                ts_discover_env_opts,
+            ),
+            ("gix::open::Options::open", options_open),
+        ] {
+            assert!(
+                refused,
+                "{entry_point} opened the missing path {}",
+                missing.display()
+            );
+        }
+    }
 }

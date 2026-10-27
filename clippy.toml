@@ -15,8 +15,35 @@
 # A justified exception carries `#[expect(clippy::disallowed_methods, reason =
 # "...")]` on its smallest enclosing test-only item. `expect` rather than
 # `allow`: an expectation that stops being needed becomes a warning, so the
-# exception list cannot silently outlive its reason.
+# exception list cannot silently outlive its reason. The gix group below has
+# exactly one production exception, `open_gix` in `src/git/repo.rs`, besides
+# the test-only pin of the ban list in the same file.
 disallowed-methods = [
   { path = "std::env::set_var", reason = "process-global and racy across concurrent tests and the children they spawn; scope it to the child with Command::env instead. Test-only exceptions need a reasoned expect(clippy::disallowed_methods)." },
   { path = "std::env::remove_var", reason = "process-global and racy across concurrent tests and the children they spawn; scope it to the child with Command::env_remove or Command::env_clear instead. Test-only exceptions need a reasoned expect(clippy::disallowed_methods)." },
+
+  # gix open/discover: wsx opens a repository only through `Repo::discover`
+  # (`open_gix` in `src/git/repo.rs`), which honours `GIT_DIR` and
+  # `GIT_INDEX_FILE` the way git does, and reaches sibling worktrees only
+  # through `Repository::main_repo()` and `Repository::worktrees()`. Inside a
+  # hook, any other open either ignores the hook's environment or applies it
+  # to a sibling worktree, pairing that sibling with the hook's index. These
+  # are every public open/discover entry point of gix 0.90.0; a stale path
+  # here only warns, so `banned_gix_entry_points_refuse_a_missing_path` in
+  # `src/git/repo.rs` calls each one under its own expectation, which a
+  # misspelled or renamed path leaves unfulfilled.
+  { path = "gix::open", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::open_opts", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::discover", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::discover_opts", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::discover_with_environment_overrides", reason = "a second open site with default options; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::open_with_environment_overrides", reason = "applies the hook environment to whatever path it is given, a sibling worktree included; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::open", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::open_opts", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::open_with_environment_overrides", reason = "applies the hook environment to whatever path it is given, a sibling worktree included; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::discover", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::discover_opts", reason = "ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::discover_with_environment_overrides", reason = "a second open site with default options; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::ThreadSafeRepository::discover_with_environment_overrides_opts", reason = "the sanctioned call, allowed only in open_gix (src/git/repo.rs); open through Repo::discover, and reach siblings through main_repo()/worktrees()." },
+  { path = "gix::open::Options::open", reason = "calls ThreadSafeRepository::open_opts and ignores the hook environment; open only through Repo::discover (open_gix in src/git/repo.rs), and reach siblings through main_repo()/worktrees()." },
 ]
