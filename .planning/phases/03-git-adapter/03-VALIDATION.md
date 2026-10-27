@@ -74,7 +74,7 @@ is disabled until phase 5 (STATE.md blocker).
 | GIT-02 sibling scrub + leak control | 03-05, 03-08 | `spawn::tests::{sibling_target_removes_local_env_vars, sibling_child_env_scrubbed, own_worktree_child_keeps_hook_index}` | ✅ green |
 | GIT-02 null stdin | 03-07 | `spawn::tests::children_get_null_stdin` | ✅ green |
 | GIT-02 git ≥ 2.54 | 03-05 | `spawn::tests::old_git_refused` | ✅ green |
-| GIT-02 ceiling parity | 03-10 | `repo::tests::ceiling_*` (5 tests) | ✅ green |
+| GIT-02 ceiling parity | 03-10 | `repo::tests::ceiling_*` (4 tests) + `repo::tests::starting_in_a_ceiling_that_holds_the_repository_opens_it` | ✅ green |
 | GIT-03 reftable refused | 03-06, 03-10 | `repo::tests::{reftable_repo_is_refused, empty_reftable_repo_is_refused, explicit_files_ref_storage_opens, miscased_ref_storage_is_refused_as_git_refuses_it, ref_storage_in_{global,worktree,environment}_config_does_not_refuse_a_files_repo}` | ✅ green |
 | GIT-03 harness `regression:` scenario | 03-02 | `check::reftable_refused::oracle` (Rust side disabled until phase 5) | ✅ green (oracle side) |
 | GIT-04 foreign owner | 03-09 | `repo::tests::{foreign_owner_refused, safe_directory_in_global_config_opens_a_foreign_repo, command_line_safe_directory_does_not_trust_a_foreign_repo}` | ✅ green (user-namespace path on host; root path in container) |
