@@ -28,6 +28,7 @@ impl Repo {
     /// process environment.
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
+        refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
         Repo::from_gix(repo)
     }
@@ -177,6 +178,31 @@ impl Repo {
 /// The configured `extensions.refStorage`, or `None` when it is not set.
 fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
     repo.config_snapshot().string("extensions.refStorage")
+}
+
+/// Refuses a repository git would refuse as owned by another user, before
+/// any of its configuration is acted on: unless gix's `git_dir_trust()` is
+/// `Trust::Full`, this is `Error::ForeignOwner`, naming the canonical
+/// worktree (the git dir of a bare repository) with the global-config fix
+/// git prints. gix grants full trust to a repository owned by the current
+/// user, or one a `safe.directory` entry in global or system config lists.
+/// The typed trust is checked, not gix's bail error, which is an untyped
+/// message.
+///
+/// Two divergences from git are accepted. `safe.directory` given through
+/// `-c`, `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_COUNT` is ignored by gix, so
+/// wsx refuses a repository git would open there (the stricter direction).
+/// gix honours `SUDO_UID` as the owner for any effective uid, where git does
+/// so only as root: a non-root process with `SUDO_UID` set trusts that
+/// uid's repositories.
+fn refuse_untrusted(repo: &gix::Repository) -> Result<(), Error> {
+    if repo.git_dir_trust() == gix::sec::Trust::Full {
+        Ok(())
+    } else {
+        Err(Error::ForeignOwner {
+            path: refusal_path(repo)?,
+        })
+    }
 }
 
 /// Refuses a repository whose refs are not in the files backend, read from
