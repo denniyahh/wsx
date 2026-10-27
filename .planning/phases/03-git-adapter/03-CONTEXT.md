@@ -99,6 +99,18 @@ exit-code contract (IF-01). Config and blob reads for the repo model are phase 4
 - **Scope of reads:** repo discovery plus exactly the four queries criterion 1 names (merge-base,
   ahead/behind, tree diff, range walk). Phase 4 adds its own config and blob reads.
 
+### Decided after research (orchestrator, 2026-10-26)
+These come from divergences the research found by running gix 0.90.0 next to git 2.56.0 (03-RESEARCH.md).
+They implement the decisions above and do not change them.
+- **`GIT_CEILING_DIRECTORIES` matches git.** gix searches the ceiling directory itself and git does
+  not, so wsx adds a check after discovery that refuses as not-a-repo where git would. It is tested
+  against git, with a control that opens from below the ceiling.
+- **`safe.directory` given only through `-c`/`GIT_CONFIG_COUNT` is a recorded divergence.** gix
+  reads `safe.directory` only from global and system config, so wsx refuses some repos git would
+  open; that is the safe direction. The foreign-owner refusal message prints the
+  `git config --global --add safe.directory <path>` fix git itself prints. Criterion 4 is about
+  global config, where the two agree.
+
 ### Claude's Discretion
 - File layout inside `src/git/` and the names of the wsx-owned types.
 - The exact refusal wording, as long as each message names its cause (reftable; foreign owner,
