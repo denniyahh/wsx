@@ -54,6 +54,15 @@ impl fmt::Display for ObjectId {
 pub enum Error {
     /// No repository was found from `start`; `reason` is gix's explanation.
     NotARepo { start: PathBuf, reason: String },
+    /// The repository at `path` is owned by another user and no global or
+    /// system `safe.directory` trusts it; git refuses it too.
+    ForeignOwner { path: PathBuf },
+    /// The repository at `path` stores its refs in the `format` backend
+    /// (`extensions.refStorage`), which this version of wsx cannot read.
+    Reftable { path: PathBuf, format: String },
+    /// The `git` binary reports version `found`, older than `required`
+    /// (major, minor).
+    GitTooOld { found: String, required: (u32, u32) },
     /// A `git` child exited unsuccessfully. `argv` excludes the program name;
     /// `status` is `None` when a signal killed the child.
     GitFailed {
@@ -76,6 +85,9 @@ impl fmt::Display for Error {
             Error::NotARepo { start, reason } => {
                 write!(f, "not a git repository: {} ({reason})", start.display())
             }
+            Error::ForeignOwner { .. } => f.write_str("ForeignOwner"),
+            Error::Reftable { .. } => f.write_str("Reftable"),
+            Error::GitTooOld { .. } => f.write_str("GitTooOld"),
             Error::GitFailed {
                 argv,
                 status,
@@ -108,4 +120,94 @@ fn render_argv(argv: &[OsString]) -> String {
         .map(|arg| arg.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::io;
+    use std::path::PathBuf;
+
+    use super::Error;
+
+    fn argv(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn error_messages_name_their_cause() {
+        let not_a_repo = Error::NotARepo {
+            start: PathBuf::from("/s"),
+            reason: "r".to_owned(),
+        };
+        assert_eq!(not_a_repo.to_string(), "not a git repository: /s (r)");
+
+        let foreign = Error::ForeignOwner {
+            path: PathBuf::from("/r"),
+        };
+        assert_eq!(
+            foreign.to_string(),
+            "refusing /r: it is owned by another user, and git refuses such a repository too\n\
+             To trust it, run:\n\
+             \tgit config --global --add safe.directory /r"
+        );
+
+        let reftable = Error::Reftable {
+            path: PathBuf::from("/r"),
+            format: "reftable".to_owned(),
+        };
+        assert_eq!(
+            reftable.to_string(),
+            "refusing /r: its refs use the 'reftable' storage format (extensions.refStorage); \
+             this version of wsx reads only the files backend and cannot read reftable repositories"
+        );
+
+        let too_old = Error::GitTooOld {
+            found: "2.53.0".to_owned(),
+            required: (2, 54),
+        };
+        assert_eq!(
+            too_old.to_string(),
+            "git 2.53.0 is too old: wsx needs git 2.54 or newer"
+        );
+
+        let failed = Error::GitFailed {
+            argv: argv(&["merge-base", "a", "b"]),
+            status: Some(128),
+            stderr: b"fatal: x\n".to_vec(),
+        };
+        assert_eq!(
+            failed.to_string(),
+            "git merge-base a b exited 128: fatal: x"
+        );
+
+        let failed_quietly = Error::GitFailed {
+            argv: argv(&["merge-base", "a", "b"]),
+            status: Some(1),
+            stderr: Vec::new(),
+        };
+        assert_eq!(failed_quietly.to_string(), "git merge-base a b exited 1");
+
+        let killed = Error::GitFailed {
+            argv: argv(&["merge-base", "a", "b"]),
+            status: None,
+            stderr: b"y\n".to_vec(),
+        };
+        assert_eq!(
+            killed.to_string(),
+            "git merge-base a b was killed by a signal: y"
+        );
+
+        let io = Error::Io {
+            what: "canonicalize /m".to_owned(),
+            source: io::Error::new(io::ErrorKind::NotFound, "gone"),
+        };
+        assert_eq!(io.to_string(), "canonicalize /m: gone");
+
+        let gix = Error::Gix {
+            what: "resolve x".to_owned(),
+            message: "m".to_owned(),
+        };
+        assert_eq!(gix.to_string(), "resolve x: m");
+    }
 }
