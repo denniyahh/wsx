@@ -108,7 +108,9 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
 mod tests {
     use gix::sec::trust::DefaultForLevel;
 
-    use super::super::testing::Scratch;
+    use super::super::spawn::Git;
+    use super::super::testing::{Scratch, T0, commit_all, git_ok, write};
+    use super::Repo;
 
     /// The trust mapping `open_gix` passes: each level's default options.
     fn trust_map() -> gix::sec::trust::Mapping<gix::open::Options> {
@@ -246,5 +248,38 @@ mod tests {
                 missing.display()
             );
         }
+    }
+
+    /// A repository made with `--object-format=sha256` opens through the
+    /// single entry point, and its ids come back at SHA-256 length, equal to
+    /// git's. Read as SHA-1, the id would be 40 characters, or the open
+    /// would fail.
+    #[test]
+    fn sha256_repo_opens() {
+        let scratch = Scratch::new("sha256").expect("scratch");
+        let repo_dir = scratch.root.join("repo");
+        let repo_arg = repo_dir.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &scratch.root,
+            ["init", "-q", "--object-format=sha256", repo_arg],
+        )
+        .expect("git init --object-format=sha256");
+        write(&repo_dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(&scratch, &repo_dir, "first", T0).expect("commit");
+
+        let repo = Repo::discover(&repo_dir).expect("discover a SHA-256 repository");
+        let base = repo
+            .merge_base(b"HEAD", b"HEAD")
+            .expect("merge-base HEAD HEAD")
+            .expect("HEAD is its own merge-base")
+            .to_string();
+        let head = Git::new(scratch.env.clone())
+            .run(&repo_dir, ["rev-parse", "HEAD"])
+            .expect("git rev-parse HEAD");
+        let head = String::from_utf8(head).expect("git printed UTF-8");
+
+        assert_eq!(base.len(), 64, "merge-base id {base} is not SHA-256 length");
+        assert_eq!(base, head.trim_end(), "gix and git disagree on HEAD");
     }
 }
