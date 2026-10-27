@@ -103,8 +103,44 @@ impl Repo {
     /// worktree-list calls, which switch the repository environment overrides
     /// off: inside a hook, opening a sibling by path would pair it with the
     /// hook's `GIT_DIR` and `GIT_INDEX_FILE`.
+    ///
+    /// A gix failure to list or open one is `Error::Gix`; a sibling whose
+    /// directory is gone fails canonicalisation as `Error::Io` naming it.
     pub fn siblings(&self) -> Result<Vec<Repo>, Error> {
-        Ok(Vec::new())
+        let mut opened = vec![self.repo.main_repo().map_err(|err| self.list_failed(err))?];
+        for proxy in self.repo.worktrees().map_err(|err| self.list_failed(err))? {
+            opened.push(
+                proxy
+                    .into_repo_with_possibly_inaccessible_worktree()
+                    .map_err(|err| self.list_failed(err))?,
+            );
+        }
+        let mut siblings = Vec::new();
+        for repo in opened {
+            let sibling = Repo::from_gix(repo)?;
+            let is_self = match &self.worktree {
+                Some(own) => sibling.worktree.as_ref() == Some(own),
+                None => sibling.git_dir == self.git_dir,
+            };
+            if !is_self {
+                siblings.push(sibling);
+            }
+        }
+        siblings.sort_by(|a, b| {
+            a.worktree
+                .cmp(&b.worktree)
+                .then_with(|| a.git_dir.cmp(&b.git_dir))
+        });
+        Ok(siblings)
+    }
+
+    /// The error for a gix failure to list or open this repository's
+    /// worktrees.
+    fn list_failed(&self, err: impl std::fmt::Display) -> Error {
+        Error::Gix {
+            what: format!("list worktrees of {}", self.git_dir.display()),
+            message: err.to_string(),
+        }
     }
 
     /// The object a revspec (`main`, `feat~3`, a hex id) names. A ref gix
@@ -778,5 +814,40 @@ mod tests {
     #[ignore = "child half of the hook sibling tests; runs only when re-executed"]
     fn linked_hook_siblings_child() {
         print_siblings();
+    }
+
+    /// Siblings come sorted by canonical worktree path, not in gix's order
+    /// (the main repository first, then linked worktrees by git dir): a
+    /// linked worktree at `<root>/aa` sorts before `<root>/main`, and opened
+    /// from wt2 the siblings are aa, main, wt1.
+    #[test]
+    fn siblings_are_sorted_by_worktree_path() {
+        let scratch = Scratch::new("siblings-order").expect("scratch");
+        let worktrees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let aa = scratch.root.join("aa");
+        let aa_arg = aa.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &worktrees.main,
+            ["worktree", "add", "-q", "-b", "aa", aa_arg],
+        )
+        .expect("git worktree add aa");
+
+        let repo = Repo::discover(&worktrees.wt2).expect("discover wt2");
+        let siblings: Vec<PathBuf> = repo
+            .siblings()
+            .expect("open the sibling worktrees")
+            .iter()
+            .map(|sibling| {
+                sibling
+                    .worktree()
+                    .expect("a sibling worktree")
+                    .to_path_buf()
+            })
+            .collect();
+        assert_eq!(
+            siblings,
+            [aa, worktrees.main.clone(), worktrees.wt1.clone()]
+        );
     }
 }
