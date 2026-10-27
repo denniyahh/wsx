@@ -87,6 +87,11 @@ pub enum Error {
         cwd: PathBuf,
         worktree: PathBuf,
     },
+    /// The object-store variable `name` (`GIT_OBJECT_DIRECTORY` or
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES`) is set to `value`. gix ignores
+    /// it and git honours it, so wsx's reads and its git children would use
+    /// different object stores.
+    ObjectStoreEnv { name: &'static str, value: PathBuf },
     /// `GIT_DIR` is `git_dir`, with neither `GIT_WORK_TREE` nor the
     /// repository's `core.worktree` set, while wsx runs in `cwd`, not the
     /// worktree root `worktree`. git takes `cwd` as the worktree then, and
@@ -171,6 +176,12 @@ impl fmt::Display for Error {
                 value = value.display(),
                 cwd = cwd.display(),
                 worktree = worktree.display()
+            ),
+            Error::ObjectStoreEnv { name, value } => write!(
+                f,
+                "refusing {name}={value}: this version of wsx reads objects through gix, which ignores {name}, \
+                 so it would not read the objects git reads; run wsx without {name}",
+                value = value.display()
             ),
             Error::ImplicitWorkTree {
                 git_dir,
@@ -295,6 +306,17 @@ mod tests {
             relative.to_string(),
             "refusing GIT_INDEX_FILE=i: a relative path is ambiguous in /w/s, below the worktree root /w; \
              make it absolute or run wsx from /w"
+        );
+
+        let object_store = Error::ObjectStoreEnv {
+            name: "GIT_OBJECT_DIRECTORY",
+            value: PathBuf::from("/q"),
+        };
+        assert_eq!(
+            object_store.to_string(),
+            "refusing GIT_OBJECT_DIRECTORY=/q: this version of wsx reads objects through gix, \
+             which ignores GIT_OBJECT_DIRECTORY, so it would not read the objects git reads; \
+             run wsx without GIT_OBJECT_DIRECTORY"
         );
 
         let implicit = Error::ImplicitWorkTree {

@@ -32,6 +32,7 @@ impl Repo {
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
+        refuse_object_store_env()?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
         refuse_relative_repo_env(&repo)?;
@@ -304,6 +305,31 @@ fn discovery_dir(start_dir: &Path, git_dir: &Path) -> Option<PathBuf> {
         .ancestors()
         .find(|dir| leads_to_git_dir(&dir.join(".git")) == Some(true))
         .map(Path::to_path_buf)
+}
+
+/// The object-store variables git honours and gix 0.90 ignores. Measured
+/// with git 2.56.0: `GIT_OBJECT_DIRECTORY` aimed at an empty store leaves
+/// git unable to read `HEAD`, while gix reads the repository's own store;
+/// `GIT_ALTERNATE_OBJECT_DIRECTORIES` naming another store lets git read its
+/// objects, while gix cannot.
+const OBJECT_STORE_VARS: [&str; 2] = ["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+
+/// Refuses any of `OBJECT_STORE_VARS` set in the process environment, as
+/// `Error::ObjectStoreEnv` naming the first: wsx's gix reads would use a
+/// different object store than git and its own git children. This includes
+/// a receive-pack quarantine, where git exports `GIT_OBJECT_DIRECTORY` to
+/// the `pre-receive` and `update` hooks, so wsx is refused there.
+fn refuse_object_store_env() -> Result<(), Error> {
+    match OBJECT_STORE_VARS
+        .into_iter()
+        .find_map(|name| Some((name, std::env::var_os(name)?)))
+    {
+        None => Ok(()),
+        Some((name, value)) => Err(Error::ObjectStoreEnv {
+            name,
+            value: PathBuf::from(value),
+        }),
+    }
 }
 
 /// Refuses a repository git would refuse as owned by another user, before
@@ -2402,6 +2428,171 @@ mod tests {
                     }
                 }
             }
+            Err(err) => {
+                testing::child_print("result", "refused");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
+    }
+
+    /// The variable an object-store test hands its child: the revision the
+    /// child reads.
+    const REV_VAR: &str = "WSX_TEST_REV";
+
+    /// What git and wsx each read of one revision in one repository.
+    struct ObjectRun {
+        /// `git cat-file -t <rev>` run in the repository.
+        git: Output,
+        /// `object_env_child` re-executed with the same environment.
+        child: Output,
+    }
+
+    impl ObjectRun {
+        /// Both outputs, for a failure message.
+        fn both(&self) -> String {
+            format!(
+                "{}\n{}",
+                testing::failed_run("git cat-file -t", &self.git),
+                testing::failed_run("the object-env child", &self.child)
+            )
+        }
+
+        /// The child's `result`, failing with both outputs when it printed
+        /// none.
+        fn result(&self) -> String {
+            testing::marker(&self.child, "result")
+                .unwrap_or_else(|err| panic!("{err}\n{}", self.both()))
+        }
+    }
+
+    /// Runs `git cat-file -t <rev>` and `object_env_child` in `repo` with
+    /// the scratch environment plus `extra`.
+    fn object_run(scratch: &Scratch, repo: &Path, rev: &str, extra: &[(&str, &Path)]) -> ObjectRun {
+        let mut env = scratch.env.clone();
+        env.extend(
+            extra
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into())),
+        );
+        let git = testing::git_in_env(&env, repo, ["cat-file", "-t", rev])
+            .unwrap_or_else(|err| panic!("{err}"));
+        env.push((REV_VAR.into(), rev.into()));
+        let child = testing::reexec(&child_path("object_env_child"), &env, repo, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        ObjectRun { git, child }
+    }
+
+    /// A one-commit repository at `<root>/<name>`, canonical, whose commit
+    /// holds `<name>.txt`, and that commit's id.
+    fn object_repo(scratch: &Scratch, name: &str) -> (PathBuf, String) {
+        let dir = scratch.root.join(name);
+        std::fs::create_dir_all(&dir).expect("create repo dir");
+        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
+        write(&dir.join(format!("{name}.txt")), name.as_bytes()).expect("write the file");
+        commit_all(scratch, &dir, name, T0).expect("commit");
+        let dir = dir.canonicalize().expect("canonicalize the repository");
+        let head = git_line(scratch, &dir, &["rev-parse", "HEAD"]);
+        (dir, head)
+    }
+
+    /// gix ignores `GIT_OBJECT_DIRECTORY`: with it aimed at an empty object
+    /// store, git cannot read `HEAD`'s commit, while gix would read the
+    /// repository's own store. wsx refuses the variable, naming it.
+    #[test]
+    fn git_object_directory_is_refused() {
+        let scratch = Scratch::new("object-directory").expect("scratch");
+        let (repo, _head) = object_repo(&scratch, "repo");
+        let empty = scratch.root.join("emptyobjs");
+        std::fs::create_dir_all(&empty).expect("create the empty object store");
+        let run = object_run(&scratch, &repo, "HEAD", &[("GIT_OBJECT_DIRECTORY", &empty)]);
+        assert_ne!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(run.result(), "refused", "{}", run.both());
+        let error = fact(&run.child, "error");
+        assert!(
+            error.contains(&format!("GIT_OBJECT_DIRECTORY={}", empty.display())),
+            "error: {error}"
+        );
+    }
+
+    /// Control: without `GIT_OBJECT_DIRECTORY`, git and wsx both read
+    /// `HEAD` as the same commit.
+    #[test]
+    fn the_repository_object_store_reads_like_git() {
+        let scratch = Scratch::new("object-directory-unset").expect("scratch");
+        let (repo, head) = object_repo(&scratch, "repo");
+        let run = object_run(&scratch, &repo, "HEAD", &[]);
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(run.result(), "opened", "{}", run.both());
+        assert_eq!(fact(&run.child, "commit"), head, "{}", run.both());
+    }
+
+    /// `GIT_ALTERNATE_OBJECT_DIRECTORIES` naming another repository's store
+    /// lets git read that repository's commit from this one, and gix ignores
+    /// it too (measured with gix 0.90.0: the commit stays unreadable, as in
+    /// the control below). wsx refuses the variable, naming it.
+    #[test]
+    fn alternate_object_directories_are_refused() {
+        let scratch = Scratch::new("alternate-objects").expect("scratch");
+        let (repo, _head) = object_repo(&scratch, "repo");
+        let (other, other_head) = object_repo(&scratch, "other");
+        let objects = other.join(".git/objects");
+        let run = object_run(
+            &scratch,
+            &repo,
+            &other_head,
+            &[("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects)],
+        );
+        assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(
+            String::from_utf8_lossy(&run.git.stdout).trim_end(),
+            "commit",
+            "{}",
+            run.both()
+        );
+        assert_eq!(run.result(), "refused", "{}", run.both());
+        let error = fact(&run.child, "error");
+        assert!(
+            error.contains(&format!(
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES={}",
+                objects.display()
+            )),
+            "error: {error}"
+        );
+    }
+
+    /// Control: without the variable, neither git nor wsx can read the
+    /// other repository's commit, and wsx opens the repository rather than
+    /// refuse it.
+    #[test]
+    fn another_repository_commit_is_unreadable_without_alternates() {
+        let scratch = Scratch::new("alternate-objects-unset").expect("scratch");
+        let (repo, _head) = object_repo(&scratch, "repo");
+        let (_other, other_head) = object_repo(&scratch, "other");
+        let run = object_run(&scratch, &repo, &other_head, &[]);
+        assert_ne!(run.git.status.code(), Some(0), "{}", run.both());
+        assert_eq!(run.result(), "unreadable", "{}", run.both());
+    }
+
+    /// Prints what wsx reads of `REV_VAR` in the working directory:
+    /// `result=opened` with `commit`, `result=unreadable` with `error` when
+    /// the repository opens but the revision does not read as a commit, or
+    /// `result=refused` with `error` when `Repo::discover` refuses.
+    #[test]
+    #[ignore = "child half of the object-store tests; runs only when re-executed"]
+    fn object_env_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let rev = std::env::var(REV_VAR).expect("the parent set the revision");
+        match Repo::discover(&cwd) {
+            Ok(found) => match found.resolve_commit(rev.as_bytes()) {
+                Ok(id) => {
+                    testing::child_print("result", "opened");
+                    testing::child_print("commit", id);
+                }
+                Err(err) => {
+                    testing::child_print("result", "unreadable");
+                    testing::child_print("error", err.to_string().replace('\n', "\\n"));
+                }
+            },
             Err(err) => {
                 testing::child_print("result", "refused");
                 testing::child_print("error", err.to_string().replace('\n', "\\n"));
