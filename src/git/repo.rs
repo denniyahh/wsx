@@ -25,12 +25,14 @@ pub struct Repo {
 impl Repo {
     /// Finds the repository containing `start` the way git would, honouring
     /// `GIT_DIR`, `GIT_INDEX_FILE` and `GIT_CEILING_DIRECTORIES` from the
-    /// process environment.
+    /// process environment. A relative repository-path variable is refused
+    /// below the worktree root (see `refuse_relative_repo_env`).
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
+        refuse_relative_repo_env(&repo)?;
         Repo::from_gix(repo)
     }
 
@@ -313,6 +315,51 @@ fn refuse_untrusted_sibling(repo: &gix::Repository) -> Result<(), Error> {
     } else {
         Err(Error::ForeignOwner {
             path: refusal_path(repo)?,
+        })
+    }
+}
+
+/// The repository-path variables whose relative values gix and git resolve
+/// differently below the worktree root.
+const REPO_PATH_VARS: [&str; 4] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// Refuses a relative repository-path variable when wsx runs below the
+/// worktree root. gix resolves such a value against the current directory,
+/// and git does not: measured with git 2.56.0 from `main/sub`, a relative
+/// `GIT_INDEX_FILE=alt.idx` is `main/alt.idx` to git and `main/sub/alt.idx`
+/// to gix, and with a relative `GIT_DIR=../.git` git takes `main/sub` as
+/// the worktree, where gix takes `main`; a spawn-helper child, which runs at
+/// the worktree root, then finds no repository at `../.git`. At the
+/// worktree root the two agree, and git runs hooks there, so a hook's
+/// relative `GIT_INDEX_FILE` still applies. Absolute values, and a
+/// repository without a worktree, are not checked. The current directory
+/// is the one gix resolved the values against.
+fn refuse_relative_repo_env(repo: &gix::Repository) -> Result<(), Error> {
+    let Some(workdir) = repo.workdir() else {
+        return Ok(());
+    };
+    let relative = REPO_PATH_VARS.into_iter().find_map(|name| {
+        let value = PathBuf::from(std::env::var_os(name)?);
+        (!value.as_os_str().is_empty() && value.is_relative()).then_some((name, value))
+    });
+    let Some((name, value)) = relative else {
+        return Ok(());
+    };
+    let worktree = canonical(workdir)?;
+    let cwd = canonical(repo.current_dir())?;
+    if cwd == worktree {
+        Ok(())
+    } else {
+        Err(Error::RelativeRepoEnv {
+            name,
+            value,
+            cwd,
+            worktree,
         })
     }
 }
@@ -1782,5 +1829,206 @@ mod tests {
     #[ignore = "child half of the ref-storage source tests; runs only when re-executed"]
     fn ref_storage_child() {
         print_discovery();
+    }
+
+    /// `<root>/main`, canonical, committing `a.txt` and `b.txt`, with an
+    /// empty `sub/` and two extra indexes: `main/alt.idx` holding only
+    /// `b.txt` and `main/sub/alt.idx` holding only `a.txt`.
+    fn two_index_repo(scratch: &Scratch) -> PathBuf {
+        let main = scratch.root.join("main");
+        std::fs::create_dir_all(main.join("sub")).expect("create main/sub");
+        git_ok(scratch, &main, ["init", "-q", "-b", "main"]).expect("git init");
+        write(&main.join("a.txt"), b"a\n").expect("write a.txt");
+        write(&main.join("b.txt"), b"b\n").expect("write b.txt");
+        commit_all(scratch, &main, "ab", T0).expect("commit a and b");
+        let main = main.canonicalize().expect("canonicalize main");
+        for (index, file) in [("alt.idx", "b.txt"), ("sub/alt.idx", "a.txt")] {
+            let mut env = scratch.env.clone();
+            env.push(("GIT_INDEX_FILE".into(), main.join(index).into()));
+            let output = testing::git_in_env(&env, &main, ["add", file])
+                .unwrap_or_else(|err| panic!("{err}"));
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{}",
+                testing::failed_run("git add into an extra index", &output)
+            );
+        }
+        main
+    }
+
+    /// The scratch environment plus `name=value`.
+    fn env_with(scratch: &Scratch, name: &str, value: impl Into<std::ffi::OsString>) -> Env {
+        let mut env = scratch.env.clone();
+        env.push((name.into(), value.into()));
+        env
+    }
+
+    /// The trimmed stdout of `git <args>` in `dir` with `env`, which must
+    /// exit 0.
+    fn git_line_in(env: &Env, dir: &Path, args: &[&str]) -> String {
+        let output = testing::git_in_env(env, dir, args).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git", &output)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
+    }
+
+    /// Re-executes `relative_env_child` in `cwd` with `env`, and checks it
+    /// exited 0.
+    fn relative_env_run(env: &Env, cwd: &Path) -> Output {
+        let output = testing::reexec(&child_path("relative_env_child"), env, cwd, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the relative-env child", &output)
+        );
+        output
+    }
+
+    /// Below the worktree root, git resolves a relative `GIT_INDEX_FILE`
+    /// against the worktree root (`main/alt.idx`, so `b.txt`), and gix
+    /// against the current directory (`main/sub/alt.idx`): wsx refuses it,
+    /// naming the variable, rather than read one index and write another.
+    #[test]
+    fn a_relative_index_below_the_worktree_root_is_refused() {
+        let scratch = Scratch::new("relative-index-sub").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let sub = main.join("sub");
+        let env = env_with(&scratch, "GIT_INDEX_FILE", "alt.idx");
+        assert_eq!(
+            git_line_in(&env, &sub, &["ls-files", "--full-name", ":/"]),
+            "b.txt",
+            "git reads a relative GIT_INDEX_FILE from the worktree root"
+        );
+        let absolute = env_with(&scratch, "GIT_INDEX_FILE", sub.join("alt.idx"));
+        assert_eq!(
+            git_line_in(&absolute, &sub, &["ls-files", "--full-name", ":/"]),
+            "a.txt",
+            "the index beside the current directory holds a.txt"
+        );
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "refused",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        let error = fact(&child, "error");
+        assert!(error.contains("GIT_INDEX_FILE=alt.idx"), "error: {error}");
+    }
+
+    /// Below the worktree root, git takes the current directory as the
+    /// worktree of a relative `GIT_DIR` given without `GIT_WORK_TREE`, and
+    /// gix the repository's own worktree: wsx refuses it, naming the
+    /// variable.
+    #[test]
+    fn a_relative_git_dir_below_the_worktree_root_is_refused() {
+        let scratch = Scratch::new("relative-git-dir-sub").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let sub = main.join("sub");
+        let env = env_with(&scratch, "GIT_DIR", "../.git");
+        assert_eq!(
+            git_line_in(&env, &sub, &["rev-parse", "--show-toplevel"]),
+            sub.display().to_string(),
+            "git takes the current directory as the worktree"
+        );
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "refused",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        let error = fact(&child, "error");
+        assert!(error.contains("GIT_DIR=../.git"), "error: {error}");
+    }
+
+    /// Control: at the worktree root, as in a hook, a relative
+    /// `GIT_INDEX_FILE` opens, and wsx's index and its git child both use
+    /// `main/alt.idx`, as git does.
+    #[test]
+    fn a_relative_index_at_the_worktree_root_opens_like_git() {
+        let scratch = Scratch::new("relative-index-root").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let env = env_with(&scratch, "GIT_INDEX_FILE", "alt.idx");
+        let from_git = git_line_in(&env, &main, &["ls-files", "--full-name", ":/"]);
+        assert_eq!(from_git, "b.txt");
+
+        let child = relative_env_run(&env, &main);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        assert_eq!(
+            fact(&child, "index"),
+            main.join("alt.idx").display().to_string()
+        );
+        assert_eq!(fact(&child, "git_ls_files"), from_git);
+    }
+
+    /// Control: below the worktree root, an absolute `GIT_INDEX_FILE` opens,
+    /// and wsx's index and its git child both use that file.
+    #[test]
+    fn an_absolute_index_below_the_worktree_root_opens() {
+        let scratch = Scratch::new("absolute-index-sub").expect("scratch");
+        let main = two_index_repo(&scratch);
+        let sub = main.join("sub");
+        let index = sub.join("alt.idx");
+        let env = env_with(&scratch, "GIT_INDEX_FILE", index.clone());
+
+        let child = relative_env_run(&env, &sub);
+        assert_eq!(
+            child_result(&child),
+            "opened",
+            "{}",
+            testing::failed_run("the relative-env child", &child)
+        );
+        assert_eq!(fact(&child, "index"), index.display().to_string());
+        assert_eq!(fact(&child, "git_ls_files"), "a.txt");
+    }
+
+    /// Prints what `Repo::discover` makes of the working directory:
+    /// `result=opened` with `index` and the `git ls-files --full-name :/`
+    /// a `Git::from_process` child prints in the worktree (`git_ls_files`,
+    /// comma-separated, or `git_error`), or `result=refused` with `error`.
+    #[test]
+    #[ignore = "child half of the relative-env tests; runs only when re-executed"]
+    fn relative_env_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        match Repo::discover(&cwd) {
+            Ok(found) => {
+                testing::child_print("result", "opened");
+                testing::child_print("index", found.index_path().display());
+                let worktree = found.worktree().expect("the repository has a worktree");
+                match Git::from_process(&found).run(worktree, ["ls-files", "--full-name", ":/"]) {
+                    Ok(stdout) => testing::child_print(
+                        "git_ls_files",
+                        String::from_utf8_lossy(&stdout)
+                            .lines()
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    ),
+                    Err(err) => {
+                        testing::child_print("git_error", err.to_string().replace('\n', "\\n"));
+                    }
+                }
+            }
+            Err(err) => {
+                testing::child_print("result", "refused");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
     }
 }

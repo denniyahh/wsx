@@ -76,6 +76,17 @@ pub enum Error {
         argv: Vec<OsString>,
         expected: &'static str,
     },
+    /// The repository-path variable `name` holds the relative path `value`
+    /// while wsx runs in `cwd`, below the worktree root `worktree`. gix
+    /// resolves such a value against `cwd`, and git against the worktree
+    /// root (or takes `cwd` as the worktree of a relative `GIT_DIR`), so
+    /// wsx's reads and its git children would use different files.
+    RelativeRepoEnv {
+        name: &'static str,
+        value: PathBuf,
+        cwd: PathBuf,
+        worktree: PathBuf,
+    },
     /// An operating-system call failed; `what` names the call and its subject.
     Io {
         what: String,
@@ -135,6 +146,19 @@ impl fmt::Display for Error {
                 f,
                 "git {} exited 0 but printed no {expected}",
                 render_argv(argv)
+            ),
+            Error::RelativeRepoEnv {
+                name,
+                value,
+                cwd,
+                worktree,
+            } => write!(
+                f,
+                "refusing {name}={value}: a relative path is ambiguous in {cwd}, below the worktree root {worktree}; \
+                 make it absolute or run wsx from {worktree}",
+                value = value.display(),
+                cwd = cwd.display(),
+                worktree = worktree.display()
             ),
             Error::Io { what, source } => write!(f, "{what}: {source}"),
             Error::Gix { what, message } => write!(f, "{what}: {message}"),
@@ -226,6 +250,18 @@ mod tests {
         assert_eq!(
             killed.to_string(),
             "git merge-base a b was killed by a signal: y"
+        );
+
+        let relative = Error::RelativeRepoEnv {
+            name: "GIT_INDEX_FILE",
+            value: PathBuf::from("i"),
+            cwd: PathBuf::from("/w/s"),
+            worktree: PathBuf::from("/w"),
+        };
+        assert_eq!(
+            relative.to_string(),
+            "refusing GIT_INDEX_FILE=i: a relative path is ambiguous in /w/s, below the worktree root /w; \
+             make it absolute or run wsx from /w"
         );
 
         let io = Error::Io {
