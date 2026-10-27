@@ -17,6 +17,29 @@ pub struct AheadBehind {
     pub behind: usize,
 }
 
+/// How a path differs between two trees.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeKind {
+    /// The path exists only in the second tree.
+    Added,
+    /// The path exists only in the first tree.
+    Deleted,
+    /// The path's content or executable bit changed, its entry kind did not.
+    Modified,
+    /// The path's entry kind changed between blob (plain or executable,
+    /// which count as one kind), symlink and submodule commit, as git's `T`.
+    TypeChanged,
+}
+
+/// One changed file between two trees: what changed and at which path.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TreeChange {
+    /// How the path changed.
+    pub kind: ChangeKind,
+    /// The path from the tree root, as raw bytes with `/` separators.
+    pub path: Vec<u8>,
+}
+
 impl Repo {
     /// The merge-base of `one` and `two`, or `None` when they share no
     /// history. On a criss-cross history with several best bases, this is the
@@ -81,6 +104,13 @@ impl Repo {
         .collect()
     }
 
+    /// The files that differ between the trees of `from` and `to`, sorted by
+    /// path bytes.
+    pub fn tree_diff(&self, from: &[u8], to: &[u8]) -> Result<Vec<TreeChange>, Error> {
+        let _ = (from, to);
+        Ok(Vec::new())
+    }
+
     /// The objects `revs` name, in order.
     fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
         revs.iter().map(|rev| self.resolve(rev)).collect()
@@ -103,7 +133,7 @@ mod tests {
     use super::super::ObjectId;
     use super::super::spawn::Git;
     use super::super::testing::{Scratch, criss_cross};
-    use super::{AheadBehind, Repo};
+    use super::{AheadBehind, ChangeKind, Repo, TreeChange};
 
     /// The first line of a git command's stdout, without its newline.
     fn line(stdout: Vec<u8>) -> String {
@@ -165,6 +195,65 @@ mod tests {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// git's file changes from `from` to `to`, parsed from
+    /// `git diff-tree -r --no-renames --name-status -z` and sorted by path,
+    /// then kind. A status letter other than A, D, M or T fails the test.
+    fn git_tree_diff(scratch: &Scratch, dir: &Path, from: &str, to: &str) -> Vec<TreeChange> {
+        let raw = git_stdout(
+            scratch,
+            dir,
+            &[
+                "diff-tree",
+                "-r",
+                "--no-renames",
+                "--name-status",
+                "-z",
+                from,
+                to,
+            ],
+        );
+        let mut fields: Vec<&[u8]> = raw.split(|byte| *byte == 0).collect();
+        if fields.last() == Some(&&b""[..]) {
+            fields.pop();
+        }
+        assert_eq!(
+            fields.len() % 2,
+            0,
+            "diff-tree {from} {to} printed an odd field count: {:?}",
+            String::from_utf8_lossy(&raw)
+        );
+        let mut changes: Vec<TreeChange> = fields
+            .chunks(2)
+            .map(|pair| {
+                let kind = match pair[0] {
+                    b"A" => ChangeKind::Added,
+                    b"D" => ChangeKind::Deleted,
+                    b"M" => ChangeKind::Modified,
+                    b"T" => ChangeKind::TypeChanged,
+                    other => panic!(
+                        "diff-tree {from} {to}: status {:?} in {:?}",
+                        String::from_utf8_lossy(other),
+                        String::from_utf8_lossy(&raw)
+                    ),
+                };
+                TreeChange {
+                    kind,
+                    path: pair[1].to_vec(),
+                }
+            })
+            .collect();
+        changes.sort_by(|one, two| one.path.cmp(&two.path).then(one.kind.cmp(&two.kind)));
+        changes
+    }
+
+    /// A `TreeChange` for the test's expected lists.
+    fn change(kind: ChangeKind, path: &str) -> TreeChange {
+        TreeChange {
+            kind,
+            path: path.as_bytes().to_vec(),
+        }
     }
 
     /// wsx's ids as the hex strings git prints.
@@ -389,6 +478,96 @@ mod tests {
         assert_ne!(
             moved, walked,
             "walk feat --not feat~3 against feat --not main"
+        );
+    }
+
+    #[test]
+    fn tree_diff_matches_git() {
+        let scratch = Scratch::new("tree-diff").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_gix = repo
+            .tree_diff(b"main", b"feat")
+            .expect("gix diff main feat");
+        let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat");
+        assert_eq!(
+            from_gix, from_git,
+            "diff main feat: gix against git diff-tree --no-renames"
+        );
+
+        // The rename f/x -> f/z is a deletion plus an addition, and the file
+        // p replaced by a symlink is a type change.
+        let expected = vec![
+            change(ChangeKind::Modified, "b.txt"),
+            change(ChangeKind::Deleted, "f/x"),
+            change(ChangeKind::Added, "f/z"),
+            change(ChangeKind::Deleted, "new/y"),
+            change(ChangeKind::TypeChanged, "p"),
+            change(ChangeKind::Added, "q"),
+        ];
+        assert_eq!(
+            from_gix, expected,
+            "diff main feat against the fixture's changes"
+        );
+    }
+
+    #[test]
+    fn tree_diff_changes_with_the_pair() {
+        let scratch = Scratch::new("tree-diff-moves").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let moved = repo
+            .tree_diff(b"main", b"feat~3")
+            .expect("gix diff main feat~3");
+        let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat~3");
+        assert_eq!(
+            moved, from_git,
+            "diff main feat~3: gix against git diff-tree --no-renames"
+        );
+        assert!(!moved.is_empty(), "diff main feat~3 is empty");
+
+        let main_feat = repo
+            .tree_diff(b"main", b"feat")
+            .expect("gix diff main feat");
+        assert_ne!(
+            moved, main_feat,
+            "diff main feat~3 {moved:?} against main feat {main_feat:?}"
+        );
+    }
+
+    #[test]
+    fn tree_diff_of_a_revision_with_itself_is_empty() {
+        let scratch = Scratch::new("tree-diff-self").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let from_gix = repo
+            .tree_diff(b"feat", b"feat")
+            .expect("gix diff feat feat");
+        assert_eq!(
+            from_gix,
+            Vec::<TreeChange>::new(),
+            "diff feat feat from gix"
+        );
+        let raw = git_stdout(
+            &scratch,
+            &repo_dir,
+            &[
+                "diff-tree",
+                "-r",
+                "--no-renames",
+                "--name-status",
+                "-z",
+                "feat",
+                "feat",
+            ],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&raw),
+            "",
+            "git diff-tree feat feat printed something"
         );
     }
 }
