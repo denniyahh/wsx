@@ -28,6 +28,7 @@ impl Repo {
     /// process environment.
     pub fn discover(start: &Path) -> Result<Repo, Error> {
         let repo = Repo::open_gix(start)?;
+        refuse_at_ceiling(start, &repo)?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
         Repo::from_gix(repo)
@@ -178,6 +179,57 @@ impl Repo {
 /// The configured `extensions.refStorage`, or `None` when it is not set.
 fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
     repo.config_snapshot().string("extensions.refStorage")
+}
+
+/// Refuses, as not a repository, a repository git would not have found
+/// because `GIT_CEILING_DIRECTORIES` stops its discovery first. git never
+/// searches a ceiling directory it climbs to; gix does, so it finds `<c>/.git`
+/// from below a ceiling `c`. Measured with git 2.56.0, start under `r1`:
+///
+/// | start | ceiling | git | gix |
+/// |---|---|---|---|
+/// | `r1/inner` | `r1` | not found | finds `r1/.git` |
+/// | `r1/inner/deeper` | `r1` | not found | finds `r1/.git` |
+/// | `r1/inner` | `r1/inner` | finds `r1/.git` | finds `r1/.git` (`match_ceiling_dir_or_error = false`) |
+/// | `r1/inner/deeper` | `r1/inner` | not found | not found |
+///
+/// So the refusal applies when a ceiling entry is the worktree discovery
+/// found while the start is not that worktree: discovery climbed into the
+/// ceiling. A start equal to the ceiling is searched by both. Nothing is
+/// checked when `GIT_DIR` is set (git does no discovery then) or the
+/// repository has no worktree. Entries are canonicalised; empty, relative and
+/// non-canonicalisable entries are skipped, as git ignores them. git's rule
+/// that an empty entry turns off symlink resolution for later entries is not
+/// modelled. The variable is only read here; gix applied it already.
+fn refuse_at_ceiling(start: &Path, repo: &gix::Repository) -> Result<(), Error> {
+    if std::env::var_os("GIT_DIR").is_some() {
+        return Ok(());
+    }
+    let (Some(workdir), Some(ceilings)) =
+        (repo.workdir(), std::env::var_os("GIT_CEILING_DIRECTORIES"))
+    else {
+        return Ok(());
+    };
+    let worktree = canonical(workdir)?;
+    let start_dir = canonical(start)?;
+    if start_dir == worktree {
+        return Ok(());
+    }
+    let hidden = std::env::split_paths(&ceilings)
+        .filter(|entry| entry.is_absolute())
+        .filter_map(|entry| std::fs::canonicalize(entry).ok())
+        .any(|entry| entry == worktree);
+    if hidden {
+        Err(Error::NotARepo {
+            start: start.to_path_buf(),
+            reason: format!(
+                "GIT_CEILING_DIRECTORIES stops discovery before it reaches {}, as git's does",
+                worktree.display()
+            ),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 /// Refuses a repository git would refuse as owned by another user, before
