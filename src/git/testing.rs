@@ -36,7 +36,10 @@ pub const TICK: i64 = 60;
 /// The only PATH a spawned child sees, so the host's own git is never used.
 const HERMETIC_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
-/// The scratch global git config, written to `<home>/.gitconfig`.
+/// The scratch global git config, written to `<home>/.gitconfig`. Automatic
+/// maintenance is off: git would otherwise start a detached
+/// `maintenance run --auto` after commits, which writes into the fixture while
+/// later steps walk it.
 const GLOBAL_CONFIG: &str = "\
 [user]
 \tname = Unit
@@ -47,6 +50,10 @@ const GLOBAL_CONFIG: &str = "\
 \tgpgsign = false
 [tag]
 \tgpgsign = false
+[maintenance]
+\tauto = false
+[gc]
+\tauto = 0
 ";
 
 /// `<target>/tmp`, derived from the test executable at
@@ -1122,4 +1129,52 @@ fn scrubbed_discovery_child() {
 #[ignore = "child half of a_runner_git_dir_redirects_unscrubbed_discovery; runs only when re-executed"]
 fn unscrubbed_discovery_child() {
     print_discovered_git_dir();
+}
+
+/// Whether an empty commit in `repo`, with `config` given through `-c`,
+/// starts git's background `maintenance run --auto`, read from the commit's
+/// trace2 event log.
+fn commit_starts_auto_maintenance(scratch: &Scratch, repo: &Path, config: &[&str]) -> bool {
+    let trace = scratch.root.join("commit.trace2.json");
+    let mut env = scratch.env.clone();
+    env.push(("GIT_TRACE2_EVENT".into(), trace.clone().into_os_string()));
+    let mut args: Vec<&str> = config.iter().flat_map(|pair| ["-c", *pair]).collect();
+    args.extend(["commit", "--allow-empty", "-q", "-m", "traced"]);
+    let output = command("git", repo, &env)
+        .args(&args)
+        .output()
+        .unwrap_or_else(|err| panic!("spawn git {args:?}: {err}"));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "git {args:?}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events =
+        fs::read_to_string(&trace).unwrap_or_else(|err| panic!("read {}: {err}", trace.display()));
+    events.contains(r#""maintenance","run","--auto""#)
+}
+
+#[test]
+fn fixture_commits_start_no_background_maintenance() {
+    // A detached maintenance run writes objects/maintenance.lock into the
+    // fixture while later steps (the ForeignOwned chmod -R walk) read it.
+    let scratch = Scratch::new("no-auto-maintenance").expect("scratch");
+    let repo = one_commit_repo(&scratch, "repo");
+    assert!(
+        !commit_starts_auto_maintenance(&scratch, &repo, &[]),
+        "a commit under the scratch config must not start auto maintenance"
+    );
+}
+
+#[test]
+fn auto_maintenance_start_is_visible_in_the_trace() {
+    // The counterpart: with maintenance.auto back on, the same trace shows
+    // the child, so its absence above is not a blind check.
+    let scratch = Scratch::new("auto-maintenance-on").expect("scratch");
+    let repo = one_commit_repo(&scratch, "repo");
+    assert!(
+        commit_starts_auto_maintenance(&scratch, &repo, &["maintenance.auto=true"]),
+        "a commit with maintenance.auto=true must show the maintenance child in trace2"
+    );
 }
