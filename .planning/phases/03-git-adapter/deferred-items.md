@@ -21,3 +21,31 @@ Out-of-scope discoveries logged during execution. Not fixed by the plan that fou
   `git::reads::tests` and 9 in `git::repo::tests`, six of them 03-06's reftable tests. No
   `git::spawn` or `git::testing` test fails. 03-07 changed neither `reads.rs` nor `repo.rs`;
   its re-executed children start from `env_clear()`, so they do not see the caller's `GIT_DIR`.
+- **RESOLVED in 03-10 (2026-10-27):** `testing::rerun_scrubbed` re-executes each of the 26 tests
+  that discover in the test process (16 in `git::reads::tests`, 10 in `git::repo::tests`)
+  without the variables `git rev-parse --local-env-vars` lists, whenever the runner has any.
+  Production discovery is unchanged and still honours `GIT_DIR`. With this checkout's `GIT_DIR`
+  and `GIT_INDEX_FILE` exported, `scripts/check.sh test` went from
+  `253 tests run: 229 passed, 24 failed, 50 skipped` (control, at `31697de`) to
+  `256 tests run: 256 passed, 52 skipped` (at `142a095`).
+  `git::testing::discovering_tests_pass_with_a_runner_git_dir` pins the property: it re-runs the
+  two suites with a decoy repository's `GIT_DIR` and `GIT_INDEX_FILE`. Dropping the guard from
+  one test makes it fail with `(passed, failed) = (38, 1)`. The fix lives in the tests, not in
+  `scripts/check.sh`, so a direct `cargo nextest run` is covered too.
+
+## In-process discovery tests still read the runner's global and system git config
+
+- **Found during:** 03-10, while fixing the item above.
+- **Observed:** `rerun_scrubbed` removes only the repository-local variables. The 26 tests that
+  discover in the test process still inherit `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_GLOBAL`,
+  `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM` and `GIT_CEILING_DIRECTORIES` from the runner, and
+  gix reads that global and system config when it opens a repository.
+- **Effect:** not measured. No run with a changed host config was made, so no failing test is
+  known. One case is inferred, not run: before 03-10 a host-global `extensions.refStorage`
+  would have failed the files-repository tests, as the 03-10 RED run showed for a child's
+  global config. 03-10 made wsx ignore that key, as git does. The
+  property the owner's rule asks for (configuration paths aimed at scratch) still does not hold
+  for these 26 tests; it does hold for every re-executed child and every git child.
+- **Possible fix (owner's call):** run those tests in a child with the scratch environment, as
+  the ceiling and foreign-owner tests do, or have `rerun_scrubbed` always re-execute with a
+  scratch `HOME` and `GIT_CONFIG_NOSYSTEM=1`.
