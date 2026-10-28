@@ -352,16 +352,34 @@ fn refuse_object_store_env() -> Result<(), Error> {
 /// `-c`, `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_COUNT` is ignored by gix, so
 /// wsx refuses a repository git would open there (the stricter direction).
 /// gix honours `SUDO_UID` as the owner for any effective uid, where git does
-/// so only as root: a non-root process with `SUDO_UID` set trusts that
-/// uid's repositories.
+/// so only as root; `trusted_only_through_sudo_uid` closes that gap, and in
+/// doing so also refuses a `safe.directory`-listed repository not owned by
+/// the effective uid while a non-root process has `SUDO_UID` set (the
+/// stricter direction).
 fn refuse_untrusted(repo: &gix::Repository) -> Result<(), Error> {
-    if repo.git_dir_trust() == gix::sec::Trust::Full {
+    if repo.git_dir_trust() == gix::sec::Trust::Full && !trusted_only_through_sudo_uid(repo) {
         Ok(())
     } else {
         Err(Error::ForeignOwner {
             path: refusal_path(repo)?,
         })
     }
+}
+
+/// Whether gix's full trust may rest on `SUDO_UID` alone, which git honours
+/// only as root: a non-root process with `SUDO_UID` set, and the git dir or
+/// worktree not owned by its effective uid. A path that cannot be read
+/// counts as not owned, so the answer fails closed.
+fn trusted_only_through_sudo_uid(repo: &gix::Repository) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let euid = rustix::process::geteuid();
+    if euid.is_root() || std::env::var_os("SUDO_UID").is_none() {
+        return false;
+    }
+    let owned =
+        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.uid() == euid.as_raw());
+    !owned(repo.git_dir()) || repo.workdir().is_some_and(|worktree| !owned(worktree))
 }
 
 /// Refuses a sibling whose worktree directory no longer exists, which gix
@@ -1454,6 +1472,41 @@ mod tests {
             child_result(&child),
             "foreign_owner",
             "{}",
+            testing::failed_run("the foreign-owner child", &child)
+        );
+
+        guard.restore().expect("give the repository back");
+    }
+
+    /// `SUDO_UID` naming the foreign repository's owner. git honours it only
+    /// when running as root, so wsx must open exactly when git does: refused
+    /// on a non-root host run, opened in a root container run.
+    #[test]
+    fn sudo_uid_naming_the_owner_trusts_a_foreign_repo_only_as_git_does() {
+        use std::os::unix::fs::MetadataExt;
+
+        let scratch = Scratch::new("foreign-sudo-uid").expect("scratch");
+        let (repo, mut guard) = foreign_repo(&scratch);
+        let owner = std::fs::metadata(&repo).expect("stat the repository").uid();
+        let mut env = scratch.env.clone();
+        env.push(("SUDO_UID".into(), owner.to_string().into()));
+
+        let output = testing::git_in_env(&env, &repo, ["rev-parse", "--absolute-git-dir"])
+            .expect("spawn git");
+        let expected = match output.status.code() {
+            Some(0) => "opened",
+            Some(128) => "foreign_owner",
+            other => panic!(
+                "git exited {other:?}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        };
+
+        let child = discover_in_child(&scratch, &env, &repo);
+        assert_eq!(
+            child_result(&child),
+            expected,
+            "wsx must trust a SUDO_UID-owned repository exactly when git does; {}",
             testing::failed_run("the foreign-owner child", &child)
         );
 

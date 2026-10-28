@@ -20,6 +20,10 @@ description = "Keeps personal files off shared branches while moving work betwee
 # and Zlib licenses to deny.toml. Legitimacy checked in phase 3 research
 # (Package Legitimacy Audit: OK).
 gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256", "revision"] }
+# The effective uid, safely: gix trusts a repository owned by `SUDO_UID` for
+# any effective uid, git only as root, so wsx re-checks ownership itself. Already
+# in the graph through gix and tempfile; `process` adds no crate.
+rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 # Scenario tests build scratch git trees. tempfile's TempDir removes them even
