@@ -5,10 +5,10 @@ current_phase: 3
 current_phase_name: Git adapter
 status: verifying
 stopped_at: Completed 03-10-PLAN.md
-last_updated: "2026-10-27T03:19:39.450Z"
+last_updated: "2026-10-28T00:54:22.792Z"
 last_activity: 2026-10-26
 last_activity_desc: Phase 3 execution started
-state_head: b60ac39c206dd5367c7883215fd1e7e44b90bc74
+state_head: 72a4bd48c439db86c20661f4ea50bc72a9c247d7
 progress:
   total_phases: 15
   completed_phases: 2
@@ -157,6 +157,7 @@ Recent decisions affecting current work:
 - [Phase 03]: GIT_CEILING_DIRECTORIES: refuse_at_ceiling refuses as NotARepo when a canonical ceiling entry equals the found worktree and the start differs (gix searches the ceiling dir; git does not)
 - [Phase 03]: Discovering unit tests call testing::rerun_scrubbed first: re-run without git rev-parse --local-env-vars variables when the runner has any; production discovery still honours GIT_DIR
 - [Phase 03]: extensions.refStorage is read from gix Source::Local only; git 2.56.0 ignores it in global config, config.worktree and GIT_CONFIG_COUNT
+- [Phase 3]: Review fixes (03-REVIEW-FIX it.2-3): the ceiling check compares the directory git discovery stopped in, not the worktree; GIT_DIR without a worktree setting takes git's worktree; SUDO_UID is honoured only as root (72a4bd4)
 
 ### Pending Todos
 
@@ -170,6 +171,7 @@ Recent decisions affecting current work:
 - Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
 - Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
 - Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
+- Phase 5: assign exit codes to the refusals added in phase 3 review (RelativeRepoEnv, ObjectStoreEnv incl. GIT_COMMON_DIR and receive-pack quarantine, ImplicitWorkTree, StaleWorktree, GitEmptyOutput); see 03-CONTEXT 'Decided during code review'
 
 ## Deferred Items
 

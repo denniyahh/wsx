@@ -127,6 +127,10 @@ error variants above. Phase 5 assigns an exit code to each:
   names `git worktree prune`. Phase 5 may revisit this as skip-and-report.
 - **`GitEmptyOutput`:** git printed nothing where output is required (an empty
   `--local-env-vars` list), so wsx fails closed.
+- **`SUDO_UID` is honoured only as root, as git does (72a4bd4).** gix trusts a `SUDO_UID`-owned
+  repository for any effective uid. wsx re-checks and refuses as `ForeignOwner` when a non-root
+  process has `SUDO_UID` set and does not own the git dir or worktree. In that one setup this also
+  refuses a `safe.directory`-listed foreign repository (the stricter direction).
 
 ### Claude's Discretion
 - File layout inside `src/git/` and the names of the wsx-owned types.

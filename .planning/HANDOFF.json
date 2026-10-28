@@ -89,7 +89,7 @@
       "phase": "3"
     },
     {
-      "decision": "Unclassified GIT-04 edge ('who is another user') settled by 'as git does'; SUDO_UID only stricter",
+      "decision": "Unclassified GIT-04 edge ('who is another user') settled by 'as git does'; SUDO_UID honoured only as root, as git does (72a4bd4; gix alone was looser)",
       "rationale": "Orchestrator, requirement text",
       "phase": "3"
     },
