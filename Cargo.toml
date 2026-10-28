@@ -7,6 +7,23 @@ publish = false
 description = "Keeps personal files off shared branches while moving work between a workspace branch and its worktrees"
 
 [dependencies]
+# Repository reads (discovery, merge-base, walks, tree diff) in pure Rust, with
+# no C build dependency: zlib is zlib-rs and SHA-1 is sha1dc. Pinned exactly
+# because gix ships breaking releases about monthly; each upgrade goes in its
+# own commit with the full harness. `sha1` and `sha256` because SHA-256
+# repositories are supported; `revision` for merge-base and walks. `blob-diff`
+# stays off: the tree diff uses `gix::diff::tree` with a recorder, and
+# `blob-diff` adds 14 crates and config-driven rename tracking that diverges
+# from `git diff-tree --no-renames`. No network, `worktree-mutation` or
+# `interrupt` feature: `interrupt` installs signal handlers that would compete
+# with wsx's own SIGINT handling. Its graph adds the Apache-2.0, Unicode-3.0
+# and Zlib licenses to deny.toml. Legitimacy checked in phase 3 research
+# (Package Legitimacy Audit: OK).
+gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256", "revision"] }
+# The effective uid, safely: gix trusts a repository owned by `SUDO_UID` for
+# any effective uid, git only as root, so wsx re-checks ownership itself. Already
+# in the graph through gix and tempfile; `process` adds no crate.
+rustix = { version = "1.1.5", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 # Scenario tests build scratch git trees. tempfile's TempDir removes them even

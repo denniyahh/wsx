@@ -1,44 +1,44 @@
 ---
 gsd_state_version: "1.0"
 milestone: v0.1.0
-current_phase: 3
-current_phase_name: Git adapter
+current_phase: 4
+current_phase_name: Repo model
 status: planning
-stopped_at: Phase 2 complete, ready to plan Phase 3
-last_updated: "2026-10-26T21:46:19.447Z"
-last_activity: 2026-10-26
-last_activity_desc: Phase 2 complete, transitioned to Phase 3
-state_head: d50053d1555130fdbeb0c5d4c24e6c3f99dfb9f8
+stopped_at: Phase 3 complete, ready to plan Phase 4
+last_updated: "2026-10-28T00:58:41.428Z"
+last_activity: 2026-10-27
+last_activity_desc: Phase 3 complete, transitioned to Phase 4
+state_head: 8084df70aacc697a40e2d3cf0dc453a495ebf038
 progress:
   total_phases: 15
-  completed_phases: 2
-  total_plans: 22
-  completed_plans: 22
-  percent: 13
+  completed_phases: 3
+  total_plans: 32
+  completed_plans: 32
+  percent: 20
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-26)
+See: .planning/PROJECT.md (updated 2026-10-27)
 
 **Core value:** wsx must never let a personal file reach a shared branch or PR, and must never lose work while moving it between the workspace branch, feature worktrees and PR branches.
-**Current focus:** Phase 3 — Git adapter
+**Current focus:** Phase 4 — Repo model
 
 ## Current Position
 
-Phase: 3 — Git adapter
+Phase: 4 — Repo model
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-26 — Phase 2 complete, transitioned to Phase 3
+Last activity: 2026-10-27 — Phase 3 complete, transitioned to Phase 4
 
-Progress: [█░░░░░░░░░] 13%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 22
+- Total plans completed: 32
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -48,6 +48,7 @@ Progress: [█░░░░░░░░░] 13%
 |-------|-------|-------|----------|
 | 1 | 7 | - | - |
 | 2 | 15 | - | - |
+| 3 | 10 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -79,6 +80,16 @@ Progress: [█░░░░░░░░░] 13%
 | Phase 02 P13 | 4min | 2 tasks | 1 files |
 | Phase 02 P14 | 10min | 2 tasks | 1 files |
 | Phase 02 P15 | 7 min | 2 tasks | 4 files |
+| Phase 03 P01 | 13 min | 2 tasks | 9 files |
+| Phase 03 P02 | 2 min | 2 tasks | 2 files |
+| Phase 03 P03 | 9 min | 3 tasks | 1 files |
+| Phase 03 P04 | 4 min | 2 tasks | 2 files |
+| Phase 03 P05 | 6 min | 2 tasks | 2 files |
+| Phase 03 P06 | 3 min | 2 tasks | 1 files |
+| Phase 03 P07 | 8 min | 3 tasks | 3 files |
+| Phase 03 P08 | 8min | 3 tasks | 3 files |
+| Phase 03 P09 | 5min | 2 tasks | 2 files |
+| Phase 03 P10 | 17min | 4 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -131,6 +142,24 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-15: harn06_gaps names an untagged HARN-06 kind once (not per action); ORACLE_ACTIONS lists 19 (kind, action) pairs that need an oracle-recorded scenario
 - [Phase 02]: 02-15: vendored oracle file modes are checked from the git index (git ls-files -s) in provenance.rs; every scenario module must register a scenario
 - [Phase 03]: Owner 2026-10-26: planning granularity stays `fine` for phase 3 onward (question carried from the phase 2 pause; config unchanged)
+- [Phase 03]: 03-01: merge-base control pairs main/feat~3 (F1) with main~2/feat (C1); git's single base for main/feat on the criss-cross fixture is F1, so comparing against it cannot catch a constant
+- [Phase 03]: 03-01: gix-protocol/gix-transport are unconditional gix 0.90.0 deps; the no-network check asserts gix-transport has only its empty default feature and no client crate (gix-credentials, curl, reqwest) is in the tree
+- [Phase 03]: 03-02: the oracle's record on reftable is verdict(0), observed through the harness (exit 0, refs unchanged); it matches RESEARCH's scratch prediction
+- [Phase 03]: 03-03: ahead_behind is built on range_walk (two hidden gix walks counted by set size), so the two reads cannot disagree; walk results are BTreeSet<ObjectId>, no order promised
+- [Phase 03]: 03-03: tree_diff drops tree-mode records and maps a mode change to TypeChanged only across blob/symlink/submodule; an executable-bit change alone is Modified, pinned against git by an added exec-bit test
+- [Phase 03]: The sanctioned gix discover_with_environment_overrides_opts is itself on the clippy ban list, so open_gix's expect holds only while the ban does and a second call anywhere fails the gate
+- [Phase 03]: 03-05: git version check and --local-env-vars list are cached per helper, not per process (each helper resolves git via its own snapshot's PATH); production builds one helper per process
+- [Phase 03]: 03-05: own-versus-other worktree is exact canonical equality, never a prefix test, because wsx nests sibling worktrees inside its own worktree directory
+- [Phase 03]: 03-06: the reftable backstop maps on gix_error is_unsupported(), observed true for the reftable HEAD decode error and false for a missing branch; no message-text match
+- [Phase 03]: An empty --local-env-vars list fails closed as the new Error::GitEmptyOutput (GitFailed would render 'exited 0', which does not name the cause)
+- [Phase 03]: testing::reexec is the re-exec harness for 03-08..03-10: parents assert a WSXCHILD marker line, never the exit status alone
+- [Phase 03]: 03-08: Repo::siblings opens other worktrees only via gix main_repo()/worktrees(), sorted by canonical worktree path; with_removal_disabled is cfg(test) only and skips the whole removal branch
+- [Phase 03]: 03-09: ForeignOwner carries the canonical worktree (git dir if bare); git prints the same path, so the fix lines are equal
+- [Phase 03]: 03-09: refuse_untrusted refuses unless gix git_dir_trust() is Trust::Full, before refuse_ref_storage; -c/GIT_CONFIG_COUNT safe.directory and SUDO_UID divergences documented
+- [Phase 03]: GIT_CEILING_DIRECTORIES: refuse_at_ceiling refuses as NotARepo when a canonical ceiling entry equals the found worktree and the start differs (gix searches the ceiling dir; git does not)
+- [Phase 03]: Discovering unit tests call testing::rerun_scrubbed first: re-run without git rev-parse --local-env-vars variables when the runner has any; production discovery still honours GIT_DIR
+- [Phase 03]: extensions.refStorage is read from gix Source::Local only; git 2.56.0 ignores it in global config, config.worktree and GIT_CONFIG_COUNT
+- [Phase 3]: Review fixes (03-REVIEW-FIX it.2-3): the ceiling check compares the directory git discovery stopped in, not the worktree; GIT_DIR without a worktree setting takes git's worktree; SUDO_UID is honoured only as root (72a4bd4)
 
 ### Pending Todos
 
@@ -140,9 +169,11 @@ Recent decisions affecting current work:
 ### Blockers/Concerns
 
 - Phase 12: MIG-03 covers the 0.1.0 projects on the owner's work PC, which are not on this machine (checked 2026-10-20); their expected results must be recorded and checked there
-- Phase 3: gix 0.89 method names are unverified against a stale crate-status item (research/SUMMARY.md, Gaps); spike at phase start
 - Until Phase 15, this repo's own PR cuts still use `scripts/workspace/cut-pr-branch.sh`, which is untested here (research/DEVFLOW-SETUP.md section 5)
 - Phases 5-10: each phase that enables a Rust side must pin wsx's own refusal stderr (`rust_stderr`; the registry rule enforces it) and keep the comparator's checkout/config checks green; no wsx side has run as an enabled scenario yet (Phase 2 verification)
+- Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
+- Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
+- Phase 5: assign exit codes to the refusals added in phase 3 review (RelativeRepoEnv, ObjectStoreEnv incl. GIT_COMMON_DIR and receive-pack quarantine, ImplicitWorkTree, StaleWorktree, GitEmptyOutput); see 03-CONTEXT 'Decided during code review'
 
 ## Deferred Items
 
@@ -154,6 +185,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T23:45:00.000Z
-Stopped at: Session resumed, proceeding to /gsd-autonomous --only 3 in .worktrees/phase-3 (feature/phase-3)
+Last session: 2026-10-27T03:19:39.252Z
+Stopped at: Phase 3 complete, ready to plan Phase 4
 Resume file: None

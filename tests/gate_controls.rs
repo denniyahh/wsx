@@ -6,8 +6,18 @@
 //!   cargo-llvm-cov never installs a toolchain component.
 //! - The nextest pin is checked on the binary cargo runs, not on another copy
 //!   found by a different search (T-01-07).
+//! - A checkout's `.tools/bin` wins over a shadowing nextest earlier on PATH,
+//!   with the counterpart showing the same shadow is refused without it.
+//! - A stale nextest in `.tools/bin` is refused with a fix that installs into
+//!   `.tools/bin`; without one, the fix is the plain install command.
+//! - A stale nextest in `$CARGO_HOME/bin`, which cargo searches first while it
+//!   is not on PATH, is refused with the plain install command naming that
+//!   directory, even with a pinned `.tools/bin`; with `$CARGO_HOME/bin` on
+//!   PATH, the `.tools/bin` copy runs.
 //! - `scripts/check-in-container.sh` gates the checkout that holds it, not the
 //!   caller's working directory.
+//! - It hides the checkout's `.tools` from the container, with the
+//!   counterpart that a checkout without one gets no mask.
 //! - A filter that matches nothing fails even with `NEXTEST_NO_TESTS=pass`
 //!   (HARN-04), with the bare-nextest counterpart showing that the env var
 //!   would otherwise turn it green.
@@ -70,14 +80,33 @@ fn minimal_path(name: &str, tools: &[&str]) -> PathBuf {
     dir
 }
 
-fn check_sh() -> PathBuf {
-    Path::new(REPO_ROOT).join("scripts/check.sh")
+/// A scratch checkout holding copies of the gate scripts and the toolchain
+/// pin, unique per caller. check.sh puts its checkout's `.tools/bin` first on
+/// PATH, so a test that sets PATH itself runs a copy: in this checkout a
+/// developer's installed tools would join the PATH the test controls.
+fn scratch_checkout(name: &str) -> PathBuf {
+    let checkout = fresh_dir(name);
+    fs::create_dir_all(checkout.join("scripts")).expect("create the scratch scripts dir");
+    for file in [
+        "scripts/check.sh",
+        "scripts/install-tools.sh",
+        "rust-toolchain.toml",
+    ] {
+        fs::copy(Path::new(REPO_ROOT).join(file), checkout.join(file))
+            .unwrap_or_else(|err| panic!("copy {file}: {err}"));
+    }
+    checkout
+}
+
+/// check.sh in a scratch checkout named `name` (see `scratch_checkout`).
+fn check_sh(name: &str) -> PathBuf {
+    scratch_checkout(name).join("scripts/check.sh")
 }
 
 /// Runs `check.sh <target>` with `PATH` set to `path_dir` alone.
-fn check_sh_with_path(target: &str, path_dir: &Path) -> Output {
+fn check_sh_with_path(name: &str, target: &str, path_dir: &Path) -> Output {
     Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh(name))
         .arg(target)
         .env("PATH", path_dir)
         .output()
@@ -89,7 +118,7 @@ fn check_sh_with_path(target: &str, path_dir: &Path) -> Output {
 fn assert_missing_tool_named(target: &str, present: &[&str], missing: &str) {
     let dir_name = format!("missing-tool-{target}-{missing}");
     let path_dir = minimal_path(&dir_name, present);
-    let output = check_sh_with_path(target, &path_dir);
+    let output = check_sh_with_path(&format!("{dir_name}-checkout"), target, &path_dir);
     let stdout = text(output.stdout, "check.sh stdout");
     let stderr = text(output.stderr, "check.sh stderr");
 
@@ -206,7 +235,7 @@ fn coverage_runs_cargo_llvm_cov_with_setup_disabled() {
     let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
 
     let output = Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh("coverage-setup-checkout"))
         .args(["coverage", "-E", "test(=some::test)"])
         .env("PATH", path)
         .env_remove("CARGO_LLVM_COV_SETUP")
@@ -283,7 +312,7 @@ fn nextest_pin_is_checked_on_the_binary_cargo_runs() {
     let path = env::join_paths([&stub_dir, &cargo_home_bin, &tools]).expect("join PATH");
 
     let output = Command::new("/bin/bash")
-        .arg(check_sh())
+        .arg(check_sh("cargo-resolution-checkout"))
         .arg("test")
         .env("PATH", path)
         .env("CARGO_HOME", &cargo_home)
@@ -309,6 +338,275 @@ fn nextest_pin_is_checked_on_the_binary_cargo_runs() {
     assert!(
         !stdout.contains("check.sh: test OK"),
         "check.sh test must not report success, got stdout {stdout:?}"
+    );
+}
+
+/// A stand-in for the pinned nextest installed in a checkout's `.tools/bin`.
+/// Version queries, direct or through cargo, go to the real pinned binary;
+/// anything else stands in for a test run that runs nothing and exits 0.
+fn repo_tools_nextest_stub(real: &Path) -> String {
+    format!(
+        "#!/bin/bash\n\
+         if [ \"$1\" = --version ] || [ \"$2\" = --version ]; then exec '{}' \"$@\"; fi\n\
+         echo \"REPO-TOOLS cargo-nextest ran: $*\"\n",
+        real.display()
+    )
+}
+
+/// A scratch checkout (see `scratch_checkout`) with a shadowing
+/// `cargo-nextest`, a package manager's newer build, ahead of everything else
+/// on PATH. Returns the checkout and that PATH.
+fn shadowed_nextest_checkout(name: &str) -> (PathBuf, std::ffi::OsString) {
+    let checkout = scratch_checkout(&format!("{name}-checkout"));
+    let stub_dir = fresh_dir(&format!("{name}-shadow"));
+    let real = on_path("cargo-nextest");
+    let stub = stub_dir.join("cargo-nextest");
+    fs::write(&stub, nextest_stub(&real)).expect("write shadowing cargo-nextest stub");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    let tools = minimal_path(
+        &format!("{name}-tools"),
+        &["bash", "cargo", "rustc", "dirname"],
+    );
+    let path = env::join_paths([&stub_dir, &tools]).expect("join PATH");
+    (checkout, path)
+}
+
+fn checkout_check_sh_test(
+    checkout: &Path,
+    path: &std::ffi::OsStr,
+) -> (Option<i32>, String, String) {
+    // An empty CARGO_HOME: cargo puts $CARGO_HOME/bin first when it is absent
+    // from PATH, so a runner's own installed nextest (the container's
+    // /usr/local/cargo/bin) would otherwise beat both stand-ins.
+    let cargo_home = checkout.join(".cargo-home");
+    fs::create_dir_all(&cargo_home).expect("create the empty CARGO_HOME");
+    // No inherited WSX_TOOLS_DIR: an outer check.sh run from a checkout with
+    // .tools/bin exports it, and the scratch checkout's hints must not name
+    // that checkout's directory.
+    let output = Command::new("/bin/bash")
+        .arg(checkout.join("scripts/check.sh"))
+        .arg("test")
+        .env("PATH", path)
+        .env("CARGO_HOME", &cargo_home)
+        .env_remove("WSX_TOOLS_DIR")
+        .output()
+        .expect("spawn /bin/bash scripts/check.sh test in the scratch checkout");
+    (
+        output.status.code(),
+        text(output.stdout, "check.sh stdout"),
+        text(output.stderr, "check.sh stderr"),
+    )
+}
+
+#[test]
+fn repo_tools_dir_wins_over_a_shadowing_nextest() {
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-wins");
+    let repo_tools = checkout.join(".tools/bin");
+    fs::create_dir_all(&repo_tools).expect("create .tools/bin");
+    let pinned = repo_tools.join("cargo-nextest");
+    fs::write(&pinned, repo_tools_nextest_stub(&on_path("cargo-nextest")))
+        .expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).expect("chmod pinned stub");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "check.sh test must run the checkout's .tools/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("REPO-TOOLS cargo-nextest ran: nextest run"),
+        "the .tools/bin nextest must be the one cargo runs, got stdout {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("STUB cargo-nextest ran"),
+        "the shadowing nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn shadowing_nextest_is_refused_without_a_repo_tools_dir() {
+    // The counterpart: the same checkout and PATH with no .tools/bin, so the
+    // shadowing build is the one cargo would run and the pin check refuses it.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-absent");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the shadowing nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stub'"),
+        "the refusal must name the shadowing version, got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("STUB cargo-nextest ran"),
+        "the shadowing nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+/// A stand-in for a stale nextest left in a checkout's `.tools/bin`: every
+/// version query, direct or through cargo, reports a version that is not the
+/// pin; anything else stands in for a test run that runs nothing and exits 0.
+const STALE_NEXTEST_STUB: &str = "#!/bin/bash\n\
+     if [ \"$1\" = --version ] || [ \"$2\" = --version ]; then\n\
+     \x20   echo 'cargo-nextest 0.0.0-stale'; exit 0\n\
+     fi\n\
+     echo \"STALE cargo-nextest ran: $*\"\n";
+
+#[test]
+fn stale_repo_tools_nextest_hint_installs_into_repo_tools() {
+    // A stale nextest in .tools/bin shadows any install into cargo's bin, so
+    // the refusal's fix must install into .tools/bin, or following it changes
+    // nothing.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-stale");
+    let repo_tools = checkout.join(".tools/bin");
+    fs::create_dir_all(&repo_tools).expect("create .tools/bin");
+    let stale = repo_tools.join("cargo-nextest");
+    fs::write(&stale, STALE_NEXTEST_STUB).expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).expect("chmod stale stub");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the stale .tools/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stale'"),
+        "the refusal must name the stale version, got stderr {stderr:?}"
+    );
+    let hint = format!(
+        "run WSX_TOOLS_DIR={} scripts/install-tools.sh install cargo-nextest",
+        repo_tools.display()
+    );
+    assert!(
+        stderr.contains(&hint),
+        "the fix must install into .tools/bin ({hint:?}), got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("STALE cargo-nextest ran"),
+        "the stale nextest must never run, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn shadowing_nextest_hint_names_no_tools_dir_without_one() {
+    // The counterpart: with no .tools/bin, cargo's bin is the right place to
+    // install, so the fix is the plain install command and names no .tools.
+    let (checkout, path) = shadowed_nextest_checkout("repo-tools-absent-hint");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the shadowing nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("; run scripts/install-tools.sh install cargo-nextest"),
+        "the fix must be the plain install command, got stderr {stderr:?}"
+    );
+    assert!(
+        !stderr.contains(".tools"),
+        "the fix must not name a .tools directory, got stderr {stderr:?}"
+    );
+}
+
+/// A scratch checkout whose `.tools/bin` holds a nextest that reports the
+/// pin, and whose `CARGO_HOME` (`<checkout>/.cargo-home`, the one
+/// `checkout_check_sh_test` passes) holds a stale one in `bin`, with a PATH of
+/// the plain tools only: `$CARGO_HOME/bin` is not on it, so cargo searches
+/// that directory first (cargo#11020). Returns the checkout, that
+/// `$CARGO_HOME/bin` and the PATH.
+fn stale_cargo_home_checkout(name: &str) -> (PathBuf, PathBuf, std::ffi::OsString) {
+    let checkout = scratch_checkout(&format!("{name}-checkout"));
+    let repo_tools = checkout.join(".tools/bin");
+    let cargo_home_bin = checkout.join(".cargo-home/bin");
+    for dir in [&repo_tools, &cargo_home_bin] {
+        fs::create_dir_all(dir).unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
+    }
+    let pinned = repo_tools.join("cargo-nextest");
+    fs::write(&pinned, repo_tools_nextest_stub(&on_path("cargo-nextest")))
+        .expect("write .tools/bin/cargo-nextest");
+    fs::set_permissions(&pinned, fs::Permissions::from_mode(0o755)).expect("chmod pinned stub");
+    let stale = cargo_home_bin.join("cargo-nextest");
+    fs::write(&stale, STALE_NEXTEST_STUB).expect("write $CARGO_HOME/bin/cargo-nextest");
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).expect("chmod stale stub");
+    let tools = minimal_path(
+        &format!("{name}-tools"),
+        &["bash", "cargo", "rustc", "dirname"],
+    );
+    (checkout, cargo_home_bin, tools.into_os_string())
+}
+
+#[test]
+fn stale_cargo_home_nextest_hint_installs_into_cargo_home() {
+    // .tools/bin already holds the pin, so installing there again changes
+    // nothing: cargo ran the stale copy in $CARGO_HOME/bin, which it searches
+    // before PATH while that directory is not on PATH. The fix must name that
+    // directory and be the plain install command, which installs there.
+    let (checkout, cargo_home_bin, path) = stale_cargo_home_checkout("cargo-home-stale");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "check.sh test must refuse the stale $CARGO_HOME/bin nextest; \
+         stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("reports 'cargo-nextest 0.0.0-stale'"),
+        "the refusal must name the stale version, got stderr {stderr:?}"
+    );
+    assert!(
+        stderr.contains(&cargo_home_bin.display().to_string()),
+        "the refusal must name $CARGO_HOME/bin ({}), got stderr {stderr:?}",
+        cargo_home_bin.display()
+    );
+    assert!(
+        stderr.contains("; run scripts/install-tools.sh install cargo-nextest"),
+        "the fix must be the plain install command, got stderr {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("WSX_TOOLS_DIR="),
+        "the fix must not install into .tools/bin, got stderr {stderr:?}"
+    );
+    assert!(
+        !stdout.contains("ran: nextest run"),
+        "no nextest may run after a refused pin, got stdout {stdout:?}"
+    );
+}
+
+#[test]
+fn repo_tools_nextest_wins_when_cargo_home_bin_is_on_path() {
+    // The counterpart: the same checkout with $CARGO_HOME/bin on PATH, after
+    // the plain tools. cargo then follows PATH order, check.sh's .tools/bin
+    // comes first, and its pinned nextest is the one that runs.
+    let (checkout, cargo_home_bin, tools) = stale_cargo_home_checkout("cargo-home-on-path");
+    let path = env::join_paths([PathBuf::from(tools), cargo_home_bin]).expect("join PATH");
+
+    let (code, stdout, stderr) = checkout_check_sh_test(&checkout, &path);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "check.sh test must run the .tools/bin nextest; stdout: {stdout:?}; stderr: {stderr:?}"
+    );
+    assert!(
+        stdout.contains("REPO-TOOLS cargo-nextest ran: nextest run"),
+        "the .tools/bin nextest must be the one cargo runs, got stdout {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("STALE cargo-nextest ran"),
+        "the stale nextest must never run, got stdout {stdout:?}"
     );
 }
 
@@ -355,8 +653,10 @@ fn no_match_filter_fails_even_when_env_allows_no_tests() {
         text(bare.stderr, "nextest stderr")
     );
 
+    // This checkout's own check.sh, not a scratch copy: the nested run needs
+    // the real manifest, and it keeps the caller's PATH.
     let gated = nested_nextest_command("/bin/bash", &target_dir)
-        .arg(check_sh())
+        .arg(Path::new(REPO_ROOT).join("scripts/check.sh"))
         .args(["test", "-E", NO_MATCH_FILTER])
         .output()
         .expect("spawn /bin/bash scripts/check.sh test");
@@ -485,16 +785,25 @@ fn fixture_repo(repo: &Path, image: &str) {
     );
 }
 
-#[test]
-fn container_gate_mounts_its_own_checkout_not_the_callers() {
+/// The image a `container_gate_args` fixture's own Dockerfile pins.
+const OWN_IMAGE: &str = "example/own:1.0.0-1-trixie";
+
+/// Runs a copy of `check-in-container.sh fmt` from a caller repository, with
+/// a stub docker that records its arguments, and returns the canonical root
+/// of the checkout holding the copy and the recorded arguments, one per line.
+/// With `tools_dir`, that checkout holds a `.tools/bin` directory, as after
+/// `WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh install ...`.
+fn container_gate_args(name: &str, tools_dir: bool) -> (PathBuf, String) {
     // Fixture repositories rather than this checkout: they are owned by the
     // test's user, so git trusts them inside the container as well.
-    let root = fresh_dir("container-gate");
+    let root = fresh_dir(name);
     let own = root.join("own");
     let caller = root.join("caller");
-    let own_image = "example/own:1.0.0-1-trixie";
-    fixture_repo(&own, own_image);
+    fixture_repo(&own, OWN_IMAGE);
     fixture_repo(&caller, "example/caller:1.0.0-1-trixie");
+    if tools_dir {
+        fs::create_dir_all(own.join(".tools/bin")).expect("create the fixture .tools/bin");
+    }
     let script = own.join("scripts/check-in-container.sh");
     fs::create_dir_all(own.join("scripts")).expect("create fixture scripts dir");
     fs::copy(
@@ -534,19 +843,60 @@ fn container_gate_mounts_its_own_checkout_not_the_callers() {
     );
 
     let args = fs::read_to_string(&log).expect("read docker stub log");
+    let own_root = fs::canonicalize(&own).expect("canonicalize fixture repo");
+    (own_root, args)
+}
+
+#[test]
+fn container_gate_mounts_its_own_checkout_not_the_callers() {
+    let (own_root, args) = container_gate_args("container-gate", false);
     let mount = args
         .lines()
         .find_map(|arg| arg.strip_suffix(":/workspace:ro"))
         .unwrap_or_else(|| panic!("no read-only /workspace mount in docker args {args:?}"));
-    let own_root = fs::canonicalize(&own).expect("canonicalize fixture repo");
     assert_eq!(
         Path::new(mount),
         own_root,
         "the gate must mount the checkout holding the script, not the caller's"
     );
     assert!(
-        args.lines().any(|arg| arg == own_image),
+        args.lines().any(|arg| arg == OWN_IMAGE),
         "the image must come from the script's own Dockerfile, got docker args {args:?}"
+    );
+}
+
+/// The `--tmpfs` mount that hides the checkout's `.tools` in the container.
+const TOOLS_MASK: [&str; 2] = ["--tmpfs", "/workspace/.tools:ro"];
+
+/// Whether the recorded docker `args` hold `TOOLS_MASK` as consecutive
+/// arguments.
+fn masks_tools(args: &str) -> bool {
+    args.lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| pair == TOOLS_MASK)
+}
+
+#[test]
+fn container_gate_masks_a_checkout_tools_dir() {
+    // check.sh puts /workspace/.tools/bin first on PATH, so without the mask
+    // the container would run the host's tools ahead of the pinned,
+    // checksum-verified builds it installs.
+    let (_own_root, args) = container_gate_args("container-gate-tools", true);
+    assert!(
+        masks_tools(&args),
+        "a checkout with .tools must get {TOOLS_MASK:?}, got docker args {args:?}"
+    );
+}
+
+#[test]
+fn container_gate_adds_no_tools_mask_without_a_tools_dir() {
+    // The counterpart: docker cannot create a mount point inside the
+    // read-only bind, so a checkout without .tools gets no mask.
+    let (_own_root, args) = container_gate_args("container-gate-no-tools", false);
+    assert!(
+        !args.lines().any(|arg| arg.contains("/workspace/.tools")),
+        "a checkout without .tools must get no .tools mount, got docker args {args:?}"
     );
 }
 

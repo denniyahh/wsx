@@ -7,6 +7,8 @@
 
 use std::process::ExitCode;
 
+mod git;
+
 /// Exit code for input the CLI does not accept.
 const EXIT_USAGE: u8 = 2;
 

@@ -1,4 +1,4 @@
-//! Divergence-check scenarios (plans 02-07 and 02-13).
+//! Divergence-check scenarios (plans 02-07, 02-13 and 03-02).
 //!
 //! Each scenario runs the check that the workspace branch differs from the
 //! integration branch only in the paths its manifests allow, and states the
@@ -293,10 +293,63 @@ fn no_gsd_custom_personal_path() -> Scenario {
     .harn06(CaseKind::NoGsd)
 }
 
+/// Fixture step: `work` is migrated to the reftable ref backend. The step
+/// then asks git which backend `work` uses and fails unless the answer is
+/// `reftable`, so a migration that silently did nothing cannot leave the
+/// scenario running on the files backend.
+fn to_reftable(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.git_ok(WORK, ["refs", "migrate", "--ref-format=reftable"])?;
+    let format = fixture.git_ok(WORK, ["rev-parse", "--show-ref-format"])?;
+    if format == b"reftable\n" {
+        Ok(())
+    } else {
+        Err(format!(
+            "after git refs migrate, work reports ref format {:?}, not reftable",
+            String::from_utf8_lossy(&format)
+        ))
+    }
+}
+
+/// Why wsx refuses a reftable repository on purpose.
+const REFTABLE_REASON: &str = "gix cannot read reftable refs; wsx refuses a reftable repository with a message naming reftable";
+
+/// GIT-03 `regression:`, a guard with both controls (HARN-05). The subject
+/// is the devflow preset with `work` migrated to reftable. wsx refuses it
+/// (exit 1 is a placeholder until IF-01 fixes the exit code in phase 5),
+/// and the oracle's record is what the vendored check was observed to do on
+/// the same repository.
+///
+/// The known-positive control is the files-backend preset with an undeclared
+/// `notes/todo.md`, which must be refused with its pinned oracle stderr. The
+/// clean control is the unmodified files-backend preset, which must pass:
+/// the reftable subject's only difference from it is the ref backend.
+fn reftable_refused() -> Scenario {
+    Scenario::new(
+        "reftable_refused",
+        check_in_work(RepoConfig::devflow(), to_reftable)
+            .expect(verdict(1))
+            .class(Class::Regression {
+                reason: REFTABLE_REASON,
+            })
+            .oracle(OracleSide::Recorded(verdict(0))),
+    )
+    .control(
+        Role::KnownPositive,
+        check_in_work(RepoConfig::devflow(), add_note)
+            .expect(verdict(1))
+            .oracle_stderr(UNDECLARED_NOTE),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+}
+
 scenarios! {
     self_test: oracle, rust = "Rust side not enabled until phase 5";
     quoted_personal_names: oracle, rust = "Rust side not enabled until phase 5";
     fork_layout: oracle, rust = "Rust side not enabled until phase 5";
     no_gsd_repo: oracle, rust = "Rust side not enabled until phase 5";
     no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 5";
+    reftable_refused: oracle, rust = "Rust side not enabled until phase 5";
 }

@@ -139,10 +139,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Git adapter
 
-- [ ] **GIT-01**: History-changing operations (merge, cherry-pick, branch and worktree creation, commit, fetch) go through the `git` binary, so the user's hooks, signing, merge drivers and credentials apply. Read-only analysis uses gix
-- [ ] **GIT-02**: Child git processes get the repo-local variables `git rev-parse --local-env-vars` lists removed when they target another worktree, plus a null stdin. wsx resolves its own worktree and common dir correctly when a hook exports `GIT_DIR`/`GIT_INDEX_FILE`
-- [ ] **GIT-03**: A reftable repo is refused with a clear message (gix 0.89 can't open it; a `regression:` scenario)
-- [ ] **GIT-04**: A repo owned by another user is refused, as git does
+- [x] **GIT-01**: History-changing operations (merge, cherry-pick, branch and worktree creation, commit, fetch) go through the `git` binary, so the user's hooks, signing, merge drivers and credentials apply. Read-only analysis uses gix
+- [x] **GIT-02**: Child git processes get the repo-local variables `git rev-parse --local-env-vars` lists removed when they target another worktree, plus a null stdin. wsx resolves its own worktree and common dir correctly when a hook exports `GIT_DIR`/`GIT_INDEX_FILE`
+- [x] **GIT-03**: A reftable repo is refused with a clear message (gix 0.90 can't open it; a `regression:` scenario)
+- [x] **GIT-04**: A repo owned by another user is refused, as git does
 
 ### Migration
 
@@ -267,10 +267,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | HOOK-01 | Phase 11 | Pending |
 | HOOK-02 | Phase 11 | Pending |
 | HOOK-03 | Phase 11 | Pending |
-| GIT-01 | Phase 3 | Pending |
-| GIT-02 | Phase 3 | Pending |
-| GIT-03 | Phase 3 | Pending |
-| GIT-04 | Phase 3 | Pending |
+| GIT-01 | Phase 3 | Complete |
+| GIT-02 | Phase 3 | Complete |
+| GIT-03 | Phase 3 | Complete |
+| GIT-04 | Phase 3 | Complete |
 | MIG-01 | Phase 12 | Pending |
 | MIG-02 | Phase 12 | Pending |
 | MIG-03 | Phase 12 | Pending |

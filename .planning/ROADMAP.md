@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Development foundation** - Pinned toolchain, one gate script, container parity, CI with required checks, and supply-chain scanners proven to bite (completed 2026-10-25)
 - [x] **Phase 2: Oracle harness** - Hermetic scenario suite over the vendored shell oracle and the Rust binary, with recorded expectations and the hard-case matrix (completed 2026-10-26)
-- [ ] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal
+- [x] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal (completed 2026-10-27)
 - [ ] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths
 - [ ] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins
 - [ ] **Phase 6: Pre-push guard** - Fail-closed push guard over the real pushed refs, every commit in the range and the tip tree
@@ -128,7 +128,28 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A reftable repository is refused with a message naming reftable (a `regression:` scenario), while the same history in a files-backend repository opens (control)
   4. A repository owned by another user is refused, matching git's own refusal on that repository
 
-**Plans**: TBD
+**Plans**: 10/10 plans complete
+**Wave 1**
+- [x] 03-01-PLAN.md — Tracer: gix 0.90.0 pin and licenses, `src/git/` skeleton, merge-base from a subdirectory equals git's; full error enum
+- [x] 03-02-PLAN.md — Harness `regression:` scenario for reftable with the oracle side recorded; phase 5 obligation in STATE.md
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 03-03-PLAN.md — ahead/behind, range walk and tree diff equal git's, each with a control
+- [x] 03-04-PLAN.md — clippy ban on every other gix open/discover entry point, pinned per call; SHA-256 repository opens
+- [x] 03-05-PLAN.md — git ≥ 2.54 gate; `--local-env-vars` removed for children aimed at another worktree
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 03-06-PLAN.md — Reftable refused before any ref is read; gix's unsupported-backend error mapped to the same refusal
+- [x] 03-07-PLAN.md — Re-exec test support; null stdin with a control; commit and merge through the helper run hooks and are signed
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 03-08-PLAN.md — Real hooks: worktree resolution inside a hook, siblings, sibling scrub with a leak control, own index kept
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [x] 03-09-PLAN.md — Foreign-owner refusal against a really foreign uid, matching git; `safe.directory` control
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [x] 03-10-PLAN.md — `GIT_CEILING_DIRECTORIES` parity with git; phase gate (`check.sh all`, `deps`, container)
 
 ### Phase 4: Repo model
 
@@ -301,7 +322,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
-| 3. Git adapter | 0/TBD | Not started | - |
+| 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 4. Repo model | 0/TBD | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |

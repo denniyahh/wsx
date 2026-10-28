@@ -1,3 +1,6 @@
+# Pinned gate tools installed into the checkout (scripts/check.sh puts them first on PATH)
+/.tools/
+
 # Rust
 /target/
 

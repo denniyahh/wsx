@@ -42,6 +42,7 @@ cut that silently drops code, is the unacceptable failure.
 - ✓ Push guard over every commit's touched paths in the range, fail closed on an unreadable range (devflow `pre-push`): existing (devflow)
 
 - ✓ Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls — Phase 2 (Rust sides enabled by phases 5-10)
+- ✓ Git adapter: gix 0.90 reads equal to git's, every history change through the `git` binary (hooks and signing run), discovery correct inside hooks and from any worktree, reftable and foreign-owned repos refused — Phase 3
 
 ### Active
 
@@ -90,7 +91,7 @@ cut that silently drops code, is the unacceptable failure.
 |----------|-----------|---------|
 | Rewrite in Rust now, not harden the Python first | Avoid fixing the defects twice; Rust suits the reliability goal | Still holds (Rust) |
 | Python 0.1.0 is the test oracle, then gets deleted | A black-box harness run against both binaries proves parity; known defects are the only allowed divergence | Superseded 2026-10-19: oracle is the shell scripts |
-| Use gix for git access | Pure-Rust, no subprocess parsing; fall back to the `git` binary only where gix has gaps | Revised 2026-10-19: git binary writes, gix reads |
+| Use gix for git access | Pure-Rust, no subprocess parsing; fall back to the `git` binary only where gix has gaps | Revised 2026-10-19: git binary writes, gix reads. ✓ Good (Phase 3: one gix open site, reads pinned against git) |
 | Migrate once: compatible manifest/config, versioned `base.json` | Keeps existing worktrees working while freeing internal state for the stat cache | Superseded 2026-10-19: copy-sync dropped; `wsx migrate` |
 | Milestone 1 = Rust parity + hardened, no public release | Hardening before features; distribution and baseline features come in milestone 2 | Revised 2026-10-20: parity only on safety outcomes; improve elsewhere |
 | Linux only for milestone 1 | The author's platform; macOS/Windows file-locking and symlink semantics add scope | — Pending |
@@ -100,7 +101,7 @@ cut that silently drops code, is the unacceptable failure.
 | Tracked paths, symlinks (either side) and foreign `*.wsx-remote` files: skip and warn | wsx never writes or deletes what it doesn't own | Superseded 2026-10-19: copy-sync dropped |
 | Corrupt or unknown `base.json` stops wsx (hooks skip); never treated as empty | Overrides the research's "treat as empty": an empty base resurrects deletions | Superseded 2026-10-19: copy-sync dropped |
 | Non-UTF-8 paths supported; `lww` mtime tie is a conflict | Correctness over the oracle's accidental behaviour | Partly holds: raw-byte paths kept (CONF-01); lww gone |
-| Reftable repos refused in milestone 1, resolved before the public release | gix 0.89 can't open them; none of the author's 27 repos use reftable | — Pending |
+| Reftable repos refused in milestone 1, resolved before the public release | gix 0.89/0.90 can't open them; none of the author's 27 repos use reftable | Phase 3: refused with a typed error and a `regression:` scenario; Rust side enabled in phase 5 |
 | Pre-push guard checks every commit in the range | The oracle's tip-to-tip diff lets an added-then-removed file through | — Pending |
 | Parity oracle is `origin/develop`, not the 0.1.0 tag | develop holds merged fixes and the plain git hook guard | Superseded 2026-10-19: oracle is the shell scripts |
 | Agents push at the end of every turn, for all four runtimes | Codex (3 s max) and Antigravity (no session-end event) need it; one behaviour everywhere is simpler to reason about and test | Moved out of wsx 2026-10-19: agent sessions are devflow's domain |
@@ -118,6 +119,7 @@ cut that silently drops code, is the unacceptable failure.
 | `wsx land` in milestone 1; no `wsx adopt` | Without `land`, a standalone user can't finish the new → cut → land → rm loop. `adopt` was dropped (owner, 2026-10-20): the commit guard never refused hand-made branches, so it had no job left | — Pending |
 | Oracle is devflow's original scripts at a recorded commit, not wsx's ports | The ports carry fixes, so they cannot show the defects `fixed:` scenarios must reproduce | ✓ Good (Phase 2: 9+ defects reproduced) |
 | Scenarios declare their repo config; the oracle runs wherever it implements the behaviour | wsx is config-driven (owner, 2026-10-26); devflow-shaped configs are the oracle's only reference | ✓ Good (Phase 2) |
+| Where gix and git would read a different repository, wsx refuses instead of guessing | Fail closed over silent divergence: relative repo paths, object-store and common-dir variables, an underivable implicit worktree, `SUDO_UID` as non-root (Phase 3 review, 2026-10-27) | ✓ Good (Phase 3); exit codes in phase 5 |
 | PR branches are cut with no upstream | The oracle's tracking of `<base>/develop` is an accident of `git branch -f` that breaks pull/push on the PR branch (owner, 2026-10-26) | — Pending (Phase 9) |
 
 ## Evolution
@@ -138,4 +140,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-26 after Phase 2*
+*Last updated: 2026-10-27 after Phase 3*

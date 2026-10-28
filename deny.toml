@@ -14,7 +14,10 @@ ignore = []
 # Only the licenses the crate graph actually uses: unused allowances only warn
 # (license-not-encountered), so later phases extend this list as each crate
 # arrives, not ahead of it.
-allow = ["MIT"]
+# Apache-2.0: unicode-bom (and dunce, offered CC0-1.0 OR MIT-0 OR Apache-2.0).
+# Unicode-3.0: unicode-ident and unicode-normalization.
+# Zlib: foldhash and zlib-rs.
+allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.93
 # cargo-deny 0.20.2 license-checks only normal dependencies by default; without
 # this line the gate never saw tempfile or its transitive crates (verified

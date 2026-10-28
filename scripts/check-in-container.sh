@@ -123,6 +123,17 @@ done
 # delete the wsx-ci-target-* volumes after changing this mount.
 mkdir -p "$REPO_ROOT/target"
 
+# A host .tools/bin (WSX_TOOLS_DIR=.tools/bin scripts/install-tools.sh install
+# ...) comes through the checkout mount, and check.sh puts it first on PATH:
+# the container would run the host's builds, checked by version only, ahead
+# of the checksum-verified ones it installs below. Hide it behind an empty,
+# read-only tmpfs. Docker cannot create a mount point inside the read-only
+# bind, so mask it only when it exists, as with target/ above.
+TOOLS_MASK=()
+if [ -e "$REPO_ROOT/.tools" ]; then
+    TOOLS_MASK=(--tmpfs /workspace/.tools:ro)
+fi
+
 # Allocate a TTY only when stdout is one: with `-t` and no terminal, the
 # output gets CRLF line endings, which pollutes captured and CI logs.
 TTY=()
@@ -139,6 +150,7 @@ exec "${DOCKER[@]}" run --rm \
     "${TTY[@]}" \
     "${GITDIR_MOUNT[@]}" \
     -v "$REPO_ROOT":/workspace:ro \
+    "${TOOLS_MASK[@]}" \
     -v "$TARGET_VOLUME":/workspace/target \
     -v "$REGISTRY_VOLUME":/usr/local/cargo/registry \
     -w /workspace \
