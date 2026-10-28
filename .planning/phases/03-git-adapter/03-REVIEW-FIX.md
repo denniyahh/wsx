@@ -1,162 +1,216 @@
 ---
 phase: 03-git-adapter
-fixed_at: 2026-10-27T08:30:20Z
+fixed_at: 2026-10-27T18:38:56Z
 review_path: .planning/phases/03-git-adapter/03-REVIEW.md
-iteration: 1
-findings_in_scope: 6
-fixed: 6
+iteration: 3
+findings_in_scope: 3
+fixed: 3
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 3: Code Review Fix Report
+# Phase 3: Code Review Fix Report (iteration 3)
 
-**Fixed at:** 2026-10-27T08:30:20Z
+**Fixed at:** 2026-10-27T18:38:56Z
 **Source review:** .planning/phases/03-git-adapter/03-REVIEW.md
-**Iteration:** 1
+**Iteration:** 3
 
 **Summary:**
-- Findings in scope: 6 (2 critical, 4 warning; the 5 info findings are out of scope)
-- Fixed: 6
+- Findings in scope: 3 (CR-01, WR-01, WR-02). The scope is critical_warning, so IN-01..IN-03
+  are out of scope.
+- Fixed: 3
 - Skipped: 0
 
-**Where verification ran:** in the phase-3 checkout itself
-(`/var/home/denniyahh/Github/wsx/.worktrees/phase-3`, branch `feature/phase-3`).
-`workflow.use_worktrees` is `false`, so no isolated review-fix worktree was created. Each
-commit was gated on `scripts/check.sh all` exiting 0, with the pinned cargo-nextest from
-`target/gsd-tools` on PATH. The baseline gate before any change also exited 0. Each new test
-was also run alone with `--no-tests=fail -E 'test(=...)'`, before the fix (failing where it
-reproduces the finding) and after it (passing).
+Every fix was test-first:
+- Each new test was run before the fix and failed for the reason the finding states. After the
+  fix it passed.
+- Each new test has a counterpart that must give the opposite result.
+- The git-parity tests are pinned against real git 2.56.0. Each one asserts git's own answer
+  first, so a git that behaved differently would fail on the git side.
 
 ## Fixed Issues
 
-### CR-01: `siblings()` opens a foreign-owned sibling worktree with reduced trust, without refusing it
+### CR-01: A `GIT_DIR` that gix opens as bare, but git gives the current directory as its worktree, is accepted, including inside a hook
 
-**Status:** fixed: requires human verification (carries a recorded divergence, below)
-**Files modified:** `src/git/repo.rs`
-**Commit:** 18e8ff8
-**Applied fix:** `siblings()` now passes every non-self sibling through
-`refuse_untrusted_sibling`. That function applies `discover`'s `refuse_untrusted` (gix's
-trust verdict). For a bare sibling, which has no worktree and so gets no check from gix, it
-also requires `Trust::from_path_ownership(git_dir)` to be `Full`.
-**Tests (each with git as the oracle):**
-- `a_foreign_owned_sibling_worktree_is_refused`: wt1 is really chowned with `ForeignOwned`,
-  and git refuses it. Before the fix wsx returned it (`result=opened`); now `ForeignOwner`
-  names wt1.
-- `a_foreign_sibling_worktree_in_safe_directory_opens` (control): wt1 is listed in global
-  `safe.directory`; git and wsx both open it. Passes before and after.
-- `a_foreign_owned_bare_main_repository_is_refused_as_a_sibling`: a foreign bare `r.git`,
-  reached from its linked worktree that the user trusts through `safe.directory`. git opens
-  the worktree and refuses `r.git`. Before the fix wsx opened `r.git`; now it refuses.
-- `an_owned_bare_main_repository_opens_as_a_sibling` (control).
-- `safe_directory_does_not_trust_a_foreign_bare_main_sibling`: a recorded divergence. With
-  `r.git` itself listed in `safe.directory`, git opens it and wsx still refuses. gix applies
-  `safe.directory` to a sibling only through its worktree, and the option-cloning call that
-  could re-check it (`without_repository_environment_overrides`) is `pub(crate)` in gix
-  0.90.0. This is the stricter direction. The refusal message still prints git's
-  `safe.directory` fix, which does not help wsx in this one case.
-
-### CR-02: `range_walk` silently ignores an annotated tag in `hidden`, and tags as tips or merge-base inputs fail where git answers
-
-**Status:** fixed
-**Files modified:** `src/git/repo.rs`, `src/git/reads.rs`
-**Commit:** 7b97a03
-**Applied fix:** added `Repo::resolve_commit`, which resolves a revision and then peels it to a
-commit. `merge_base` and `resolve_all` (so `range_walk` and `ahead_behind`) now use it.
-`tree_of` keeps its own `peel_to_tree`.
-**Tests:** `range_walk_hides_an_annotated_tag_like_git` checks that `v1` really is a tag
-object. Its control asserts that git's `rev-list feat --not v1` differs from
-`rev-list feat`, so a hidden tag that is silently ignored cannot pass. Before the fix gix
-returned 6 commits against git's 3. `range_walk_from_an_annotated_tag_matches_git` failed
-before with "Expected object of kind commit but got tag".
-`merge_base_and_ahead_behind_peel_an_annotated_tag_like_git` failed before with "Commit ...
-could not be found for merge-base traversal". All three now equal git.
-
-### WR-01: `tree_diff` turns the reftable refusal into a generic `Error::Gix`
-
-**Status:** fixed
-**Files modified:** `src/git/reads.rs`, `src/git/repo.rs` (tests)
-**Commit:** 192b3f9
-**Applied fix:** `tree_of` now returns `Result<_, Error>`. It passes `resolve` errors through
-unchanged and maps only `find_object`/`peel_to_tree` failures to `Error::Gix` ("tree of
-<rev>"). `tree_diff` uses `?`.
-**Tests:** `tree_diff_keeps_the_reftable_refusal` runs `tree_diff(HEAD, HEAD)` on the reftable
-twin opened through `open_unchecked`. It failed before with the refusal text wrapped in
-"diff HEAD HEAD: ..." and now gets `Error::Reftable`. Control:
-`files_repo_diffs_head_through_the_same_path` gives an empty diff on the files twin.
-
-### WR-02: The `GIT_CEILING_DIRECTORIES` check is skipped for bare repositories
-
-**Status:** fixed
-**Files modified:** `src/git/repo.rs`
-**Commit:** 1eed531
-**Applied fix:** `refuse_at_ceiling` compares the ceiling entries with the directory that
-discovery found: the worktree, or the git dir of a bare repository (`refusal_path`). It no
-longer returns early when there is no worktree. The docstring records the bare case.
-**Tests:** `ceiling_at_a_bare_repository_hides_it_like_git` starts in `r.git/objects` with the
-ceiling at `r.git`. git exits 128. Before the fix wsx opened it (reproduced; the review had
-inferred this without running it). Controls: `ceiling_above_a_bare_repository_lets_wsx_and_git_find_it`
-and `starting_in_a_bare_repository_that_is_the_ceiling_opens_it`. The existing non-bare
-ceiling tests still pass.
-
-### WR-03: Own-worktree children keep relative `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` but run in a different directory
-
-**Status:** fixed: requires human verification (the fix departs from the review's first suggestion, on measured evidence)
 **Files modified:** `src/git/repo.rs`, `src/git/mod.rs`
-**Commit:** 650e9a1
-**What was measured (git 2.56.0, from `main/sub`):**
-- With a relative `GIT_INDEX_FILE=alt.idx`, git reads `main/alt.idx`: it resolves the path
-  against the worktree root, not the cwd. gix (wsx's `index_path`) resolves
-  `main/sub/alt.idx`.
-- With a relative `GIT_DIR=../.git` and no `GIT_WORK_TREE`, git takes `main/sub` as the
-  worktree, and gix takes `main`. A spawn-helper child running at `main` then fails with
-  "not a git repository: '../.git'".
+**Commit:** 62b57e5
+**Applied fix:** wsx now matches git's worktree exactly, rather than refusing these cases.
 
-The review's first suggestion was to rewrite these variables to gix's absolute paths. That
-would have carried gix's cwd-relative reading into git's writes, so wsx would have
-disagreed with git everywhere. I applied the review's alternative instead: refuse.
-**Applied fix:** a new `Error::RelativeRepoEnv { name, value, cwd, worktree }`, with a message
-test. `Repo::discover` refuses when `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or
-`GIT_COMMON_DIR` holds a relative value and gix's current directory is not the worktree root.
-git runs hooks at the worktree root, so a hook's relative `GIT_INDEX_FILE` still applies:
-`hook_resolves_main_worktree_with_relative_index` and the spawn hook tests still pass.
-**Tests:** `a_relative_index_below_the_worktree_root_is_refused` and
-`a_relative_git_dir_below_the_worktree_root_is_refused` both pin git's answer first. Before
-the fix both opened (index `main/sub/alt.idx` while wsx's own git child read `b.txt`; and
-"not a git repository"). Controls: `a_relative_index_at_the_worktree_root_opens_like_git`
-(wsx's index and its git child both use `main/alt.idx`, the same as git) and
-`an_absolute_index_below_the_worktree_root_opens`.
+`Repo::discover` calls `apply_implicit_worktree` after the single gix open site. When `GIT_DIR`
+is set without `GIT_WORK_TREE`, it decides the worktree the way git does, then sets it through
+gix's public in-memory `Repository::set_workdir`. gix 0.90 has that method; no second open is
+needed. git's rule, measured with git 2.56.0:
 
-### WR-04: One stale (prunable) linked worktree makes `siblings()` fail for the whole repository
+- With `core.bare=true`, git has no worktree.
+- With `GIT_IMPLICIT_WORK_TREE` false, git has no worktree. That includes an empty value, which
+  git reads as false.
+- With `core.worktree` set, git uses it.
+- Otherwise git uses the current directory, whatever the git dir is named.
+- For a linked worktree's git dir (one with a `commondir` file), git ignores `core.bare` and
+  `core.worktree` from the common config. Measured: a bare repository's linked worktree, entered
+  from `wt/d`, gets `wt/d`.
+- git reads these two keys only from the repository's own config and from `config.worktree`. It
+  ignores them from `-c`, `GIT_CONFIG_COUNT` and global config.
 
-**Status:** fixed: requires human verification (a policy choice)
+What wsx does with each case:
+
+- **Iteration 2's refusal is now parity.** 64bd096 refused a `.git`-named `GIT_DIR` below the
+  root. That case now opens with git's worktree, `main/sub`. The test was renamed to
+  `an_absolute_git_dir_below_the_worktree_root_opens_the_current_directory_like_git`.
+- **A local `core.worktree` is left to gix,** as iteration 2 did. Its tests still pass.
+- **Fail-closed sub-cases.** These are refused as `Error::ImplicitWorkTree`, which now carries a
+  `reason` instead of `cwd` and `worktree`:
+  - a `core.worktree` or `core.bare` set in `config.worktree`. git honours them there; wsx does
+    not resolve them.
+  - a `core.bare` that is not a boolean;
+  - a `GIT_IMPLICIT_WORK_TREE` that is not a boolean. git exits 128 on both of these.
+- **Ownership.** git checks no ownership with an explicit `GIT_DIR`. This was measured with
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`: discovery refused, `GIT_DIR` opened. So the current
+  directory gets no ownership check either. wsx's existing git-dir trust check is unchanged.
+
+**Tests (git oracle, real hooks):**
+
+- Fail before, pass after:
+  - `a_separate_git_dir_at_its_worktree_root_opens_the_root_like_git`: git says `r`; wsx said
+    `<none>` before.
+  - `a_separate_git_dir_below_its_root_opens_the_current_directory_like_git`: git says `r/sub`;
+    wsx said `<none>` before.
+  - `an_absolute_git_dir_below_the_worktree_root_opens_the_current_directory_like_git`: the
+    renamed iteration-2 test. Before, wsx refused.
+  - `implicit_work_tree_off_leaves_no_worktree_like_git`: the reverse case. git has no worktree;
+    wsx said `main` before.
+  - `a_linked_worktree_of_a_bare_repository_opens_the_current_directory_like_git`: before, wsx
+    refused.
+  - `an_unparseable_implicit_work_tree_is_refused`: git exits 128; wsx opened before.
+  - `core_worktree_in_worktree_config_is_refused`: git uses `main`. Before, wsx also refused, but
+    under iteration 2's message. The test failed only on the message naming `config.worktree`.
+- **The `pre-commit` hook of a separate-git-dir repository, during the partial commit
+  `git commit -- ../b.txt` run from `r/sub`:**
+  - `a_separate_git_dir_hook_resolves_the_worktree_git_reports`: wsx's worktree equals the
+    hook's own `git rev-parse --show-toplevel` (`r`). It was `<none>` before.
+  - `a_separate_git_dir_hook_child_keeps_the_partial_commit_index`: this proves the index
+    consequence the reviewer had only traced.
+    - The hook's own `git diff --cached` sees `b.txt`, the partial commit's index.
+    - A `Git::from_process` child aimed at wsx's own worktree must see the same.
+    - Before the fix it saw `a.txt`: it lost the hook's `GIT_INDEX_FILE` and read the real index.
+    - After the fix it sees `b.txt`.
+- **Controls, each giving the opposite result:**
+  - `core_bare_keeps_a_separate_git_dir_without_a_worktree_like_git`;
+  - `implicit_work_tree_on_keeps_the_current_directory_like_git` (`yes`);
+  - `a_separate_git_dir_hook_child_without_an_own_worktree_reads_the_real_index`: a helper with
+    no own worktree, in the same hook, sees `a.txt`.
+  - The existing hook tests stay green: linked-worktree resolution,
+    `own_worktree_child_keeps_hook_index`, the sibling-scrub tests and the main-worktree
+    relative index.
+- **Mutation check:** treating no git dir as linked makes the bare-linked test fail (`<none>`
+  vs `wt/d`). The mutant was restored and not committed.
+- **Side effect checked:** a throwaway probe, not committed, showed that `siblings()` does not
+  list a separate-git-dir repository as its own sibling. That holds with and without `GIT_DIR`.
+
+**Limits:**
+
+- The relative-path refusal still runs first and judges against gix's worktree. So a relative
+  `GIT_DIR` or `GIT_INDEX_FILE` below a `.git`-named root is still refused. That is the
+  stricter direction, and its tests are unchanged.
+- A `config.worktree` that sets `core.bare` without `extensions.worktreeConfig` is refused if
+  gix loads that file anyway. git would ignore it. This was not measured.
+
+### WR-01: gix ignores `GIT_COMMON_DIR`, so git and wsx read different object stores, and only a relative value is refused
+
 **Files modified:** `src/git/repo.rs`, `src/git/mod.rs`
-**Commit:** 6ba45b5
-**Applied fix:** I chose the review's fail-closed option. `siblings()` still fails, but now
-with a new `Error::StaleWorktree { worktree, git_dir }` that names the missing worktree and
-its git dir and suggests `git worktree prune` "if it is gone for good". It is raised before
-canonicalisation, from a `NotFound` on the worktree directory. The other option, skipping
-prunable siblings and reporting them the way `git worktree list` does, would change what
-phase 5's callers receive. That is left for an owner decision.
-**Tests:** `a_stale_sibling_worktree_is_named_with_its_fix` deletes wt1 and first asserts that
-`git worktree list --porcelain` marks it `prunable`. Before the fix the error was
-"canonicalize .../wt1: No such file or directory"; it now names wt1 and the prune. Control:
-`siblings_open_every_present_linked_worktree`.
+**Commit:** 6594f07
+**Applied fix:**
 
-## Observed during fixing, not fixed (outside the in-scope findings)
+- `GIT_COMMON_DIR` joins `OBJECT_STORE_VARS`. Any value is refused as `Error::ObjectStoreEnv`
+  naming it, following the orchestrator's decision. This replaces the reviewer's suggestion,
+  which allowed a value matching the repository's own common dir.
+- It was removed from `REPO_PATH_VARS`, where it can no longer be reached.
+- Measured before relying on it: git exports none of `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`
+  or `GIT_ALTERNATE_OBJECT_DIRECTORIES` to a `pre-commit` hook. This was checked in a main
+  worktree, a linked worktree and a separate git dir.
 
-- **A tree as a walk tip.** `git rev-list main^{tree}` exits 0 and prints nothing, but
-  `range_walk` returns `Error::Gix` (gix did this before CR-02 too, and still does). This
-  fails closed. Measured.
-- **A linked sibling whose private git dir (`.git/worktrees/<name>`) is foreign-owned while
-  its worktree is owned.** git checks the git dir's ownership too; `siblings()` does not.
-  Inferred from git's `ensure_valid_ownership` and gix's `open_from_paths`. Not reproduced.
-- **Starting inside a non-bare `.git` directory with the ceiling at the worktree.**
-  `refuse_at_ceiling` would refuse there, and git probably finds the repository. This
-  behaviour existed before WR-02 and WR-02 does not change it. Not reproduced.
+**Tests (git oracle):**
+
+- `git_common_dir_is_refused`, with another repository's `.git` as the value:
+  - git's `--git-common-dir` is that directory, and `cat-file` reads its commit.
+  - Before the fix, wsx opened and could not read that commit (`unreadable`).
+- `git_common_dir_naming_the_repository_own_is_refused`: before the fix, wsx opened.
+- Control: `another_repository_commit_is_unreadable_without_alternates`. Without the variable,
+  neither git nor wsx reads that commit, and wsx opens. Its doc now names it as the control for
+  both variables.
+
+### WR-02: The new install hint is wrong whenever cargo resolves `$CARGO_HOME/bin` first; the old hint was right there
+
+**Files modified:** `scripts/install-tools.sh`, `scripts/check.sh`, `tests/gate_controls.rs`
+**Commit:** d43d53c
+
+**Applied fix:**
+
+- `check_version` now takes the function that prints the fix:
+  - `verify` and `install` use `plain_fix`, which is unchanged behaviour.
+  - `verify-cargo` uses the new `cargo_fix`.
+- `cargo_fix` checks the copy in `$WSX_TOOLS_DIR`:
+  - **That copy reports the pin:** cargo ran another copy. The message says so, names
+    `${CARGO_HOME:-$HOME/.cargo}/bin` (searched before PATH while it is not on PATH,
+    cargo#11020), and gives the plain command, which installs there.
+  - **Otherwise:** the hint is the `WSX_TOOLS_DIR=<.tools/bin>` command, as before.
+- The check.sh comment no longer claims that cargo follows PATH order. It now says that holds
+  only while `$CARGO_HOME/bin` is on PATH.
+- install-tools.sh uses only bash builtins and `[`, and nothing from outside its header's list.
+  `bash -n` and `shellcheck` are clean on both scripts.
+
+**Tests (scratch checkout, controlled CARGO_HOME):**
+
+- `stale_cargo_home_nextest_hint_installs_into_cargo_home` uses the reviewer's fixture:
+  - a pinned copy in `.tools/bin`;
+  - a stale copy in `$CARGO_HOME/bin`, which is not on PATH.
+
+  stderr must name `$CARGO_HOME/bin` and the plain command, and must not contain
+  `WSX_TOOLS_DIR=`. Before the fix it printed the `.tools/bin` command.
+- Counterpart: `repo_tools_nextest_wins_when_cargo_home_bin_is_on_path`, the same fixture with
+  `$CARGO_HOME/bin` on PATH. The `.tools/bin` copy runs and the run exits 0. This checks the
+  corrected comment.
+- `stale_repo_tools_nextest_hint_installs_into_repo_tools` stays green: a stale `.tools/bin`
+  still gets the `WSX_TOOLS_DIR` command. The other four nextest-pin tests and the coverage
+  test also stay green.
+- **Following the advice works.** On the fixture, a pinned copy was put into `$CARGO_HOME/bin`
+  in place of a download. This is the file the plain command would install. `check.sh test`
+  then exited 0 and ran the `.tools/bin` copy.
+
+## Verification
+
+Where it ran: every gate ran on the host, in the orchestrator-pinned phase-3 worktree
+(`/var/home/denniyahh/Github/wsx/.worktrees/phase-3`, branch `feature/phase-3`). No separate
+review-fix worktree was created.
+
+- **Each commit was gated** with `&&` on the exit codes of:
+  - its named tests, one per `scripts/check.sh test -E 'test(=...)'`;
+  - `scripts/check.sh fmt`;
+  - for WR-01 and WR-02, `clippy`;
+  - for WR-02, `bash -n` and `shellcheck`.
+- **After the last fix,** `scripts/check.sh all` exited **0**:
+  - nextest Summary: `315 tests run: 315 passed, 58 skipped`, then `==> check.sh: all OK`;
+  - rustc 1.99.1.
+  - The difference from iteration 2's 300 passed and 56 skipped is the 15 new tests and the 2
+    new ignored child halves.
+- **Scratch:** this run's scratch was under `target/rf3-*` and has been removed. So has the
+  throwaway siblings probe. No background processes were started.
+
+What this does not establish:
+
+- `scripts/check-in-container.sh` was not run, as the brief requires.
+- The host run used this checkout's `.tools/bin` tools.
+- The git-parity claims are pinned to git 2.56.0 and gix 0.90.0. These cases were not tested:
+  - a relative `core.worktree`;
+  - `core.bare` in `config.worktree` without the extension;
+  - `GIT_DIR` naming a `gitdir:` file.
+- IN-01, IN-02 and IN-03 were not addressed; they are out of scope. IN-03's list of refusal
+  variants that are not recorded for phase 5 is unchanged. The variants are still
+  `RelativeRepoEnv`, `ObjectStoreEnv` (now also `GIT_COMMON_DIR`) and `ImplicitWorkTree` (now
+  narrower).
 
 ---
 
-_Fixed: 2026-10-27T08:30:20Z_
+_Fixed: 2026-10-27T18:38:56Z_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 3_
