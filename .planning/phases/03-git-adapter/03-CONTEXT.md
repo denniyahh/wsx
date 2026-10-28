@@ -111,6 +111,23 @@ They implement the decisions above and do not change them.
   `git config --global --add safe.directory <path>` fix git itself prints. Criterion 4 is about
   global config, where the two agree.
 
+### Decided during code review (orchestrator, 2026-10-27)
+The review-fix iterations (03-REVIEW-FIX.md, iterations 1-3) added refusals beyond the five
+error variants above. Phase 5 assigns an exit code to each:
+- **`RelativeRepoEnv`:** a relative `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE`.
+- **`ObjectStoreEnv`:** `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` or
+  `GIT_COMMON_DIR` set to any value. gix ignores all three, so wsx would read a different store
+  than git. As a consequence wsx refuses inside receive-pack's `pre-receive`/`update` hooks, where
+  git exports the quarantine object directory. Phase 3 targets client-side hooks; the owner was
+  told of this on 2026-10-27.
+- **`ImplicitWorkTree`:** a `GIT_DIR` without a worktree setting whose worktree wsx cannot derive
+  exactly as git does (for example an unparseable `GIT_IMPLICIT_WORK_TREE`). Where it can, wsx
+  takes git's worktree: the current directory, or none when implicit worktrees are off.
+- **`StaleWorktree`:** a registered sibling worktree whose directory is gone; it fails closed and
+  names `git worktree prune`. Phase 5 may revisit this as skip-and-report.
+- **`GitEmptyOutput`:** git printed nothing where output is required (an empty
+  `--local-env-vars` list), so wsx fails closed.
+
 ### Claude's Discretion
 - File layout inside `src/git/` and the names of the wsx-owned types.
 - The exact refusal wording, as long as each message names its cause (reftable; foreign owner,

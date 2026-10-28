@@ -1178,7 +1178,12 @@ fn auto_maintenance_start_is_visible_in_the_trace() {
     let scratch = Scratch::new("auto-maintenance-on").expect("scratch");
     let repo = one_commit_repo(&scratch, "repo");
     assert!(
-        commit_starts_auto_maintenance(&scratch, &repo, &["maintenance.auto=true"]),
+        // Not detached, so no maintenance run outlives the scratch tree.
+        commit_starts_auto_maintenance(
+            &scratch,
+            &repo,
+            &["maintenance.auto=true", "maintenance.autoDetach=false"]
+        ),
         "a commit with maintenance.auto=true must show the maintenance child in trace2"
     );
 }

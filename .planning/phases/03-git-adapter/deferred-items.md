@@ -49,3 +49,15 @@ Out-of-scope discoveries logged during execution. Not fixed by the plan that fou
 - **Possible fix (owner's call):** run those tests in a child with the scratch environment, as
   the ceiling and foreign-owner tests do, or have `rerun_scrubbed` always re-execute with a
   scratch `HOME` and `GIT_CONFIG_NOSYSTEM=1`.
+
+## check.sh's "tool missing" hints ignore `WSX_TOOLS_DIR` (code review IN-02, iteration 3)
+
+- **What:** `scripts/check.sh`'s `require_tool` hints for cargo-nextest, cargo-deny and
+  cargo-llvm-cov print the plain `scripts/install-tools.sh install <tool>`. That installs into
+  `$CARGO_HOME/bin`, which `command -v` does not search when it is not on PATH, so in that setup
+  the tool is still "not on PATH" after following the hint. `install-tools.sh`'s own hints are
+  destination-aware since d43d53c.
+- **Effect:** a misleading hint in one setup ($CARGO_HOME/bin off PATH, tool missing). The gate
+  still fails closed; no false green.
+- **Possible fix:** build the `require_tool` hint from install-tools.sh's hint logic, or defer
+  the missing-tool case to `install-tools.sh verify-cargo`.
