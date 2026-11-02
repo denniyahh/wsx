@@ -98,6 +98,15 @@ Calls stated to the owner before they chose to move on. They can be challenged a
 The module layout, the model's types and how errors extend `git::Error` are left to research and
 planning.
 
+### Replacement refs
+The owner decided this at plan review, after the planner raised the refusal's cost.
+
+- **D-22:** A chained or symbolic replacement ref anywhere in the repo stops the model in a configured
+  repo, even among objects the manifest read never touches, and the error says the replacement ref is
+  at fault rather than saying `.wsx.conf` cannot be read. A loud stop in a very rare case costs little,
+  and a silent mismatch with git is the worse failure. A repo with no `wsx.sourceBranch` stays not
+  configured (D-16).
+
 </decisions>
 
 <canonical_refs>

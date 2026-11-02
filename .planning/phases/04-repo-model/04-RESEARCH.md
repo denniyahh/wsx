@@ -133,7 +133,7 @@ The phase also has an integration problem nobody has listed yet. **The harness f
 - **Scope of the measurements:** one host, git 2.56.0, gix 0.90.0. SHA-256 and bare repos were probed for the new reads, and hook-style `GIT_DIR` for config and listing. They were not run through the prototype's tests.
 - **The prototype is a feasibility proof.** It has 11 tests, not the phase's test set. It settles that the APIs compile and answer as stated. It does not settle error wording, and it has no global-config test of its own (D-01's control was measured with the probe binary, against `git config`).
 - **Not run this session:** `scripts/check.sh all` (the prototype ran clippy and unit tests only, on a `git archive` copy with no git repo), the harness suite against the changed fixture, and the container gate.
-- **Proptest strength:** 2048 random cases per property in about 0.2 s. That is a good search for encoding defects and not a proof. The all-bytes differential test is the stronger evidence for quoting.
+- **Proptest strength:** 2048 random cases per property in about 0.2 s. That is a good search for encoding defects and not a proof, and only when the generator can reach the defect: a uniform byte generator missed a bare edge space in 36 of 60 runs, so the generator is weighted (Code Examples). The all-bytes differential test is the stronger evidence for quoting.
 
 ## Project Constraints (from CLAUDE.md)
 
@@ -346,24 +346,24 @@ So `remote_names()` is wrong twice for D-04: a global `[remote "origin"]` would 
 
 ### Pattern 3: Exact ref reads and the chain (D-06 to D-10)
 
-**What:** Build the full name, `FullName::try_from`, then `try_find_reference(name.as_ref())`, reading `target()` without following it. Report a found ref's commit through the existing `resolve_commit`.
+**What:** Build the full name, `FullName::try_from`, then `try_find_reference(name.as_ref())`, reading `target()` without following it, and treat a returned name other than the one asked for as `None`. Report a found ref's commit through the existing `resolve_commit`.
 
 **Measured** [VERIFIED: probe run]:
-- **A full name is exact.** With `refs/heads/refs/remotes/origin/ghost` present and `refs/remotes/origin/ghost` absent, `try_find_reference("refs/remotes/origin/ghost")` is `None`. Control: the longer name is found. A `refs/tags/refs/heads/ghost2` tag does not satisfy `refs/heads/ghost2` either.
+- **A full name is exact under `refs/`, not outside it.** With `refs/heads/refs/remotes/origin/ghost` present and `refs/remotes/origin/ghost` absent, `try_find_reference("refs/remotes/origin/ghost")` is `None`. Control: the longer name is found. A `refs/tags/refs/heads/ghost2` tag does not satisfy `refs/heads/ghost2` either. But a commit id in the loose file `.git/heads/refs/remotes/origin/ghost` (likewise `.git/tags/...`, `.git/remotes/...` and `.git/remotes/<full>/HEAD`) is returned under the name `heads/refs/remotes/origin/ghost`, `rev_parse_single` resolves it too, and `git show-ref --verify` fails. So `find_ref` compares the returned name. When the exact ref exists it wins over such a file, loose and packed (measured).
 - **A short name is not.** `try_find_reference("develop")` found `refs/tags/develop`, and `origin/develop` found the remote branch. Never pass a short name.
-- `rev_parse_single(full)` on names shaped like describe output or holding `@` (`workspace/x-1-gabc1234`, `workspace/a@b`, `workspace/@`, non-UTF-8) gave git's answer on all six shapes tried, so `resolve_commit` is safe for a full name.
+- `rev_parse_single(full)` on names shaped like describe output or holding `@` (`workspace/x-1-gabc1234`, `workspace/a@b`, `workspace/@`, non-UTF-8) gave git's answer on all six shapes tried, so `resolve_commit` is safe for a full name once `find_ref` has found it.
 
 **`<remote>/HEAD` shapes:**
 
 | Shape | `target()` | Treatment |
 |---|---|---|
-| `git clone`, or `git remote set-head origin --auto` | `Symbolic(refs/remotes/origin/main)` | Strip `refs/remotes/<base>/`, require the target to exist, branch `main` |
+| `git clone`, or `git remote set-head origin --auto` | `Symbolic(refs/remotes/origin/main)` | Strip `refs/remotes/<base>/`, require the target to exist and hold an object, branch `main` |
 | Target ref deleted (dangling) | `Symbolic(...)` still returned; `git rev-parse --verify` fails | Exists check fails, so D-09's error lists it |
 | Packed | Same as loose | Same |
 | `remote.origin.followRemoteHEAD=never`, after deletion, then a fetch | `None` | D-09's error |
 | Object id, no symref (hand-made) | `Object(id)` | No branch name, so D-09's error |
 | Symref outside the remote (`refs/heads/main`) | `Symbolic(refs/heads/main)` | Prefix strip fails, so D-09's error |
-| Symref to another symref under the remote | `Symbolic(refs/remotes/origin/alias)` | Accepted as branch `alias`; hand-made, harmless (D-10) |
+| Symref to another symref under the remote | `Symbolic(refs/remotes/origin/alias)` | Refused, naming both refs: `alias` can point anywhere, and `rev_parse` follows it, so `HEAD -> alias -> refs/heads/side` would make a local commit the base against D-06 (measured). The same holds for a symbolic `develop`, `next` or `wsx.baseRef` target |
 
 **Branch-name validity for `wsx.baseRef` and `wsx.sourceBranch`:** `FullName::try_from("refs/heads/<name>")` agreed with `git check-ref-format --branch` on 25 names except `HEAD` and `-x`, which gix accepts and git refuses. So `is_branch_name` adds those two checks. `refs/heads/x` as a value is accepted by both and then simply is not found, which D-21 already covers.
 
@@ -442,8 +442,8 @@ pub fn c_unquote(token: &[u8]) -> Result<Vec<u8>, String> {
 ### Pattern 6: The manifest blob (CONF-07, D-19)
 
 ```rust
-// src/git/refs.rs. `RootEntry` is { Absent, Blob(Vec<u8>), NotABlob { kind } }.
-let commit = self.resolve_commit(full)?;
+// src/git/refs.rs, the final shape: 04-09 adds the mode check, 04-11 the first call (line 482). `RootEntry` is { Absent, Blob(Vec<u8>), NotABlob { kind } }; `hex` is the hex of the commit id `root_entry` takes.
+self.refuse_unfollowable_replacements()?; let commit = self.resolve_commit(hex)?;
 let tree = self.repo.find_commit(commit).map_err(|err| failed(err.to_string()))?
     .tree().map_err(|err| failed(err.to_string()))?;
 let Some(entry) = tree.find_entry(name) else {
@@ -479,7 +479,7 @@ Ok(RootEntry::Blob(blob.data.clone()))
 - Uncommitted edit to the working file: unchanged read. Clean checkout without the file: same read. Both also pass as prototype tests.
 - Missing blob object (loose file deleted): `find_blob` `Err`, "could not be found"; `git cat-file` also fails. Missing tree: `commit.tree()` `Err`. Missing commit: the ref still exists, peel `Err`. Each is a fail-closed reason, not a "missing manifest".
 - Ref holding a blob id: peel `Err`.
-- `refs/replace` on the blob: gix and git both read the replacement. Same answer, nothing to handle.
+- `refs/replace`: one replacement reads alike in gix and git, on a blob, a tree and a commit. A chain (A->B->C) does not: git follows it and gix stops after one hop, on all three kinds. A cycle or a self-replacement makes git fail while gix still reads. A symbolic replace ref is followed by git and ignored by gix. So `root_entry` first calls `refuse_unfollowable_replacements`, which refuses all of those repo-wide with `git::Error::ReplacementRef`, and `build` keeps that as `Error::Git` rather than `ManifestUnreadable`, so the error names the ref and does not say `.wsx.conf` cannot be read (D-22); it agreed with git, or over-refused safely, on all but one of 25 shapes measured, including uppercase hex names, packed refs, SHA-256 and `GIT_REPLACE_REF_BASE` (the exception: that variable without a trailing slash, where git itself dies).
 - SHA-256 and bare repos: same read.
 
 `find_entry` drops malformed tree entries by `filter_map(Result::ok)` (`gix-0.90.0/src/object/tree/mod.rs:57-58`), so a corrupt tree could read as `Absent`. Not measured. It still fails closed when configured; only the reason would be imprecise.
@@ -574,7 +574,7 @@ pub fn resolve(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, E
 
 **Model fields:** `workspace_branch`, `workspace_tip: ObjectId`, `integration { branch, full_ref, tip }`, `base_remote: Option<Vec<u8>>`, `push_remote: Option<Vec<u8>>`, `worktree_dir`, `manifest`. Recording the tips means every later read in one command uses the same commits the manifest came from.
 
-**Errors: a separate `model::Error`, not new `git::Error` variants.** `git::Error` documents itself as "Why the git layer could not answer" (`src/git/mod.rs:52`). These are policy refusals, and one variant per refusal follows Phase 3's pattern and gives Phase 5 one exit code per refusal. Hand-written `Display`, `From<git::Error>` (variant `Git`), no error crate. Variants used by the prototype: `Git`, `KeyRepeated`, `KeyEmpty`, `NotABranchName`, `NoSuchRemote`, `BaseRefMissing`, `NoIntegrationBranch`, `WorkspaceBranchMissing`, `WorkspaceCandidates`, `ManifestMissing`, `ManifestNotABlob`, `ManifestInvalid`, `WorktreeDirInvalid`.
+**Errors: a separate `model::Error`, not new `git::Error` variants, with one exception.** `git::Error` documents itself as "Why the git layer could not answer" (`src/git/mod.rs:52`). These are policy refusals, and one variant per refusal follows Phase 3's pattern and gives Phase 5 one exit code per refusal. Hand-written `Display`, `From<git::Error>` (variant `Git`), no error crate. Variants used by the prototype: `Git`, `KeyRepeated`, `KeyEmpty`, `NotABranchName`, `NoSuchRemote`, `BaseRefMissing`, `NoIntegrationBranch`, `WorkspaceBranchMissing`, `WorkspaceCandidates`, `ManifestMissing`, `ManifestNotABlob`, `ManifestInvalid`, `WorktreeDirInvalid`. The plans add more, among them `ManifestUnreadable { branch, source }`, for a manifest read that failed rather than found nothing. The exception is 04-11's `git::Error::ReplacementRef { name, target }`: it is not a policy refusal but what that doc comment says, since the git layer cannot answer as git would under a replacement the two follow differently (line 482). `build` keeps it as `model::Error::Git` rather than `ManifestUnreadable`, because the refusal does not know whether the ref touches `.wsx.conf` (D-22). So it adds no `model::Error` variant, and it has no exit code of its own unless Phase 5 matches inside `Git`, and inside `NotConfigured`'s `reason`, where `require` wraps it with no key; 04-10 records that in STATE.md.
 
 **Messages must name the fix** (CONTEXT, CONTRIBUTING style). `BaseRefMissing` should say the value is a bare branch name, since `origin/develop` was the old form (Pitfall 14). `NoIntegrationBranch` lists the refs tried and both D-09 fixes.
 
@@ -678,8 +678,8 @@ and `:670` asserts `("wsx.baseRef", "origin/develop\n")`, `:828` asserts `("wsx.
 **How to avoid:** Render manifest lines, paths and config values through `c_quote` in `Display`, as git does for paths. Test: a line with `\x1b` renders `\033`.
 
 ### Pitfall 17: Proptest in the repo's environment
-**What goes wrong:** Default persistence writes `proptest-regressions/main.txt` on failure (measured), which would hit the container's read-only mount. Also, `PROPTEST_CASES=50` overrode an explicit `cases: 3` (measured), so the host environment can change the count.
-**How to avoid:** `failure_persistence: None` (measured: writes nothing, still prints the minimal input). Turn any failure into a named regression test. Do not assert a case count.
+**What goes wrong:** Default persistence writes `proptest-regressions/main.txt` on failure (measured), which would hit the container's read-only mount. Also, `PROPTEST_CASES=50` overrode an explicit `cases: 3` (measured), so the host environment can change the count, and `PROPTEST_CASES=0` reports a property as passed with no case run (measured).
+**How to avoid:** `failure_persistence: None` (measured: writes nothing, still prints the minimal input). Turn any failure into a named regression test. `property_runs_its_configured_cases` counts the bodies `proptest!` runs under the shared `property_config()` and fails below 2048, so a lowered count is a named failure under every runner (measured: 0 and 2047 fail, unset and 4096 pass). `scripts/check-in-container.sh` forwards no host variable (read, and probed with the same `docker run` shape with a `-e` control), so the container run cannot be lowered from the host.
 
 ### Pitfall 18: RED evidence for a new module
 **What goes wrong:** With `tdd_mode: true`, and CONTRIBUTING rejecting a compile failure as evidence, a test against a function that does not exist yet proves nothing.
@@ -722,27 +722,27 @@ fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
         Some(remote) => [b"refs/remotes/", remote, b"/"].concat(),
         None => b"refs/heads/".to_vec(),
     };
-    let found = |branch: &[u8]| -> Result<Integration, Error> {
+    let found = |branch: &[u8]| -> Result<Option<Integration>, Error> {
         let full_ref = join(&prefix, branch);
-        Ok(Integration {
-            branch: branch.to_vec(),
-            tip: repo.ref_commit(&full_ref)?,
-            full_ref,
-        })
+        match repo.find_ref(&full_ref)? {
+            None => Ok(None),
+            Some(RefTarget::Symbolic(target)) => Err(Error::IntegrationRefSymbolic { full_ref, target }),
+            Some(RefTarget::Object(_)) => Ok(Some(Integration { branch: branch.to_vec(), tip: repo.ref_commit(&full_ref)?, full_ref })),
+        }
     };
     if let Some(value) = single(repo, BASE_REF)? {
         let value = branch_name(BASE_REF, value)?;
         let tried = join(&prefix, &value);
-        return match repo.find_ref(&tried)? {
-            Some(_) => found(&value),
+        return match found(&value)? {
+            Some(integration) => Ok(integration),
             None => Err(Error::BaseRefMissing { value, tried }),
         };
     }
     let mut tried = Vec::new();
     for branch in CHAIN { // [b"develop", b"next"]
         let full = join(&prefix, branch);
-        if repo.find_ref(&full)?.is_some() {
-            return found(branch);
+        if let Some(integration) = found(branch)? {
+            return Ok(integration);
         }
         tried.push(full);
     }
@@ -750,9 +750,9 @@ fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
         let head = join(&prefix, b"HEAD");
         if let Some(RefTarget::Symbolic(target)) = repo.find_ref(&head)?
             && let Some(branch) = target.strip_prefix(prefix.as_slice())
-            && repo.find_ref(&target)?.is_some()
+            && let Some(integration) = found(branch)?
         {
-            return found(branch);
+            return Ok(integration);
         }
         tried.push(head);
     }
@@ -760,7 +760,7 @@ fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
 }
 ```
 
-A ref that exists but does not peel to a commit gives `Error::Git` from `ref_commit`, with no fall-through. That matches "with no fallback" in D-08, and fails closed.
+A ref that exists but does not peel to a commit gives `Error::Git` from `ref_commit`, with no fall-through. That matches "with no fallback" in D-08, and fails closed. A symbolic ref on any rung is `Error::IntegrationRefSymbolic`, with no fall-through either: `ref_commit` follows symrefs, so a rung that accepted one could land on a local commit (measured).
 
 ### Encoding a path for the manifest
 
@@ -792,7 +792,7 @@ use proptest::prelude::*;
 use proptest::test_runner::Config;
 
 fn component() -> impl Strategy<Value = Vec<u8>> {
-    proptest::collection::vec(1u8..=255u8, 1..12).prop_filter("a git tree name", |name| {
+    proptest::collection::vec(prop_oneof![2 => 1u8..=255u8, 2 => 0x21u8..=0x7eu8, 1 => Just(b' ')], 1..12).prop_filter("a git tree name", |name| {
         !name.contains(&b'/') && name != b"." && name != b".."
     })
 }
@@ -802,7 +802,7 @@ fn git_path() -> impl Strategy<Value = Vec<u8>> {
 }
 
 proptest! {
-    #![proptest_config(Config { cases: 2048, failure_persistence: None, ..Config::default() })]
+    #![proptest_config(property_config())] // Config { cases: 2048, failure_persistence: None, ..Config::default() }
 
     #[test]
     fn any_git_path_round_trips(path in git_path()) {
@@ -815,7 +815,7 @@ proptest! {
 }
 ```
 
-**Controls measured on the prototype:** making `covers` ignore the path boundary failed `name_extension_is_not_covered` and `overlap_table`. Making `encode_path` leave edge whitespace bare failed `any_git_path_round_trips`. Both restored after. The generator draws from all of 1-255 except `/`, so newline, quote, backslash, space, non-ASCII and non-UTF-8 bytes all appear, but it does not guarantee each in every run. The all-bytes differential test does.
+**Controls measured on the prototype:** making `covers` ignore the path boundary failed `name_extension_is_not_covered` and `overlap_table`. Making `encode_path` leave edge whitespace bare failed `any_git_path_round_trips` on a uniform byte generator only some of the time: re-measured, the defect passed in 36 of 60 runs, because a bare edge space needs every other byte of the path to be printable too. With the weighted generator above, the defect failed in all 200 runs and the correct encoder passed all 50 (measured on a stub parser, not the plan's). Both restored after. The generator still draws from all of 1-255 except `/`, so newline, quote, backslash, space, non-ASCII and non-UTF-8 bytes all appear, but it does not guarantee each in every run. The all-bytes differential test does.
 
 ## State of the Art
 
