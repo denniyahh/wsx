@@ -997,5 +997,3 @@ No new test framework config is needed. `.gitignore` needs no change, since pers
 **Research date:** 2026-11-02
 **Graph context:** the knowledge graph is 326 commits behind (built at `9e96bc8`) and returned only Python 0.1.0 and planning nodes, so it was not used.
 **Valid until:** the next gix upgrade (monthly, per `Cargo.toml`), or 30 days.
-</content>
-</invoke>
