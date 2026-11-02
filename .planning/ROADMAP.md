@@ -163,7 +163,30 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: TBD
+**Plans**: 10 plans
+**Wave 1**
+- [ ] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; new suites under the runner-`GIT_DIR` check
+- [ ] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 04-03-PLAN.md — C-quoting equal to git on every byte; `encode_path`; proptest round trip; `proptest` dev-dependency
+- [ ] 04-05-PLAN.md — `wsx.*` read from this repo's own config file only (D-01); repeated or empty key refused per key (D-18)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 04-04-PLAN.md — Full `.wsx.conf` grammar (D-11 to D-14, D-19), cross-kind overlap, matcher against git's literal pathspec
+- [ ] 04-06-PLAN.md — Base and push remotes separately (D-02 to D-05); a remote exists only as `git remote add` says
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 04-07-PLAN.md — Integration chain and `wsx.baseRef` (D-06 to D-10), `is_branch_name` agreeing with git
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 04-08-PLAN.md — Workspace-branch fallback, recorded-set input, configured state, `RepoModel::require` (D-15 to D-17, D-21)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 04-09-PLAN.md — Only a regular file at the tip is a manifest; built-ins and `wsx.worktreeDir` (D-20); same list from any checkout
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 04-10-PLAN.md — Mutation pass over the parser and resolver; phase gate (`all`, `deps`, container); obligations on phases 5, 6, 8 and 12 in STATE.md
 
 ### Phase 5: Divergence check and command contract
 
@@ -323,7 +346,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
-| 4. Repo model | 0/TBD | Not started | - |
+| 4. Repo model | 0/10 | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |
