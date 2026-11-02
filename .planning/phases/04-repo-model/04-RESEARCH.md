@@ -840,24 +840,24 @@ proptest! {
 
 These are readings of decisions the owner left to research; each was measured against git where git has an opinion. The plan can state them as decided (they fall under Claude's Discretion in CONTEXT); plan review can challenge them.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does an included file count as "local repo config" (D-01)?**
    - What we know: `git config --local --get` says no, and that is the control CONTEXT names. Plain `git config --get` and gix's `Source::Local` say yes. CLAUDE.md explains why a live include is dangerous.
    - What's unclear: whether anyone wants wsx config through an include.
-   - Recommendation: `level == 0`, as in the prototype. Recorded as A1.
+   - RESOLVED: No. 04-05 adopts A1: D-01's "local repo config" excludes `include.path` files (`meta.level == 0`), pinned by `git::config::tests::included_key_is_not_read`. If wrong, someone who deliberately includes wsx config reads as not configured, and the fix is one filter term.
 
 2. **Should a remote defined only in global config exist for D-03 and D-04?**
    - What we know: git has both answers. `git remote` lists it, and `git remote add` treats the name as free.
    - What's unclear: nothing that blocks work.
-   - Recommendation: in-repo only, which keeps D-01's reasoning and makes the phantom-origin case resolvable. Recorded as A2.
+   - RESOLVED: No. 04-06 adopts A2: "a remote exists" (D-03, D-04) means defined in this repo, as `git remote add` decides, not as `git remote` lists, so a remote defined only in global config counts as missing. Pinned by `git::config::tests::global_remote_section_is_not_a_remote`, `keyless_local_remote_section_is_not_a_remote` and `local_remote_is_a_remote`.
 
 3. **Do nested branches count as fallback candidates?**
    - What we know: the oracle's `for-each-ref 'refs/heads/workspace/*'` excludes them. `git branch --list` was not measured.
-   - Recommendation: one level. Recorded as A3.
+   - RESOLVED: No. 04-08 adopts A3: D-21's `refs/heads/workspace/*` is one level, as git's glob reads it, pinned by `git::refs::tests::refs_directly_under_matches_for_each_ref`. If wrong, `workspace/a/b` alone gives "zero candidates", naming the fix, instead of being picked, which fails safe either way.
 
 4. **Which order for reads when several are broken?**
-   - The prototype reports the first failure only: the branch, then remotes, then integration, then the worktree dir, then the manifest. D-09 and D-12 require naming the refs and lines of one failure, not every failure, so this meets them. A manifest with two bad lines reports the first. Phase 5 can revisit this if `wsx check` wants a full list.
+   - RESOLVED: The first failure only. 04-01's `build` keeps the prototype's order: the branch, then remotes, then integration, then the worktree dir, then the manifest. D-09 and D-12 require naming the refs and lines of one failure, not every failure, so this meets them. 04-04 adopts the same for lines: a manifest with two bad lines reports the first only, which meets D-11 and D-12. Phase 5 can revisit this if `wsx check` wants a full list.
 
 ## Environment Availability
 
