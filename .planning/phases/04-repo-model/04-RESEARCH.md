@@ -875,7 +875,7 @@ These are readings of decisions the owner left to research; each was measured ag
 **Missing dependencies with no fallback:** none.
 **Missing dependencies with fallback:** none.
 
-The container image is `mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie` (`.devcontainer/Dockerfile:14`). Its git version was not checked this session. The prototype's behaviour was not run in it, so the phase gate must.
+The container image is `mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie` (`.devcontainer/Dockerfile:14`). Its git, measured 2026-11-02 with `git --version` in the image and not through the test suite: `/usr/local/bin/git` is 2.56.0, `/usr/bin/git` is 2.47.3, and `HERMETIC_PATH` in `src/git/testing.rs` selects 2.56.0, equal to the host, so the container adds no second git version and no real git at the 2.54 floor runs. The prototype's behaviour was not run in it, so the phase gate must.
 
 ## Validation Architecture
 
