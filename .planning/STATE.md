@@ -4,11 +4,11 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Phase 4 context gathered
-last_updated: "2026-11-03T21:34:30.608Z"
+stopped_at: Phase 03.1 context gathered
+last_updated: "2026-11-03T21:40:02.914Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 3 complete, transitioned to Phase 4
-state_head: b23294afc85a66d88f5f888fd84e35947cb8de2a
+state_head: 45b26b748e3f1f47867b96097d9a30e464003a89
 progress:
   total_phases: 16
   completed_phases: 3
@@ -188,6 +188,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-01T19:13:49.764Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-repo-model/04-CONTEXT.md
+Last session: 2026-11-03T21:40:02.707Z
+Stopped at: Phase 03.1 context gathered
+Resume file: .planning/phases/03.1-resolve-ref-names-as-git-does/03.1-CONTEXT.md
