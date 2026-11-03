@@ -5,12 +5,12 @@ current_phase: 04
 current_phase_name: Repo model
 status: executing
 stopped_at: Phase 4 context gathered
-last_updated: "2026-11-03T20:10:33.735Z"
+last_updated: "2026-11-03T21:34:30.608Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 3 complete, transitioned to Phase 4
-state_head: 0a0dc55e45a6877e098825f52dd886ae2e1706f4
+state_head: b23294afc85a66d88f5f888fd84e35947cb8de2a
 progress:
-  total_phases: 15
+  total_phases: 16
   completed_phases: 3
   total_plans: 43
   completed_plans: 32
@@ -173,6 +173,10 @@ Recent decisions affecting current work:
 - Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
 - Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
 - Phase 5: assign exit codes to the refusals added in phase 3 review (RelativeRepoEnv, ObjectStoreEnv incl. GIT_COMMON_DIR and receive-pack quarantine, ImplicitWorkTree, StaleWorktree, GitEmptyOutput); see 03-CONTEXT 'Decided during code review'
+
+### Roadmap Evolution
+
+- Phase 03.1 inserted after Phase 3: Resolve ref names as git does: gix rev_parse_single resolves describe-shaped ref names to another object (URGENT)
 
 ## Deferred Items
 

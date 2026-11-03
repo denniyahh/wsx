@@ -151,6 +151,16 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Wave 6** *(blocked on Wave 5 completion)*
 - [x] 03-10-PLAN.md — `GIT_CEILING_DIRECTORIES` parity with git; phase gate (`check.sh all`, `deps`, container)
 
+### Phase 03.1: Resolve ref names as git does (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 03.1 to break down)
+
 ### Phase 4: Repo model
 
 **Goal**: Every command resolves one repo model: the integration branch, the workspace branch, the base and push remotes, and a single personal-path list read from the workspace branch tip's `.wsx.conf`
