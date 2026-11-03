@@ -1,0 +1,76 @@
+use gix::bstr::{BStr, ByteSlice};
+use std::{collections::BTreeSet, process::Command};
+type R<T> = Result<T, Box<dyn std::error::Error>>;
+const MANIFEST: &str = ".wsx.conf";
+
+fn hook() {
+    if let Ok(script) = std::env::var("AFTER_OPEN") {
+        assert!(Command::new("sh").arg("-c").arg(script).status().unwrap().success());
+    }
+}
+fn peel(repo: &gix::Repository, rev: &str) -> R<gix::ObjectId> {
+    let id = repo.rev_parse_single(BStr::new(rev))?.detach();
+    Ok(repo.find_object(id)?.peel_to_commit()?.id)
+}
+fn manifest(repo: &gix::Repository, rev: &str) -> R<String> {
+    let tip = peel(repo, rev)?;
+    let commit = repo.find_object(tip)?.peel_to_commit()?;
+    let tree = commit.tree()?;
+    let entry = tree.find_entry(MANIFEST).ok_or("absent")?;
+    let oid = entry.oid().to_owned();
+    let blob = repo.find_object(oid)?;
+    Ok(blob.data.to_str_lossy().trim_end().to_string())
+}
+/// 04-11's guard, as the plan words it: base from config, refs directly under
+/// it, lower-cased name set, symbolic or target-in-set is refused.
+fn guard(repo: &gix::Repository) -> R<Result<usize, String>> {
+    let snapshot = repo.config_snapshot();
+    let base: Vec<u8> = snapshot
+        .string("gitoxide.objects.replaceRefBase")
+        .map(|v| v.to_vec())
+        .unwrap_or_else(|| b"refs/replace/".to_vec());
+    let mut under = Vec::new();
+    let platform = repo.references()?;
+    for r in platform.all()? {
+        let r = r?;
+        let full = r.name().as_bstr().to_vec();
+        if full.starts_with(&base) && !full[base.len()..].contains(&b'/') {
+            under.push((full[base.len()..].to_vec(), r));
+        }
+    }
+    let names: BTreeSet<Vec<u8>> = under.iter().map(|(n, _)| n.to_ascii_lowercase()).collect();
+    for (name, r) in &under {
+        match r.target() {
+            gix::refs::TargetRef::Symbolic(t) => {
+                return Ok(Err(format!("symbolic {} -> {}", name.as_bstr(), t.as_bstr())));
+            }
+            gix::refs::TargetRef::Object(id) => {
+                if names.contains(id.to_string().as_bytes()) {
+                    return Ok(Err(format!("chain {} -> {id}", name.as_bstr())));
+                }
+            }
+        }
+    }
+    Ok(Ok(under.len()))
+}
+fn main() -> R<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let repo = gix::open(&args[2])?;
+    match args[1].as_str() {
+        "read" => { hook(); println!("{:?}", manifest(&repo, &args[3]).map_err(|e| e.to_string())); }
+        "guard-read" => {
+            hook();
+            println!("guard={:?}", guard(&repo)?);
+            println!("read={:?}", manifest(&repo, &args[3]).map_err(|e| e.to_string()));
+        }
+        "tip" => println!("{}", peel(&repo, &args[3])?),
+        "ref-commit" => {
+            let r = repo.try_find_reference(args[3].as_str())?.ok_or("no ref")?;
+            println!("find_ref={:?} name_ok={}", r.target().try_id().map(|i| i.to_string()), r.name().as_bstr() == args[3].as_bytes());
+            hook();
+            println!("second_lookup={}", peel(&repo, &args[3])?);
+        }
+        other => panic!("{other}"),
+    }
+    Ok(())
+}
