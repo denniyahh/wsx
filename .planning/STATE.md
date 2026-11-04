@@ -5,10 +5,10 @@ current_phase: "03.1"
 current_phase_name: Resolve ref names as git does
 status: executing
 stopped_at: Completed 03.1-03-PLAN.md
-last_updated: "2026-11-04T00:36:33.798Z"
+last_updated: "2026-11-04T00:44:50.794Z"
 last_activity: 2026-11-03
 last_activity_desc: Phase 03.1 execution started
-state_head: 02d8a7fcd9c59110e8bcb471988572f77b0f47a6
+state_head: d658e5130423559563183496b08610158261268d
 progress:
   total_phases: 16
   completed_phases: 3
@@ -168,6 +168,7 @@ Recent decisions affecting current work:
 - [Phase 03.1]: 03.1-02: peel_commit refuses a branch name, an abbreviated id, an empty id and a describe-shaped ref name at the hex decode, while git resolves them; tests assert the refusal with git as the contrast (D-01, git-layer half of D-04)
 - [Phase 03.1]: 03.1-03: ahead_behind, range_walk and tree_diff take git::ObjectId; commit reads peel through commit_id/peel_commit, tree_diff peels to a tree-ish via tree_of(&ObjectId); no read in reads.rs calls Repo::resolve or resolve_commit; read errors name hex ids only
 - [Phase 03.1]: 03.1-03: deleted tree_diff_keeps_the_reftable_refusal and files_repo_diffs_head_through_the_same_path (operator decision 2026-11-03: a read on ids reaches no ref); open_unchecked and three backstop tests stay until 03.1-04
+- [Phase 03.1]: Reftable backstop retired by the operator on 2026-11-03 (03.1-RESEARCH Open Question 1): Phase 3's backstop, gix's unsupported-storage error mapped to the reftable refusal inside `Repo::resolve`, is removed with `resolve`, amending Phase 3 CONTEXT's backstop clause; `refuse_ref_storage` at discover is the only reftable guard; on reftable, gix's exact ref read returns `None` and its ref listing is empty, never an unsupported error (04-RESEARCH Pitfall 10), so no backstop is reachable and Phase 4 carries no obligation for one.
 
 ### Pending Todos
 
@@ -182,6 +183,8 @@ Recent decisions affecting current work:
 - Host linuxbrew cargo-nextest is 0.9.150 (pin 0.9.148) and shadows ~/.cargo/bin; phase-3 gates run with PATH=$PWD/target/gsd-tools:$PATH (pinned tools installed there by scripts/install-tools.sh) until the pin or host tool is reconciled
 - Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
 - Phase 5: assign exit codes to the refusals added in phase 3 review (RelativeRepoEnv, ObjectStoreEnv incl. GIT_COMMON_DIR and receive-pack quarantine, ImplicitWorkTree, StaleWorktree, GitEmptyOutput); see 03-CONTEXT 'Decided during code review'
+- Phase 4 (before it executes): apply 03.1's changes to the Phase 4 plans, per 03.1-RESEARCH.md § Phase 4 Impact. In 04-01: `src/git/refs.rs`, `mod refs;`, `peel_commit` and `peeled_commit` already exist, so the RED step stubs only `find_ref`, `ref_commit`, `root_entry` and `is_branch_name`, and GREEN no longer implements the peel; the `peel_commit`/`peeled_commit` acceptance check now passes at baseline (`SYMREF_MAX_DEPTH` still exits 1); `ref_commit_reads_the_commit_a_describe_shaped_ref_holds` calls `rev_parse_single`, which clippy now rejects, so that call needs its own `#[expect(clippy::disallowed_methods, reason = "...")]` on its `let`, or the test drops it and cites 03.1's pin test; Task 2's `DISCOVERING_SUITES` baseline is `[&str; 3]`, with `git::refs::tests::` already present; the references to `resolve` and `resolve_commit` go (the `<context>` ranges `src/git/reads.rs lines 1-66` and `src/git/repo.rs lines 158-190`, GREEN step 2's prose, the `<verification>` limit about `Repo::resolve`); and the artifact entry for `peel_commit` in `src/git/refs.rs` becomes pre-existing. Also re-derive by symbol the shifted `src/git/repo.rs` ranges in 04-05 (line 93) and 04-09 (line 211), and update 04-PATTERNS.md lines 45, 66, 70-71, 97 and 519-521, which show `resolve_commit` and the `resolve` backstop.
+- Phases 4 and 8 (03.1 D-04): a user's `<branch>` argument (`wsx new|land|rm <branch>`) is read as exactly `refs/heads/<branch>`, after a branch-name check, never through git's DWIM ladder or a revspec parser, so a branch named like a hex prefix (`abc1234`) or like describe output (`rel-1-gdeadbee`) reads that branch. Since 03.1-04, gix's revspec parsers fail `scripts/check.sh clippy`.
 
 ### Roadmap Evolution
 
