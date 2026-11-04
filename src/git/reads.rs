@@ -232,7 +232,9 @@ mod tests {
     use std::path::Path;
 
     use super::super::spawn::Git;
-    use super::super::testing::{self, Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
+    use super::super::testing::{
+        self, Scratch, T0, TICK, commit_all, criss_cross, describe_shaped_ref, git_ok, write,
+    };
     use super::super::{Error, ObjectId};
     use super::{AheadBehind, ChangeKind, Repo, TreeChange};
 
@@ -417,6 +419,38 @@ mod tests {
         assert!(
             candidates.contains(&from_git.as_str()),
             "{from_git} is not among git merge-base --all's {candidates:?}"
+        );
+    }
+
+    /// A ref named like `describe` output, whose hex part prefixes another
+    /// commit, has git's merge-base: git reads the name as the ref, and gix's
+    /// revspec parser would read it as the other commit.
+    #[test]
+    fn merge_base_of_a_describe_shaped_ref_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("describe-shaped").expect("create scratch");
+        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+
+        let name = fixture.name.as_str();
+        let from_git = git_line(&scratch, &fixture.repo, &["merge-base", name, "other"]);
+        assert_eq!(
+            from_git, fixture.one,
+            "git merge-base {name} other against ONE {}",
+            fixture.one
+        );
+        let from_wsx = repo
+            .merge_base(name.as_bytes(), b"other")
+            .expect("wsx merge-base of the describe-shaped ref and other")
+            .map(|id| id.to_string());
+        assert_eq!(
+            from_wsx,
+            Some(from_git.clone()),
+            "merge-base {name} other: wsx against git's {from_git}; \
+             gix's revspec parser reads {name} as {}",
+            fixture.other
         );
     }
 

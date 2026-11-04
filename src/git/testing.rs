@@ -411,6 +411,76 @@ pub fn criss_cross(scratch: &Scratch) -> Result<PathBuf, String> {
     Ok(repo)
 }
 
+/// A repository with a ref named like `git describe` output, whose hex part
+/// names another commit than the ref holds.
+pub struct DescribeShaped {
+    /// The repository, `<scratch root>/repo`, with `main` checked out.
+    pub repo: PathBuf,
+    /// The full ref name, `refs/remotes/origin/rel-1-g` followed by the
+    /// first seven hex characters of `other`.
+    pub name: String,
+    /// The commit `name` and `main` hold (ONE), as hex.
+    pub one: String,
+    /// The commit branch `other` holds (Y, a child of ONE), as hex: the
+    /// object `name`'s hex part prefixes.
+    pub other: String,
+}
+
+/// Builds the describe-shaped fixture in `<scratch root>/repo` and returns
+/// it, with `main` checked out.
+///
+/// `main` holds ONE (`a.txt`); branch `other` holds Y, a child of ONE that
+/// adds `b.txt`. The ref `refs/remotes/origin/rel-1-g<first 7 hex of Y>`
+/// holds ONE. git reads that name as the ref, so it names ONE. Research
+/// measured on gix 0.90.0 that gix's revspec parser tries the hex prefix
+/// and describe output before refs, and so reads the same name as Y.
+///
+/// Fails unless git reads `name` as ONE, the seven hex characters name Y
+/// and only Y, and ONE differs from Y.
+pub fn describe_shaped_ref(scratch: &Scratch) -> Result<DescribeShaped, String> {
+    let repo = scratch.root.join("repo");
+    fs::create_dir_all(&repo).map_err(|err| format!("create {}: {err}", repo.display()))?;
+    git_ok(scratch, &repo, ["init", "-q", "-b", "main"])?;
+
+    write(&repo.join("a.txt"), b"a\n")?;
+    commit_all(scratch, &repo, "one", T0)?;
+    let one = rev_parse(scratch, &repo, "HEAD")?;
+
+    git_ok(scratch, &repo, ["switch", "-q", "-c", "other"])?;
+    write(&repo.join("b.txt"), b"b\n")?;
+    commit_all(scratch, &repo, "y", T0 + TICK)?;
+    let other = rev_parse(scratch, &repo, "HEAD")?;
+    git_ok(scratch, &repo, ["switch", "-q", "main"])?;
+
+    let prefix = other
+        .get(..7)
+        .ok_or_else(|| format!("describe-shaped: Y's id {other:?} is shorter than 7"))?;
+    let name = format!("refs/remotes/origin/rel-1-g{prefix}");
+    git_ok(scratch, &repo, ["update-ref", name.as_str(), one.as_str()])?;
+
+    let named = rev_parse(scratch, &repo, &name)?;
+    if named != one {
+        return Err(format!(
+            "describe-shaped: git reads {name} as {named}, not as ONE {one}"
+        ));
+    }
+    let prefixed = rev_parse(scratch, &repo, prefix)?;
+    if prefixed != other {
+        return Err(format!(
+            "describe-shaped: git reads {prefix} as {prefixed}, not as Y {other}"
+        ));
+    }
+    if one == other {
+        return Err(format!("describe-shaped: ONE and Y are both {one}"));
+    }
+    Ok(DescribeShaped {
+        repo,
+        name,
+        one,
+        other,
+    })
+}
+
 /// A main worktree and two linked worktrees of one repository, all canonical.
 pub struct Worktrees {
     /// The main worktree, `<scratch root>/main`, on branch `main`.
