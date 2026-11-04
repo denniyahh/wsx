@@ -43,6 +43,7 @@ cut that silently drops code, is the unacceptable failure.
 
 - ✓ Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls — Phase 2 (Rust sides enabled by phases 5-10)
 - ✓ Git adapter: gix 0.90 reads equal to git's, every history change through the `git` binary (hooks and signing run), discovery correct inside hooks and from any worktree, reftable and foreign-owned repos refused — Phase 3
+- ✓ Reads take commit ids, never names, so a ref named like `describe` output (`rel-1-g<hex>`) can no longer resolve to another commit than git's; gix's revspec parsers are banned by clippy and its `mailmap` feature by cargo-deny — Phase 03.1
 
 ### Active
 
@@ -120,6 +121,7 @@ cut that silently drops code, is the unacceptable failure.
 | Oracle is devflow's original scripts at a recorded commit, not wsx's ports | The ports carry fixes, so they cannot show the defects `fixed:` scenarios must reproduce | ✓ Good (Phase 2: 9+ defects reproduced) |
 | Scenarios declare their repo config; the oracle runs wherever it implements the behaviour | wsx is config-driven (owner, 2026-10-26); devflow-shaped configs are the oracle's only reference | ✓ Good (Phase 2) |
 | Where gix and git would read a different repository, wsx refuses instead of guessing | Fail closed over silent divergence: relative repo paths, object-store and common-dir variables, an underivable implicit worktree, `SUDO_UID` as non-root (Phase 3 review, 2026-10-27) | ✓ Good (Phase 3); exit codes in phase 5 |
+| The git layer reads by commit id; names are read only as an exact ref | gix's revspec parser tries hex prefixes and describe output before refs, where git reads refs first (Phase 03.1, 2026-11-03); the reftable backstop inside `resolve` was retired with it (owner, 2026-11-03) | ✓ Good (Phase 03.1); exact `refs/heads/<branch>` reads in Phases 4 and 8 |
 | PR branches are cut with no upstream | The oracle's tracking of `<base>/develop` is an accident of `git branch -f` that breaks pull/push on the PR branch (owner, 2026-10-26) | — Pending (Phase 9) |
 
 ## Evolution
@@ -140,4 +142,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-27 after Phase 3*
+*Last updated: 2026-11-04 after Phase 03.1*

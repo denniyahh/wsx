@@ -21,10 +21,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-27)
+See: .planning/PROJECT.md (updated 2026-11-04)
 
 **Core value:** wsx must never let a personal file reach a shared branch or PR, and must never lose work while moving it between the workspace branch, feature worktrees and PR branches.
-**Current focus:** Phase 03.1 — Resolve ref names as git does
+**Current focus:** Phase 04 — Repo model (revise its plans for 03.1 first; see Blockers)
 
 ## Current Position
 
@@ -204,6 +204,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-04T00:46:22.609Z
-Stopped at: Phase 03.1 complete, ready to execute Phase 04
+Last session: 2026-11-04T12:50:00Z
+Stopped at: Phase 03.1 complete (verified, secured, validated); Phase 04 plans need the 03.1 revision listed under Blockers before execution
 Resume file: None
