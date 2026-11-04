@@ -83,19 +83,21 @@ impl Repo {
     /// Every commit reachable from one of `tips` and from none of `hidden`
     /// (`git rev-list <tips> --not <hidden>`). The result is a set: no walk
     /// order is promised (gix walks breadth-first topologically, git
-    /// reverse-chronologically). No tips is the empty set, without a walk.
-    /// Takes object ids, each peeled to its commit (an annotated tag to the
-    /// commit it points to) with `Repo::peel_commit`.
+    /// reverse-chronologically). Takes object ids, each peeled to its commit
+    /// (an annotated tag to the commit it points to) with
+    /// `Repo::peel_commit`. Every id is peeled before any walk, so an id
+    /// that does not peel is refused even with no tips, as git refuses it;
+    /// no tips is otherwise the empty set, without a walk.
     pub fn range_walk(
         &self,
         tips: &[ObjectId],
         hidden: &[ObjectId],
     ) -> Result<BTreeSet<ObjectId>, Error> {
-        if tips.is_empty() {
-            return Ok(BTreeSet::new());
-        }
         let tip_ids = self.commit_ids(tips)?;
         let hidden_ids = self.commit_ids(hidden)?;
+        if tip_ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
         let failed = |message: String| Error::Gix {
             what: format!("walk {} --not {}", render_ids(tips), render_ids(hidden)),
             message,
@@ -936,6 +938,60 @@ mod tests {
             "",
             "git rev-list --not main printed something"
         );
+    }
+
+    /// With no tips, a hidden id that names no object is still refused, as
+    /// `git rev-list --not <id>` refuses it, rather than read as the empty
+    /// walk.
+    #[test]
+    fn range_walk_without_tips_refuses_a_missing_hidden_id() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("walk-no-tips-missing").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let other_dir = scratch.root.join("other");
+        std::fs::create_dir_all(&other_dir)
+            .unwrap_or_else(|err| panic!("create {}: {err}", other_dir.display()));
+        git_ok(&scratch, &other_dir, ["init", "-q", "-b", "main"]).expect("git init other");
+        write(&other_dir.join("x.txt"), b"x\n").expect("write x.txt");
+        commit_all(&scratch, &other_dir, "other", T0).expect("commit in other");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let missing = id(&scratch, &other_dir, "HEAD");
+        let hex = missing.to_string();
+        let present = testing::git(&scratch, &repo_dir, ["cat-file", "-e", hex.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            present.status.code(),
+            Some(0),
+            "{hex} from <root>/other exists in the fixture"
+        );
+        let from_git = testing::git(&scratch, &repo_dir, ["rev-list", "--not", hex.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            from_git.status.code(),
+            Some(0),
+            "git rev-list --not {hex} accepted the missing id, printing {:?}",
+            String::from_utf8_lossy(&from_git.stdout)
+        );
+
+        let prefix = format!("peel {hex} to a commit: ");
+        match repo.range_walk(&[], std::slice::from_ref(&missing)) {
+            Err(err @ Error::Gix { .. }) => {
+                let rendered = err.to_string();
+                assert!(
+                    rendered
+                        .strip_prefix(prefix.as_str())
+                        .is_some_and(|message| !message.is_empty()),
+                    "walk --not {hex} rendered {rendered:?}, not {prefix:?} and gix's message"
+                );
+            }
+            other => panic!(
+                "walk --not {hex}: expected Error::Gix, got {other:?}; git refused with {}",
+                String::from_utf8_lossy(&from_git.stderr).trim_end()
+            ),
+        }
     }
 
     /// The criss-cross fixture with the annotated tag `v1` on `main`,
