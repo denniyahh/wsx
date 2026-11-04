@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: "03.1"
 current_phase_name: Resolve ref names as git does
 status: executing
-stopped_at: Completed 03.1-02-PLAN.md
-last_updated: "2026-11-04T00:28:27.405Z"
+stopped_at: Completed 03.1-03-PLAN.md
+last_updated: "2026-11-04T00:36:33.798Z"
 last_activity: 2026-11-03
 last_activity_desc: Phase 03.1 execution started
-state_head: a8de5b1b45a36181c57fcae6542468bc8beaaad4
+state_head: 02d8a7fcd9c59110e8bcb471988572f77b0f47a6
 progress:
   total_phases: 16
   completed_phases: 3
   total_plans: 47
-  completed_plans: 34
+  completed_plans: 35
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-27)
 ## Current Position
 
 Phase: 03.1 (Resolve ref names as git does) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-11-03 — Phase 03.1 execution started
 
@@ -91,6 +91,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 03 P10 | 17min | 4 tasks | 5 files |
 | Phase 03.1 P01 | 7 min | 2 tasks | 5 files |
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
+| Phase 03.1 P03 | 5 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -165,6 +166,8 @@ Recent decisions affecting current work:
 - [Phase 03.1]: 03.1-01: until 03.1-03, ahead_behind, range_walk and tree_diff still take revspec bytes; each read's doc says so, and to_gix has no hash-kind check until 03.1-02
 - [Phase 03.1]: 03.1-02: ObjectId::to_gix takes the repository hash kind and refuses an id of the other kind before lookup (read object id <hex>: a sha1 id in a sha256 repository); peeled_commit and commit_id pass self.repo.object_hash()
 - [Phase 03.1]: 03.1-02: peel_commit refuses a branch name, an abbreviated id, an empty id and a describe-shaped ref name at the hex decode, while git resolves them; tests assert the refusal with git as the contrast (D-01, git-layer half of D-04)
+- [Phase 03.1]: 03.1-03: ahead_behind, range_walk and tree_diff take git::ObjectId; commit reads peel through commit_id/peel_commit, tree_diff peels to a tree-ish via tree_of(&ObjectId); no read in reads.rs calls Repo::resolve or resolve_commit; read errors name hex ids only
+- [Phase 03.1]: 03.1-03: deleted tree_diff_keeps_the_reftable_refusal and files_repo_diffs_head_through_the_same_path (operator decision 2026-11-03: a read on ids reaches no ref); open_unchecked and three backstop tests stay until 03.1-04
 
 ### Pending Todos
 
@@ -195,6 +198,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-04T00:28:27.154Z
-Stopped at: Completed 03.1-02-PLAN.md
+Last session: 2026-11-04T00:36:33.548Z
+Stopped at: Completed 03.1-03-PLAN.md
 Resume file: None
