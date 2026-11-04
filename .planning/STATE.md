@@ -176,7 +176,8 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 - [2026-10-25] [tooling] Re-check Dependabot after first merge to main — [todo file](.planning/todos/pending/2026-10-25-re-check-dependabot-after-first-merge-to-main.md)
-- [2026-10-26] [tests] Replace oracle-observed exit 128 under IF-01 (phases 7/9, accepted risk AR-02-02) — [todo file](.planning/todos/pending/2026-10-26-replace-oracle-observed-exit-128-under-if-01.md)
+- [2026-10-26] [tests] Replace oracle-observed exit 128 under IF-01 — [todo file](.planning/todos/pending/2026-10-26-replace-oracle-observed-exit-128-under-if-01.md)
+- [2026-11-04] [planning] Re-verify Phases 1-3 before milestone audit — [todo file](.planning/todos/pending/2026-11-04-re-verify-phases-1-3-before-milestone-audit.md)
 
 ### Blockers/Concerns
 
