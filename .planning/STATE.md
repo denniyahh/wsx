@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: "03.1"
 current_phase_name: Resolve ref names as git does
 status: executing
-stopped_at: Completed 03.1-01-PLAN.md
-last_updated: "2026-11-04T00:19:29.443Z"
+stopped_at: Completed 03.1-02-PLAN.md
+last_updated: "2026-11-04T00:28:27.405Z"
 last_activity: 2026-11-03
 last_activity_desc: Phase 03.1 execution started
-state_head: e5924d71913e36dea52581fb8f410bebfeb67ba5
+state_head: a8de5b1b45a36181c57fcae6542468bc8beaaad4
 progress:
   total_phases: 16
   completed_phases: 3
   total_plans: 47
-  completed_plans: 33
+  completed_plans: 34
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-27)
 ## Current Position
 
 Phase: 03.1 (Resolve ref names as git does) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-11-03 — Phase 03.1 execution started
 
@@ -90,6 +90,7 @@ Progress: [██░░░░░░░░] 20%
 | Phase 03 P09 | 5min | 2 tasks | 2 files |
 | Phase 03 P10 | 17min | 4 tasks | 5 files |
 | Phase 03.1 P01 | 7 min | 2 tasks | 5 files |
+| Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -162,6 +163,8 @@ Recent decisions affecting current work:
 - [Phase 3]: Review fixes (03-REVIEW-FIX it.2-3): the ceiling check compares the directory git discovery stopped in, not the worktree; GIT_DIR without a worktree setting takes git's worktree; SUDO_UID is honoured only as root (72a4bd4)
 - [Phase 03.1]: 03.1-01: merge_base takes git::ObjectId and peels through Repo::peel_commit (src/git/refs.rs); ObjectId::to_gix decodes hex only; test ids come from testing::object_id (git rev-parse --verify)
 - [Phase 03.1]: 03.1-01: until 03.1-03, ahead_behind, range_walk and tree_diff still take revspec bytes; each read's doc says so, and to_gix has no hash-kind check until 03.1-02
+- [Phase 03.1]: 03.1-02: ObjectId::to_gix takes the repository hash kind and refuses an id of the other kind before lookup (read object id <hex>: a sha1 id in a sha256 repository); peeled_commit and commit_id pass self.repo.object_hash()
+- [Phase 03.1]: 03.1-02: peel_commit refuses a branch name, an abbreviated id, an empty id and a describe-shaped ref name at the hex decode, while git resolves them; tests assert the refusal with git as the contrast (D-01, git-layer half of D-04)
 
 ### Pending Todos
 
@@ -192,6 +195,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-04T00:19:29.113Z
-Stopped at: Completed 03.1-01-PLAN.md
+Last session: 2026-11-04T00:28:27.154Z
+Stopped at: Completed 03.1-02-PLAN.md
 Resume file: None
