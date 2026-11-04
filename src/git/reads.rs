@@ -785,6 +785,36 @@ mod tests {
         );
     }
 
+    /// The diff from a ref named like `describe` output to `main` is git's:
+    /// git reads the name as the ref, which holds `main`'s commit, so nothing
+    /// differs, and gix's revspec parser would diff the other commit's tree.
+    #[test]
+    fn tree_diff_of_a_describe_shaped_ref_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("describe-shaped-diff").expect("create scratch");
+        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+
+        let name = fixture.name.as_str();
+        let from_git = git_tree_diff(&scratch, &fixture.repo, name, "main");
+        assert_eq!(
+            from_git,
+            Vec::<TreeChange>::new(),
+            "git diff-tree {name} main"
+        );
+        let from_wsx = repo
+            .tree_diff(name.as_bytes(), b"main")
+            .expect("wsx diff of the describe-shaped ref and main");
+        assert_eq!(
+            from_wsx, from_git,
+            "diff {name} main: wsx against git diff-tree --no-renames; \
+             gix's revspec parser reads {name} as {}",
+            fixture.other
+        );
+    }
+
     #[test]
     fn tree_diff_changes_with_the_pair() {
         if testing::rerun_scrubbed() {
