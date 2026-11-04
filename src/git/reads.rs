@@ -1,7 +1,7 @@
-//! Read queries answered by gix. Each takes revisions as revspec bytes and
-//! resolves them through `Repo::resolve` (commit queries through
-//! `Repo::resolve_commit`, which peels annotated tags as git does), so
-//! callers never hold a gix type.
+//! Read queries answered by gix; callers never hold a gix type.
+//! `merge_base` takes object ids and peels each to its commit with
+//! `Repo::peel_commit`, so it parses no revspec. Each other read's own doc
+//! says what it takes.
 
 use std::collections::BTreeSet;
 
@@ -43,29 +43,28 @@ pub struct TreeChange {
 }
 
 impl Repo {
-    /// The merge-base of `one` and `two`, or `None` when they share no
-    /// history. On a criss-cross history with several best bases, this is the
-    /// one gix picks first; the tests pin that it equals `git merge-base`'s on
-    /// one such history, which shows gix can match git there, not that it
-    /// always does.
-    pub fn merge_base(&self, one: &[u8], two: &[u8]) -> Result<Option<ObjectId>, Error> {
-        let one_id = self.resolve_commit(one)?;
-        let two_id = self.resolve_commit(two)?;
+    /// The merge-base of the commits the object ids `one` and `two` name,
+    /// or `None` when they share no history. Each id is peeled to its commit
+    /// (an annotated tag to the commit it points to) with `Repo::peel_commit`.
+    /// On a criss-cross history with several best bases, this is the one gix
+    /// picks first; the tests pin that it equals `git merge-base`'s on one
+    /// such history, which shows gix can match git there, not that it always
+    /// does.
+    pub fn merge_base(&self, one: &ObjectId, two: &ObjectId) -> Result<Option<ObjectId>, Error> {
+        let one_id = self.commit_id(one)?;
+        let two_id = self.commit_id(two)?;
         let base = self
             .repo
             .merge_base(one_id, two_id)
             .map_err(|err| Error::Gix {
-                what: format!(
-                    "merge-base {} {}",
-                    String::from_utf8_lossy(one),
-                    String::from_utf8_lossy(two)
-                ),
+                what: format!("merge-base {one} {two}"),
                 message: err.to_string(),
             })?;
         Ok(base.map(|id| ObjectId::from_gix(&id)))
     }
 
     /// How many commits `first` has that `second` lacks, and the reverse.
+    /// Takes revspec bytes, resolved as `range_walk` resolves them.
     /// gix has no ahead/behind query, so each side is a walk from one
     /// revision with the other hidden, as `git rev-list --count` counts.
     pub fn ahead_behind(&self, first: &[u8], second: &[u8]) -> Result<AheadBehind, Error> {
@@ -79,6 +78,8 @@ impl Repo {
     /// (`git rev-list <tips> --not <hidden>`). The result is a set: no walk
     /// order is promised (gix walks breadth-first topologically, git
     /// reverse-chronologically). No tips is the empty set, without a walk.
+    /// Takes revspec bytes, resolved through `Repo::resolve_commit`, which
+    /// peels annotated tags as git does.
     pub fn range_walk(
         &self,
         tips: &[&[u8]],
@@ -109,7 +110,8 @@ impl Repo {
     /// The files that differ between the trees of `from` and `to`, sorted by
     /// path bytes, then kind, as `git diff-tree -r --no-renames` lists them:
     /// no rename detection (a rename is a deletion plus an addition) and no
-    /// directory entries.
+    /// directory entries. Takes revspec bytes, resolved through
+    /// `Repo::resolve`.
     pub fn tree_diff(&self, from: &[u8], to: &[u8]) -> Result<Vec<TreeChange>, Error> {
         use gix::prelude::FindExt;
 
@@ -172,6 +174,12 @@ impl Repo {
     /// The commits `revs` name, in order, with annotated tags peeled.
     fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
         revs.iter().map(|rev| self.resolve_commit(rev)).collect()
+    }
+
+    /// The commit the object id `id` names, as gix's id: `id` peeled with
+    /// `Repo::peel_commit`, then decoded.
+    fn commit_id(&self, id: &ObjectId) -> Result<gix::ObjectId, Error> {
+        self.peel_commit(id)?.to_gix()
     }
 }
 
@@ -359,6 +367,12 @@ mod tests {
         }
     }
 
+    /// The object id git names for `rev` in `dir`, from
+    /// `testing::object_id` (`git rev-parse --verify`), never from gix.
+    fn id(scratch: &Scratch, dir: &Path, rev: &str) -> ObjectId {
+        testing::object_id(scratch, dir, rev).unwrap_or_else(|err| panic!("{err}"))
+    }
+
     /// wsx's ids as the hex strings git prints.
     fn hex(ids: &BTreeSet<ObjectId>) -> BTreeSet<String> {
         ids.iter().map(ToString::to_string).collect()
@@ -396,7 +410,10 @@ mod tests {
 
         let from_git = git_line(&scratch, &repo_dir, &["merge-base", "main", "feat"]);
         let from_gix = repo
-            .merge_base(b"main", b"feat")
+            .merge_base(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix merge-base main feat")
             .map(|id| id.to_string());
         assert_eq!(
@@ -442,7 +459,10 @@ mod tests {
             fixture.one
         );
         let from_wsx = repo
-            .merge_base(name.as_bytes(), b"other")
+            .merge_base(
+                &id(&scratch, &fixture.repo, name),
+                &id(&scratch, &fixture.repo, "other"),
+            )
             .expect("wsx merge-base of the describe-shaped ref and other")
             .map(|id| id.to_string());
         assert_eq!(
@@ -466,7 +486,10 @@ mod tests {
         let f1 = git_line(&scratch, &repo_dir, &["rev-parse", "feat~3"]);
         let from_git = git_line(&scratch, &repo_dir, &["merge-base", "main", "feat~3"]);
         let moved = repo
-            .merge_base(b"main", b"feat~3")
+            .merge_base(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat~3"),
+            )
             .expect("gix merge-base main feat~3")
             .map(|id| id.to_string());
         assert_eq!(
@@ -482,7 +505,10 @@ mod tests {
         let c1 = git_line(&scratch, &repo_dir, &["rev-parse", "main~2"]);
         let from_git_c1 = git_line(&scratch, &repo_dir, &["merge-base", "main~2", "feat"]);
         let other = repo
-            .merge_base(b"main~2", b"feat")
+            .merge_base(
+                &id(&scratch, &repo_dir, "main~2"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix merge-base main~2 feat")
             .map(|id| id.to_string());
         assert_eq!(
@@ -745,7 +771,10 @@ mod tests {
         let f4 = git_line(&scratch, &repo_dir, &["rev-parse", "feat"]);
         let from_git = git_line(&scratch, &repo_dir, &["merge-base", "feat", "feat"]);
         let from_gix = repo
-            .merge_base(b"feat", b"feat")
+            .merge_base(
+                &id(&scratch, &repo_dir, "feat"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix merge-base feat feat")
             .map(|id| id.to_string());
         assert_eq!(
@@ -785,7 +814,10 @@ mod tests {
         let parent = git_line(&scratch, &repo_dir, &["rev-parse", "main~1"]);
         let from_git = git_line(&scratch, &repo_dir, &["merge-base", "main~1", "main"]);
         let from_gix = repo
-            .merge_base(b"main~1", b"main")
+            .merge_base(
+                &id(&scratch, &repo_dir, "main~1"),
+                &id(&scratch, &repo_dir, "main"),
+            )
             .expect("gix merge-base main~1 main")
             .map(|id| id.to_string());
         assert_eq!(
@@ -831,7 +863,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let from_gix = repo
-            .merge_base(b"main", b"lone")
+            .merge_base(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "lone"),
+            )
             .expect("gix merge-base main lone");
         assert_eq!(from_gix, None, "merge-base main lone from gix");
 
@@ -963,7 +998,10 @@ mod tests {
 
         let from_git = git_line(&scratch, &repo_dir, &["merge-base", "v1", "feat"]);
         let from_gix = repo
-            .merge_base(b"v1", b"feat")
+            .merge_base(
+                &id(&scratch, &repo_dir, "v1"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix merge-base v1 feat")
             .map(|id| id.to_string());
         assert_eq!(
@@ -1019,8 +1057,12 @@ mod tests {
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
+        let (main, feat) = (
+            id(&scratch, &repo_dir, "main"),
+            id(&scratch, &repo_dir, "feat"),
+        );
         let base = || {
-            repo.merge_base(b"main", b"feat")
+            repo.merge_base(&main, &feat)
                 .expect("gix merge-base main feat")
         };
         let (first, second) = (base(), base());

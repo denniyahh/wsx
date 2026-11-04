@@ -23,6 +23,7 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 
 mod reads;
+mod refs;
 mod repo;
 mod spawn;
 #[cfg(test)]
@@ -40,6 +41,16 @@ impl ObjectId {
     /// The wsx form of a gix object id: its lowercase hex.
     fn from_gix(id: &gix::oid) -> ObjectId {
         ObjectId(id.to_hex().to_string())
+    }
+
+    /// The gix form of this id: hex decoding only, never revspec parsing, so
+    /// no ref is read and no prefix or describe output is expanded. Anything
+    /// but a full-length hex id is refused, naming the id.
+    fn to_gix(&self) -> Result<gix::ObjectId, Error> {
+        gix::ObjectId::from_hex(self.0.as_bytes()).map_err(|err| Error::Gix {
+            what: format!("read object id {self}"),
+            message: err.to_string(),
+        })
     }
 }
 

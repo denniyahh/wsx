@@ -24,6 +24,8 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
+use super::ObjectId;
+
 /// An environment for one child, as ordered key/value pairs.
 pub type Env = Vec<(OsString, OsString)>;
 
@@ -301,6 +303,13 @@ fn rev_parse(scratch: &Scratch, dir: &Path, rev: &str) -> Result<String, String>
     String::from_utf8(stdout)
         .map(|id| id.trim_end().to_owned())
         .map_err(|err| format!("git rev-parse {rev} printed non-UTF-8: {err}"))
+}
+
+/// The object id git names for `rev` in `dir` (`git rev-parse --verify`).
+/// Tests get ids from git, never from gix's revspec parser, so a read and
+/// its oracle cannot agree because they share a parser (D-03).
+pub fn object_id(scratch: &Scratch, dir: &Path, rev: &str) -> Result<ObjectId, String> {
+    rev_parse(scratch, dir, rev).map(ObjectId)
 }
 
 /// Builds the criss-cross fixture in `<scratch root>/repo` and returns that

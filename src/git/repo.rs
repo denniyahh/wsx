@@ -1070,8 +1070,10 @@ mod tests {
         commit_all(&scratch, &repo_dir, "first", T0).expect("commit");
 
         let repo = Repo::discover(&repo_dir).expect("discover a SHA-256 repository");
+        let head_id =
+            testing::object_id(&scratch, &repo_dir, "HEAD").unwrap_or_else(|err| panic!("{err}"));
         let base = repo
-            .merge_base(b"HEAD", b"HEAD")
+            .merge_base(&head_id, &head_id)
             .expect("merge-base HEAD HEAD")
             .expect("HEAD is its own merge-base")
             .to_string();
