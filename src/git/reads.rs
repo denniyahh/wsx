@@ -64,13 +64,14 @@ impl Repo {
     }
 
     /// How many commits `first` has that `second` lacks, and the reverse.
-    /// Takes revspec bytes, resolved as `range_walk` resolves them.
-    /// gix has no ahead/behind query, so each side is a walk from one
-    /// revision with the other hidden, as `git rev-list --count` counts.
-    pub fn ahead_behind(&self, first: &[u8], second: &[u8]) -> Result<AheadBehind, Error> {
+    /// Takes object ids, each peeled to its commit as `range_walk` peels
+    /// them. gix has no ahead/behind query, so each side is a walk from one
+    /// commit with the other hidden, as `git rev-list --count` counts.
+    pub fn ahead_behind(&self, first: &ObjectId, second: &ObjectId) -> Result<AheadBehind, Error> {
+        let (first, second) = (std::slice::from_ref(first), std::slice::from_ref(second));
         Ok(AheadBehind {
-            ahead: self.range_walk(&[first], &[second])?.len(),
-            behind: self.range_walk(&[second], &[first])?.len(),
+            ahead: self.range_walk(first, second)?.len(),
+            behind: self.range_walk(second, first)?.len(),
         })
     }
 
@@ -78,20 +79,20 @@ impl Repo {
     /// (`git rev-list <tips> --not <hidden>`). The result is a set: no walk
     /// order is promised (gix walks breadth-first topologically, git
     /// reverse-chronologically). No tips is the empty set, without a walk.
-    /// Takes revspec bytes, resolved through `Repo::resolve_commit`, which
-    /// peels annotated tags as git does.
+    /// Takes object ids, each peeled to its commit (an annotated tag to the
+    /// commit it points to) with `Repo::peel_commit`.
     pub fn range_walk(
         &self,
-        tips: &[&[u8]],
-        hidden: &[&[u8]],
+        tips: &[ObjectId],
+        hidden: &[ObjectId],
     ) -> Result<BTreeSet<ObjectId>, Error> {
         if tips.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let tip_ids = self.resolve_all(tips)?;
-        let hidden_ids = self.resolve_all(hidden)?;
+        let tip_ids = self.commit_ids(tips)?;
+        let hidden_ids = self.commit_ids(hidden)?;
         let failed = |message: String| Error::Gix {
-            what: format!("walk {} --not {}", render_revs(tips), render_revs(hidden)),
+            what: format!("walk {} --not {}", render_ids(tips), render_ids(hidden)),
             message,
         };
         let walk = self
@@ -171,9 +172,10 @@ impl Repo {
             })
     }
 
-    /// The commits `revs` name, in order, with annotated tags peeled.
-    fn resolve_all(&self, revs: &[&[u8]]) -> Result<Vec<gix::ObjectId>, Error> {
-        revs.iter().map(|rev| self.resolve_commit(rev)).collect()
+    /// The commits the object ids `ids` name, in order, as gix's ids: each
+    /// through `commit_id`.
+    fn commit_ids(&self, ids: &[ObjectId]) -> Result<Vec<gix::ObjectId>, Error> {
+        ids.iter().map(|id| self.commit_id(id)).collect()
     }
 
     /// The commit the object id `id` names, as gix's id: `id` peeled with
@@ -226,10 +228,10 @@ fn entry_class(mode: gix::object::tree::EntryMode) -> gix::object::tree::EntryKi
     }
 }
 
-/// `revs` as one space-separated line for a message.
-fn render_revs(revs: &[&[u8]]) -> String {
-    revs.iter()
-        .map(|rev| String::from_utf8_lossy(rev))
+/// `ids` as one space-separated line of hex for a message.
+fn render_ids(ids: &[ObjectId]) -> String {
+    ids.iter()
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -538,7 +540,10 @@ mod tests {
         for (first, second) in [("main", "feat"), ("feat", "main"), ("main~1", "feat~2")] {
             let from_git = git_ahead_behind(&scratch, &repo_dir, first, second);
             let from_gix = repo
-                .ahead_behind(first.as_bytes(), second.as_bytes())
+                .ahead_behind(
+                    &id(&scratch, &repo_dir, first),
+                    &id(&scratch, &repo_dir, second),
+                )
                 .unwrap_or_else(|err| panic!("gix ahead/behind {first} {second}: {err}"));
             assert_eq!(
                 from_gix, from_git,
@@ -547,7 +552,10 @@ mod tests {
         }
 
         let main_feat = repo
-            .ahead_behind(b"main", b"feat")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix ahead/behind main feat");
         assert_eq!(
             main_feat,
@@ -570,7 +578,10 @@ mod tests {
 
         let from_git = git_ahead_behind(&scratch, &repo_dir, "main", "feat~3");
         let moved = repo
-            .ahead_behind(b"main", b"feat~3")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat~3"),
+            )
             .expect("gix ahead/behind main feat~3");
         assert_eq!(
             moved, from_git,
@@ -586,7 +597,10 @@ mod tests {
         );
 
         let main_feat = repo
-            .ahead_behind(b"main", b"feat")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix ahead/behind main feat");
         assert_ne!(
             moved, main_feat,
@@ -604,7 +618,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let walked = hex(&repo
-            .range_walk(&[b"feat"], &[b"main"])
+            .range_walk(
+                &[id(&scratch, &repo_dir, "feat")],
+                &[id(&scratch, &repo_dir, "main")],
+            )
             .expect("gix walk feat --not main"));
         let from_git = git_ids(&scratch, &repo_dir, &["rev-list", "feat", "--not", "main"]);
         assert_eq!(
@@ -645,7 +662,10 @@ mod tests {
         );
         assert_eq!(from_git, BTreeSet::new(), "git rev-list {name} --not main");
         let walked = hex(&repo
-            .range_walk(&[name.as_bytes()], &[b"main"])
+            .range_walk(
+                &[id(&scratch, &fixture.repo, name)],
+                &[id(&scratch, &fixture.repo, "main")],
+            )
             .expect("wsx walk of the describe-shaped ref --not main"));
         assert_eq!(
             walked, from_git,
@@ -677,7 +697,10 @@ mod tests {
             "git ahead/behind {name} main"
         );
         let from_wsx = repo
-            .ahead_behind(name.as_bytes(), b"main")
+            .ahead_behind(
+                &id(&scratch, &fixture.repo, name),
+                &id(&scratch, &fixture.repo, "main"),
+            )
             .expect("wsx ahead/behind of the describe-shaped ref and main");
         assert_eq!(
             from_wsx, from_git,
@@ -697,7 +720,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let moved = hex(&repo
-            .range_walk(&[b"feat"], &[b"feat~3"])
+            .range_walk(
+                &[id(&scratch, &repo_dir, "feat")],
+                &[id(&scratch, &repo_dir, "feat~3")],
+            )
             .expect("gix walk feat --not feat~3"));
         let from_git = git_ids(
             &scratch,
@@ -714,7 +740,10 @@ mod tests {
         assert_eq!(moved, expected, "walk feat --not feat~3 is C1, F2, F3, F4");
 
         let walked = hex(&repo
-            .range_walk(&[b"feat"], &[b"main"])
+            .range_walk(
+                &[id(&scratch, &repo_dir, "feat")],
+                &[id(&scratch, &repo_dir, "main")],
+            )
             .expect("gix walk feat --not main"));
         assert_ne!(
             moved, walked,
@@ -848,7 +877,10 @@ mod tests {
 
         let level_git = git_ahead_behind(&scratch, &repo_dir, "feat", "feat");
         let level = repo
-            .ahead_behind(b"feat", b"feat")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "feat"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix ahead/behind feat feat");
         assert_eq!(
             level, level_git,
@@ -894,7 +926,10 @@ mod tests {
 
         let step_git = git_ahead_behind(&scratch, &repo_dir, "main", "main~1");
         let step = repo
-            .ahead_behind(b"main", b"main~1")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "main~1"),
+            )
             .expect("gix ahead/behind main main~1");
         assert_eq!(
             step, step_git,
@@ -957,7 +992,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let walked = repo
-            .range_walk(&[b"feat"], &[b"feat"])
+            .range_walk(
+                &[id(&scratch, &repo_dir, "feat")],
+                &[id(&scratch, &repo_dir, "feat")],
+            )
             .expect("gix walk feat --not feat");
         assert_eq!(walked, BTreeSet::new(), "walk feat --not feat from gix");
         let from_git = git_stdout(&scratch, &repo_dir, &["rev-list", "feat", "--not", "feat"]);
@@ -978,7 +1016,7 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let walked = repo
-            .range_walk(&[], &[b"main"])
+            .range_walk(&[], &[id(&scratch, &repo_dir, "main")])
             .expect("gix walk --not main");
         assert_eq!(walked, BTreeSet::new(), "walk --not main from gix");
         let from_git = git_stdout(&scratch, &repo_dir, &["rev-list", "--not", "main"]);
@@ -1023,7 +1061,10 @@ mod tests {
             "git rev-list feat --not v1 must hide commits"
         );
         let walked = hex(&repo
-            .range_walk(&[b"feat"], &[b"v1"])
+            .range_walk(
+                &[id(&scratch, &repo_dir, "feat")],
+                &[id(&scratch, &repo_dir, "v1")],
+            )
             .expect("gix walk feat --not v1"));
         assert_eq!(
             walked, from_git,
@@ -1043,7 +1084,9 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let from_git = git_ids(&scratch, &repo_dir, &["rev-list", "v1"]);
-        let walked = hex(&repo.range_walk(&[b"v1"], &[]).expect("gix walk v1"));
+        let walked = hex(&repo
+            .range_walk(&[id(&scratch, &repo_dir, "v1")], &[])
+            .expect("gix walk v1"));
         assert_eq!(walked, from_git, "walk v1: gix against git rev-list");
     }
 
@@ -1074,7 +1117,10 @@ mod tests {
 
         let level_git = git_ahead_behind(&scratch, &repo_dir, "v1", "feat");
         let level = repo
-            .ahead_behind(b"v1", b"feat")
+            .ahead_behind(
+                &id(&scratch, &repo_dir, "v1"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix ahead/behind v1 feat");
         assert_eq!(
             level, level_git,
@@ -1134,7 +1180,7 @@ mod tests {
         );
 
         let level = || {
-            repo.ahead_behind(b"main", b"feat")
+            repo.ahead_behind(&main, &feat)
                 .expect("gix ahead/behind main feat")
         };
         let (first, second) = (level(), level());
@@ -1144,7 +1190,7 @@ mod tests {
         );
 
         let walk = || {
-            repo.range_walk(&[b"feat"], &[b"main"])
+            repo.range_walk(std::slice::from_ref(&feat), std::slice::from_ref(&main))
                 .expect("gix walk feat --not main")
         };
         let (first, second) = (walk(), walk());
