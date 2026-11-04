@@ -763,6 +763,179 @@ mod tests {
         );
     }
 
+    /// A commit made in a fresh repository `<root>/other`, checked with
+    /// `git cat-file -e` to be missing from `repo_dir`.
+    fn missing_commit(scratch: &Scratch, repo_dir: &Path) -> ObjectId {
+        let other_dir = scratch.root.join("other");
+        std::fs::create_dir_all(&other_dir)
+            .unwrap_or_else(|err| panic!("create {}: {err}", other_dir.display()));
+        git_ok(scratch, &other_dir, ["init", "-q", "-b", "main"]).expect("git init other");
+        write(&other_dir.join("x.txt"), b"x\n").expect("write x.txt");
+        commit_all(scratch, &other_dir, "other", T0).expect("commit in other");
+        let missing = id(scratch, &other_dir, "HEAD");
+        let hex = missing.to_string();
+        let present = testing::git(scratch, repo_dir, ["cat-file", "-e", hex.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            present.status.code(),
+            Some(0),
+            "{hex} from <root>/other exists in {}",
+            repo_dir.display()
+        );
+        missing
+    }
+
+    /// `git diff-tree -r <from> <to>` in `dir` refuses the pair; returns
+    /// git's stderr for a failure message.
+    fn git_refuses_diff_tree(scratch: &Scratch, dir: &Path, from: &str, to: &str) -> String {
+        let output = testing::git(scratch, dir, ["diff-tree", "-r", from, to])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            output.status.code(),
+            Some(0),
+            "git diff-tree -r {from} {to} accepted the pair, printing {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8_lossy(&output.stderr)
+            .trim_end()
+            .to_owned()
+    }
+
+    /// The rendering of `tree_diff(from, to)`'s `Error::Gix`; fails the
+    /// test on success or another error variant.
+    fn tree_diff_refusal(repo: &Repo, from: &ObjectId, to: &ObjectId, git: &str) -> String {
+        match repo.tree_diff(from, to) {
+            Err(err @ Error::Gix { .. }) => err.to_string(),
+            other => panic!(
+                "tree_diff({from}, {to}): expected Error::Gix, got {other:?}; git refused with {git}"
+            ),
+        }
+    }
+
+    /// Asserts `rendered` is `tree of <hex>: ` followed by gix's message.
+    fn assert_tree_of_refusal(rendered: &str, hex: &str) {
+        let prefix = format!("tree of {hex}: ");
+        assert!(
+            rendered
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|message| !message.is_empty()),
+            "tree_diff rendered {rendered:?}, not {prefix:?} and gix's message"
+        );
+    }
+
+    /// A tree id is its own tree, as `git diff-tree <tree> <commit>` takes it.
+    #[test]
+    fn tree_diff_from_a_tree_id_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tree-diff-tree-id").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let tree = id(&scratch, &repo_dir, "main^{tree}");
+        let from_git = git_tree_diff(&scratch, &repo_dir, &tree.to_string(), "feat");
+        assert!(!from_git.is_empty(), "git diff-tree {tree} feat is empty");
+        let from_wsx = repo
+            .tree_diff(&tree, &id(&scratch, &repo_dir, "feat"))
+            .unwrap_or_else(|err| panic!("tree_diff from tree {tree}: {err}"));
+        assert_eq!(
+            from_wsx, from_git,
+            "diff {tree} feat: wsx against git diff-tree --no-renames"
+        );
+    }
+
+    /// An annotated tag peels to its commit's tree, as `git diff-tree <tag>
+    /// <commit>` peels it.
+    #[test]
+    fn tree_diff_from_an_annotated_tag_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tree-diff-tag").expect("create scratch");
+        let repo_dir = tagged_criss_cross(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let tag = id(&scratch, &repo_dir, "v1");
+        let from_git = git_tree_diff(&scratch, &repo_dir, &tag.to_string(), "feat");
+        assert!(!from_git.is_empty(), "git diff-tree v1 feat is empty");
+        let from_wsx = repo
+            .tree_diff(&tag, &id(&scratch, &repo_dir, "feat"))
+            .unwrap_or_else(|err| panic!("tree_diff from tag v1 {tag}: {err}"));
+        assert_eq!(
+            from_wsx, from_git,
+            "diff v1 feat: wsx against git diff-tree --no-renames"
+        );
+    }
+
+    #[test]
+    fn tree_diff_refuses_a_blob_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tree-diff-blob").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let blob = id(&scratch, &repo_dir, "main:a.txt");
+        let hex = blob.to_string();
+        let git = git_refuses_diff_tree(&scratch, &repo_dir, &hex, "feat");
+        let rendered = tree_diff_refusal(&repo, &blob, &id(&scratch, &repo_dir, "feat"), &git);
+        assert_tree_of_refusal(&rendered, &hex);
+    }
+
+    #[test]
+    fn tree_diff_refuses_a_missing_object_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tree-diff-missing").expect("create scratch");
+        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let missing = missing_commit(&scratch, &repo_dir);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let hex = missing.to_string();
+        let git = git_refuses_diff_tree(&scratch, &repo_dir, &hex, "feat");
+        let rendered = tree_diff_refusal(&repo, &missing, &id(&scratch, &repo_dir, "feat"), &git);
+        assert_tree_of_refusal(&rendered, &hex);
+    }
+
+    #[test]
+    fn tree_diff_refuses_a_sha1_id_in_a_sha256_repository() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tree-diff-sha1-in-sha256").expect("create scratch");
+        let sha1_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let sha256_dir = scratch.root.join("sha256");
+        let sha256_arg = sha256_dir.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            &scratch,
+            &scratch.root,
+            [
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--object-format=sha256",
+                sha256_arg,
+            ],
+        )
+        .expect("git init --object-format=sha256");
+        write(&sha256_dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(&scratch, &sha256_dir, "first", T0).expect("commit in sha256");
+        let repo = Repo::discover(&sha256_dir).expect("discover the SHA-256 fixture");
+
+        let sha1 = id(&scratch, &sha1_dir, "main");
+        let head = id(&scratch, &sha256_dir, "HEAD");
+        assert_eq!(head.to_string().len(), 64, "{head} is not a SHA-256 id");
+        let git = git_refuses_diff_tree(&scratch, &sha256_dir, &sha1.to_string(), "HEAD");
+        assert_eq!(
+            tree_diff_refusal(&repo, &sha1, &head, &git),
+            format!("read object id {sha1}: a sha1 id in a sha256 repository")
+        );
+    }
+
     #[test]
     fn a_commit_with_itself_is_its_own_merge_base_and_level() {
         if testing::rerun_scrubbed() {
@@ -950,23 +1123,10 @@ mod tests {
         }
         let scratch = Scratch::new("walk-no-tips-missing").expect("create scratch");
         let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
-        let other_dir = scratch.root.join("other");
-        std::fs::create_dir_all(&other_dir)
-            .unwrap_or_else(|err| panic!("create {}: {err}", other_dir.display()));
-        git_ok(&scratch, &other_dir, ["init", "-q", "-b", "main"]).expect("git init other");
-        write(&other_dir.join("x.txt"), b"x\n").expect("write x.txt");
-        commit_all(&scratch, &other_dir, "other", T0).expect("commit in other");
+        let missing = missing_commit(&scratch, &repo_dir);
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
-        let missing = id(&scratch, &other_dir, "HEAD");
         let hex = missing.to_string();
-        let present = testing::git(&scratch, &repo_dir, ["cat-file", "-e", hex.as_str()])
-            .unwrap_or_else(|err| panic!("{err}"));
-        assert_ne!(
-            present.status.code(),
-            Some(0),
-            "{hex} from <root>/other exists in the fixture"
-        );
         let from_git = testing::git(&scratch, &repo_dir, ["rev-list", "--not", hex.as_str()])
             .unwrap_or_else(|err| panic!("{err}"));
         assert_ne!(
