@@ -2,7 +2,11 @@
 //! Each read takes object ids, never a name. The commit queries
 //! (`merge_base`, `ahead_behind`, `range_walk`) peel their ids to commits
 //! with `Repo::peel_commit`, and `tree_diff` peels its ids to trees, so no
-//! read resolves a name or passes one to gix's revspec parser.
+//! read resolves a name or passes one to gix's revspec parser. The
+//! `&ObjectId` signatures are the guard against a name reaching that parser;
+//! the clippy ban in `clippy.toml` and its pin test in `repo.rs`
+//! (`banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`)
+//! keep it that way.
 
 use std::collections::BTreeSet;
 
@@ -242,9 +246,7 @@ mod tests {
     use std::path::Path;
 
     use super::super::spawn::Git;
-    use super::super::testing::{
-        self, Scratch, T0, TICK, commit_all, criss_cross, describe_shaped_ref, git_ok, write,
-    };
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
     use super::super::{Error, ObjectId};
     use super::{AheadBehind, ChangeKind, Repo, TreeChange};
 
@@ -441,41 +443,6 @@ mod tests {
         );
     }
 
-    /// A ref named like `describe` output, whose hex part prefixes another
-    /// commit, has git's merge-base: git reads the name as the ref, and gix's
-    /// revspec parser would read it as the other commit.
-    #[test]
-    fn merge_base_of_a_describe_shaped_ref_matches_git() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("describe-shaped").expect("create scratch");
-        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
-        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
-
-        let name = fixture.name.as_str();
-        let from_git = git_line(&scratch, &fixture.repo, &["merge-base", name, "other"]);
-        assert_eq!(
-            from_git, fixture.one,
-            "git merge-base {name} other against ONE {}",
-            fixture.one
-        );
-        let from_wsx = repo
-            .merge_base(
-                &id(&scratch, &fixture.repo, name),
-                &id(&scratch, &fixture.repo, "other"),
-            )
-            .expect("wsx merge-base of the describe-shaped ref and other")
-            .map(|id| id.to_string());
-        assert_eq!(
-            from_wsx,
-            Some(from_git.clone()),
-            "merge-base {name} other: wsx against git's {from_git}; \
-             gix's revspec parser reads {name} as {}",
-            fixture.other
-        );
-    }
-
     #[test]
     fn merge_base_moves_with_the_pair() {
         if testing::rerun_scrubbed() {
@@ -642,74 +609,6 @@ mod tests {
         );
     }
 
-    /// A walk from a ref named like `describe` output, with `main` hidden, is
-    /// git's walk: git reads the name as the ref, which holds `main`'s commit,
-    /// and gix's revspec parser would read it as the other commit.
-    #[test]
-    fn range_walk_of_a_describe_shaped_ref_matches_git() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("describe-shaped-walk").expect("create scratch");
-        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
-        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
-
-        let name = fixture.name.as_str();
-        let from_git = git_ids(
-            &scratch,
-            &fixture.repo,
-            &["rev-list", name, "--not", "main"],
-        );
-        assert_eq!(from_git, BTreeSet::new(), "git rev-list {name} --not main");
-        let walked = hex(&repo
-            .range_walk(
-                &[id(&scratch, &fixture.repo, name)],
-                &[id(&scratch, &fixture.repo, "main")],
-            )
-            .expect("wsx walk of the describe-shaped ref --not main"));
-        assert_eq!(
-            walked, from_git,
-            "walk {name} --not main: wsx against git rev-list; \
-             gix's revspec parser reads {name} as {}",
-            fixture.other
-        );
-    }
-
-    /// Ahead/behind of a ref named like `describe` output against `main` is
-    /// git's count: the ref holds `main`'s commit, so the two are level.
-    #[test]
-    fn ahead_behind_of_a_describe_shaped_ref_matches_git() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("describe-shaped-level").expect("create scratch");
-        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
-        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
-
-        let name = fixture.name.as_str();
-        let from_git = git_ahead_behind(&scratch, &fixture.repo, name, "main");
-        assert_eq!(
-            from_git,
-            AheadBehind {
-                ahead: 0,
-                behind: 0
-            },
-            "git ahead/behind {name} main"
-        );
-        let from_wsx = repo
-            .ahead_behind(
-                &id(&scratch, &fixture.repo, name),
-                &id(&scratch, &fixture.repo, "main"),
-            )
-            .expect("wsx ahead/behind of the describe-shaped ref and main");
-        assert_eq!(
-            from_wsx, from_git,
-            "ahead/behind {name} main: wsx {from_wsx:?} against git {from_git:?}; \
-             gix's revspec parser reads {name} as {}",
-            fixture.other
-        );
-    }
-
     #[test]
     fn range_walk_changes_with_the_hidden_tip() {
         if testing::rerun_scrubbed() {
@@ -785,39 +684,6 @@ mod tests {
         assert_eq!(
             from_gix, expected,
             "diff main feat against the fixture's changes"
-        );
-    }
-
-    /// The diff from a ref named like `describe` output to `main` is git's:
-    /// git reads the name as the ref, which holds `main`'s commit, so nothing
-    /// differs, and gix's revspec parser would diff the other commit's tree.
-    #[test]
-    fn tree_diff_of_a_describe_shaped_ref_matches_git() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("describe-shaped-diff").expect("create scratch");
-        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
-        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
-
-        let name = fixture.name.as_str();
-        let from_git = git_tree_diff(&scratch, &fixture.repo, name, "main");
-        assert_eq!(
-            from_git,
-            Vec::<TreeChange>::new(),
-            "git diff-tree {name} main"
-        );
-        let from_wsx = repo
-            .tree_diff(
-                &id(&scratch, &fixture.repo, name),
-                &id(&scratch, &fixture.repo, "main"),
-            )
-            .expect("wsx diff of the describe-shaped ref and main");
-        assert_eq!(
-            from_wsx, from_git,
-            "diff {name} main: wsx against git diff-tree --no-renames; \
-             gix's revspec parser reads {name} as {}",
-            fixture.other
         );
     }
 
