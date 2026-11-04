@@ -21,7 +21,7 @@ description = "Keeps personal files off shared branches while moving work betwee
 # (Package Legitimacy Audit: OK). The `mailmap` feature stays off as well:
 # with it, `Repository::open_mailmap_into` parses a revspec internally
 # (`gix-0.90.0/src/repository/mailmap.rs` line 31), which the clippy revspec
-# ban in `clippy.toml` cannot see.
+# ban in `clippy.toml` cannot see; `deny.toml` bans the feature.
 gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256", "revision"] }
 # The effective uid, safely: gix trusts a repository owned by `SUDO_UID` for
 # any effective uid, git only as root, so wsx re-checks ownership itself. Already

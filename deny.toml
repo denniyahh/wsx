@@ -29,6 +29,15 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 
+# gix's `mailmap` feature makes `Repository::open_mailmap_into` parse a
+# revspec internally (gix-0.90.0 src/repository/mailmap.rs line 31), a call
+# the clippy revspec ban in clippy.toml cannot see because it is inside gix.
+# Banning the feature here fails `scripts/check.sh deps` if Cargo.toml or
+# feature unification through another dependency ever turns it on.
+[[bans.features]]
+crate = "gix"
+deny = ["mailmap"]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
