@@ -1085,30 +1085,83 @@ fn libtest_counts(stdout: &str) -> Option<(usize, usize)> {
 /// the runner's environment carries another repository's `GIT_DIR` and
 /// `GIT_INDEX_FILE`, as a suite run from inside a git hook does: those
 /// suites are re-executed with the runner's environment plus both
-/// variables aimed at a decoy repository.
+/// variables aimed at a decoy repository. Each suite runs on its own and
+/// must pass at least one test, so a filter that matches nothing fails
+/// rather than hiding behind the others' counts.
 #[test]
 fn discovering_tests_pass_with_a_runner_git_dir() {
     let scratch = Scratch::new("runner-git-dir").expect("scratch");
     let git_dir = one_commit_repo(&scratch, "decoy").join(".git");
 
     let exe = std::env::current_exe().expect("locate the test executable");
-    // Not `command`: the point is the runner's own environment, inherited,
-    // plus the two variables a hook would export.
-    let output = Command::new(&exe)
-        .args(DISCOVERING_SUITES)
-        .env("GIT_DIR", &git_dir)
-        .env("GIT_INDEX_FILE", git_dir.join("index"))
-        .stdin(Stdio::null())
-        .output()
-        .expect("re-execute the discovering suites");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let counts = libtest_counts(&stdout);
+    for suite in DISCOVERING_SUITES {
+        // Not `command`: the point is the runner's own environment,
+        // inherited, plus the two variables a hook would export.
+        let output = Command::new(&exe)
+            .arg(suite)
+            .env("GIT_DIR", &git_dir)
+            .env("GIT_INDEX_FILE", git_dir.join("index"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap_or_else(|err| panic!("re-execute the suite {suite}: {err}"));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let counts = libtest_counts(&stdout);
+        assert!(
+            output.status.code() == Some(0) && matches!(counts, Some((passed, 0)) if passed > 0),
+            "with GIT_DIR={} the suite {suite} exited {:?}, counts (passed, failed) \
+             {counts:?}\n{}",
+            git_dir.display(),
+            output.status.code(),
+            libtest_report(&stdout)
+        );
+    }
+}
+
+/// The modules under `src/git` whose tests call `rerun_scrubbed()` are
+/// exactly the ones `DISCOVERING_SUITES` lists, so a new discovering module
+/// gets its hook-environment run and a removed one leaves no stale entry.
+/// This module is left out: its callers are children re-executed on purpose.
+#[test]
+fn discovering_suites_are_the_modules_that_rerun_scrubbed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git");
+    let entries = fs::read_dir(&dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+    let mut callers = std::collections::BTreeSet::new();
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|err| panic!("read an entry of {}: {err}", dir.display()))
+            .path();
+        if path.extension() != Some(OsStr::new("rs")) {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or_else(|| panic!("{} has no UTF-8 stem", path.display()));
+        if stem == "testing" {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains("rerun_scrubbed() {") {
+            callers.insert(if stem == "mod" {
+                "git::tests::".to_owned()
+            } else {
+                format!("git::{stem}::tests::")
+            });
+        }
+    }
+    let listed: std::collections::BTreeSet<String> = DISCOVERING_SUITES
+        .iter()
+        .map(|suite| (*suite).to_owned())
+        .collect();
     assert!(
-        output.status.code() == Some(0) && matches!(counts, Some((passed, 0)) if passed > 0),
-        "with GIT_DIR={} the suites exited {:?}, counts (passed, failed) {counts:?}\n{}",
-        git_dir.display(),
-        output.status.code(),
-        libtest_report(&stdout)
+        !callers.is_empty(),
+        "no module under {} calls rerun_scrubbed()",
+        dir.display()
+    );
+    assert_eq!(
+        callers, listed,
+        "modules calling rerun_scrubbed() against DISCOVERING_SUITES"
     );
 }
 
