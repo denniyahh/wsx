@@ -179,7 +179,7 @@ impl Repo {
     /// The commit the object id `id` names, as gix's id: `id` peeled with
     /// `Repo::peel_commit`, then decoded.
     fn commit_id(&self, id: &ObjectId) -> Result<gix::ObjectId, Error> {
-        self.peel_commit(id)?.to_gix()
+        self.peel_commit(id)?.to_gix(self.repo.object_hash())
     }
 }
 

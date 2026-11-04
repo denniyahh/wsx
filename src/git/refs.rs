@@ -16,7 +16,7 @@ impl Repo {
     /// `ObjectId::to_gix`'s error; a missing object, or one that does not
     /// peel to a commit, is `Error::Gix` naming `id`.
     fn peeled_commit(&self, id: &ObjectId) -> Result<gix::Commit<'_>, Error> {
-        let gix_id = id.to_gix()?;
+        let gix_id = id.to_gix(self.repo.object_hash())?;
         self.repo
             .find_object(gix_id)
             .map_err(|err| err.to_string())

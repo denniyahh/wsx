@@ -43,14 +43,24 @@ impl ObjectId {
         ObjectId(id.to_hex().to_string())
     }
 
-    /// The gix form of this id: hex decoding only, never revspec parsing, so
-    /// no ref is read and no prefix or describe output is expanded. Anything
-    /// but a full-length hex id is refused, naming the id.
-    fn to_gix(&self) -> Result<gix::ObjectId, Error> {
-        gix::ObjectId::from_hex(self.0.as_bytes()).map_err(|err| Error::Gix {
+    /// The gix form of this id in a repository whose objects are hashed
+    /// with `kind`: hex decoding only, never revspec parsing, so no ref is
+    /// read and no prefix or describe output is expanded. Anything but a
+    /// full-length hex id is refused, naming the id. An id of another hash
+    /// kind is refused here too, as git refuses it, because gix-odb would
+    /// `debug_assert` on it (and, in a release build, read it as missing).
+    fn to_gix(&self, kind: gix::hash::Kind) -> Result<gix::ObjectId, Error> {
+        let failed = |message: String| Error::Gix {
             what: format!("read object id {self}"),
-            message: err.to_string(),
-        })
+            message,
+        };
+        let id =
+            gix::ObjectId::from_hex(self.0.as_bytes()).map_err(|err| failed(err.to_string()))?;
+        if id.kind() == kind {
+            Ok(id)
+        } else {
+            Err(failed(format!("a {} id in a {kind} repository", id.kind())))
+        }
     }
 }
 
