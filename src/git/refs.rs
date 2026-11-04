@@ -27,3 +27,242 @@ impl Repo {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::process::Output;
+
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
+    use super::super::{Error, ObjectId};
+    use super::Repo;
+
+    /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
+    /// annotated tag `v1` of that commit, `v1nest` of `v1` and `vtree` of
+    /// the commit's tree, each checked by git to be a tag object.
+    fn tagged_repo(scratch: &Scratch) -> PathBuf {
+        let repo_dir = scratch.root.join("repo");
+        std::fs::create_dir_all(&repo_dir)
+            .unwrap_or_else(|err| panic!("create {}: {err}", repo_dir.display()));
+        let ok =
+            |args: &[&str]| git_ok(scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["init", "-q", "-b", "main"]);
+        write(&repo_dir.join("a.txt"), b"a\n").expect("write a.txt");
+        write(&repo_dir.join("sub/b.txt"), b"b\n").expect("write sub/b.txt");
+        commit_all(scratch, &repo_dir, "first", T0).expect("commit");
+        ok(&["tag", "-a", "v1", "-m", "v1", "HEAD"]);
+        ok(&["tag", "-a", "v1nest", "-m", "v1nest", "v1"]);
+        ok(&["tag", "-a", "vtree", "-m", "vtree", "HEAD^{tree}"]);
+        for tag in ["v1", "v1nest", "vtree"] {
+            let kind = ok(&["cat-file", "-t", tag]);
+            assert_eq!(
+                String::from_utf8_lossy(&kind).trim_end(),
+                "tag",
+                "{tag} must be an annotated tag object"
+            );
+        }
+        repo_dir
+    }
+
+    /// The object id git names for `rev` in `dir`, from
+    /// `testing::object_id` (`git rev-parse --verify`), never from gix.
+    fn id(scratch: &Scratch, dir: &Path, rev: &str) -> ObjectId {
+        testing::object_id(scratch, dir, rev).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// git's peel of `hex` to a commit, `git rev-parse --verify
+    /// <hex>^{commit}` in `dir`, whatever its exit status.
+    fn git_peel(scratch: &Scratch, dir: &Path, hex: &str) -> Output {
+        let rev = format!("{hex}^{{commit}}");
+        testing::git(scratch, dir, ["rev-parse", "--verify", rev.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// The commit git peels `hex` to in `dir`, as hex; fails the test,
+    /// printing git's stderr, when git refuses.
+    fn git_peeled(scratch: &Scratch, dir: &Path, hex: &str) -> String {
+        let output = git_peel(scratch, dir, hex);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "git rev-parse --verify {hex}^{{commit}} refused: {}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
+    }
+
+    /// git refuses to peel `id` to a commit in `dir`, and so does
+    /// `peel_commit`, as `Error::Gix` rendering `peel <hex> to a commit: `
+    /// followed by gix's message.
+    fn assert_refused_as_git_does(scratch: &Scratch, dir: &Path, repo: &Repo, id: &ObjectId) {
+        let hex = id.to_string();
+        let git = git_peel(scratch, dir, &hex);
+        assert_ne!(
+            git.status.code(),
+            Some(0),
+            "git rev-parse --verify {hex}^{{commit}} accepted it, printing {:?}",
+            String::from_utf8_lossy(&git.stdout).trim_end()
+        );
+        let prefix = format!("peel {hex} to a commit: ");
+        match repo.peel_commit(id) {
+            Err(err @ Error::Gix { .. }) => {
+                let rendered = err.to_string();
+                let message = rendered.strip_prefix(prefix.as_str());
+                assert!(
+                    message.is_some_and(|message| !message.is_empty()),
+                    "peel_commit({hex}) rendered {rendered:?}, not {prefix:?} and gix's message"
+                );
+            }
+            other => panic!(
+                "peel_commit({hex}): expected Error::Gix, got {other:?}; git refused with {}",
+                String::from_utf8_lossy(&git.stderr).trim_end()
+            ),
+        }
+    }
+
+    #[test]
+    fn peel_commit_of_a_commit_is_that_commit() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-commit").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let head = id(&scratch, &repo_dir, "HEAD");
+        let from_git = git_peeled(&scratch, &repo_dir, &head.to_string());
+        assert_eq!(
+            from_git,
+            head.to_string(),
+            "git peels commit {head} to itself"
+        );
+        let peeled = repo
+            .peel_commit(&head)
+            .unwrap_or_else(|err| panic!("peel_commit({head}): {err}"));
+        assert_eq!(
+            peeled.to_string(),
+            from_git,
+            "peel_commit({head}) against git's {from_git}"
+        );
+    }
+
+    #[test]
+    fn peel_commit_peels_an_annotated_tag_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-tag").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let tag = id(&scratch, &repo_dir, "v1");
+        let from_git = git_peeled(&scratch, &repo_dir, &tag.to_string());
+        let peeled = repo
+            .peel_commit(&tag)
+            .unwrap_or_else(|err| panic!("peel_commit({tag}): {err}"));
+        assert_eq!(
+            peeled.to_string(),
+            from_git,
+            "peel_commit of tag v1 {tag} against git's {from_git}"
+        );
+        assert_ne!(peeled, tag, "peel_commit returned the tag v1's own id");
+    }
+
+    #[test]
+    fn peel_commit_peels_a_nested_tag_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-nested-tag").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let outer = id(&scratch, &repo_dir, "v1nest");
+        let inner = id(&scratch, &repo_dir, "v1");
+        let from_git = git_peeled(&scratch, &repo_dir, &outer.to_string());
+        let peeled = repo
+            .peel_commit(&outer)
+            .unwrap_or_else(|err| panic!("peel_commit({outer}): {err}"));
+        assert_eq!(
+            peeled.to_string(),
+            from_git,
+            "peel_commit of tag v1nest {outer} against git's {from_git}"
+        );
+        assert_ne!(
+            peeled, outer,
+            "peel_commit returned the tag v1nest's own id"
+        );
+        assert_ne!(
+            peeled, inner,
+            "peel_commit stopped at the inner tag v1 {inner}"
+        );
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_tree_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-tree").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let tree = id(&scratch, &repo_dir, "HEAD^{tree}");
+        assert_refused_as_git_does(&scratch, &repo_dir, &repo, &tree);
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_blob_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-blob").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let blob = id(&scratch, &repo_dir, "HEAD:a.txt");
+        assert_refused_as_git_does(&scratch, &repo_dir, &repo, &blob);
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_tag_of_a_tree_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-tree-tag").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let tag = id(&scratch, &repo_dir, "vtree");
+        assert_refused_as_git_does(&scratch, &repo_dir, &repo, &tag);
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_missing_object_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-missing").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let other_dir = scratch.root.join("other");
+        std::fs::create_dir_all(&other_dir)
+            .unwrap_or_else(|err| panic!("create {}: {err}", other_dir.display()));
+        git_ok(&scratch, &other_dir, ["init", "-q", "-b", "main"]).expect("git init other");
+        write(&other_dir.join("x.txt"), b"x\n").expect("write x.txt");
+        commit_all(&scratch, &other_dir, "other", T0 + TICK).expect("commit in other");
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let foreign = id(&scratch, &other_dir, "HEAD");
+        let hex = foreign.to_string();
+        let present = testing::git(&scratch, &repo_dir, ["cat-file", "-e", hex.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            present.status.code(),
+            Some(0),
+            "{hex} from <root>/other exists in <root>/repo"
+        );
+        assert_refused_as_git_does(&scratch, &repo_dir, &repo, &foreign);
+    }
+}

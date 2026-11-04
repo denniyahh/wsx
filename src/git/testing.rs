@@ -1051,7 +1051,11 @@ fn one_commit_repo(scratch: &Scratch, name: &str) -> PathBuf {
 
 /// The libtest filters for the modules whose tests discover a repository in
 /// the test process itself.
-const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests::"];
+const DISCOVERING_SUITES: [&str; 3] = [
+    "git::reads::tests::",
+    "git::refs::tests::",
+    "git::repo::tests::",
+];
 
 /// The `test result:` line and every failed test name in a libtest run's
 /// stdout, for a failure message.
