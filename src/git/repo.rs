@@ -586,6 +586,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
+    use gix::bstr::BStr;
+    use gix::revision::plumbing::spec::parse::{Delegate, delegate};
     use gix::sec::trust::DefaultForLevel;
 
     use super::super::spawn::Git;
@@ -902,6 +904,156 @@ mod tests {
                 missing.display()
             );
         }
+    }
+
+    /// A revspec-parse delegate that records, in order, each lookup gix's
+    /// parser asks of it, and refuses every one.
+    struct Lookups(Vec<&'static str>);
+
+    impl Lookups {
+        /// Records `name` and refuses the lookup.
+        fn refuse(&mut self, name: &'static str) -> gix::Result {
+            self.0.push(name);
+            Err(gix::error::message("refused").validation_error())
+        }
+    }
+
+    impl delegate::Revision for Lookups {
+        fn find_ref(&mut self, _name: &BStr) -> gix::Result {
+            self.refuse("find_ref")
+        }
+
+        fn disambiguate_prefix(
+            &mut self,
+            _prefix: gix::hash::Prefix,
+            _hint: Option<delegate::PrefixHint<'_>>,
+        ) -> gix::Result {
+            self.refuse("disambiguate_prefix")
+        }
+
+        fn reflog(&mut self, _query: delegate::ReflogLookup) -> gix::Result {
+            self.refuse("reflog")
+        }
+
+        fn nth_checked_out_branch(&mut self, _branch_no: usize) -> gix::Result {
+            self.refuse("nth_checked_out_branch")
+        }
+
+        fn sibling_branch(&mut self, _kind: delegate::SiblingBranch) -> gix::Result {
+            self.refuse("sibling_branch")
+        }
+    }
+
+    impl delegate::Navigate for Lookups {
+        fn traverse(&mut self, _kind: delegate::Traversal) -> gix::Result {
+            self.refuse("traverse")
+        }
+
+        fn peel_until(&mut self, _kind: delegate::PeelTo<'_>) -> gix::Result {
+            self.refuse("peel_until")
+        }
+
+        fn find(&mut self, _regex: &BStr, _negated: bool) -> gix::Result {
+            self.refuse("find")
+        }
+
+        fn index_lookup(&mut self, _path: &BStr, _stage: u8) -> gix::Result {
+            self.refuse("index_lookup")
+        }
+    }
+
+    impl delegate::Kind for Lookups {
+        fn kind(&mut self, _kind: gix::revision::plumbing::spec::Kind) -> gix::Result {
+            self.refuse("kind")
+        }
+    }
+
+    impl Delegate for Lookups {
+        fn done(&mut self) -> gix::Result {
+            self.refuse("done")
+        }
+    }
+
+    /// Calls every gix revspec parser `clippy.toml` bans, each under its
+    /// own expectation, so the ban list cannot go stale silently: a renamed
+    /// entry point stops compiling, and a misspelled ban path leaves that
+    /// call's expectation unfulfilled, which `-D warnings` turns into an
+    /// error. It also pins the reason for the ban: git reads the
+    /// describe-shaped ref's name as the ref, ONE, while each parser reads
+    /// it as another object, Y, the commit its hex part prefixes, because
+    /// gix tries the name as a hex prefix before it reads refs.
+    #[test]
+    fn banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("revspec-ban-pin").expect("scratch");
+        let fixture = testing::describe_shaped_ref(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            git_line(
+                &scratch,
+                &fixture.repo,
+                &["rev-parse", "--verify", &fixture.name]
+            ),
+            fixture.one,
+            "git rev-parse --verify {} must read the ref",
+            fixture.name
+        );
+        let found = Repo::discover(&fixture.repo).expect("discover the fixture");
+        let name = BStr::new(fixture.name.as_bytes());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's revspec ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let single = found
+            .repo
+            .rev_parse_single(name)
+            .map(|id| Some(id.to_string()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's revspec ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let spec = found
+            .repo
+            .rev_parse(name)
+            .map(|spec| spec.single().map(|id| id.to_string()));
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's revspec ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let from_bstr = gix::revision::Spec::from_bstr(name, &found.repo, Default::default())
+            .map(|spec| spec.single().map(|id| id.to_string()));
+        let mut lookups = Lookups(Vec::new());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's revspec ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let plumbing = gix::revision::plumbing::spec::parse(name, &mut lookups);
+
+        let expected = Some(fixture.other.clone());
+        for (entry_point, read) in [
+            ("gix::Repository::rev_parse_single", single),
+            ("gix::Repository::rev_parse", spec),
+            ("gix::revision::Spec::from_bstr", from_bstr),
+        ] {
+            let read = read.unwrap_or_else(|err| panic!("{entry_point} {}: {err}", fixture.name));
+            assert_eq!(
+                read, expected,
+                "{entry_point} must read {} as Y, the commit its hex part prefixes; git reads it as {}",
+                fixture.name, fixture.one
+            );
+        }
+        assert!(
+            plumbing.is_err(),
+            "gix::revision::plumbing::spec::parse accepted {} with every lookup refused: {plumbing:?}",
+            fixture.name
+        );
+        assert_eq!(
+            lookups.0,
+            ["disambiguate_prefix", "find_ref"],
+            "gix's parser lookup order for {}",
+            fixture.name
+        );
     }
 
     /// A repository made with `--object-format=sha256` opens through the
