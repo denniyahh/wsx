@@ -122,6 +122,37 @@ mod tests {
         }
     }
 
+    /// `<root>/<name>`, made with `git init --object-format=<format>`, with
+    /// `a.txt` committed on `main` at `T0` and the annotated tag `v1` of
+    /// that commit; canonical.
+    fn repo_with_format(scratch: &Scratch, name: &str, format: &str) -> PathBuf {
+        let repo_dir = scratch.root.join(name);
+        let repo_arg = repo_dir.to_str().expect("UTF-8 scratch path");
+        let format_arg = format!("--object-format={format}");
+        git_ok(
+            scratch,
+            &scratch.root,
+            ["init", "-q", "-b", "main", format_arg.as_str(), repo_arg],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        write(&repo_dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &repo_dir, "first", T0).expect("commit");
+        git_ok(scratch, &repo_dir, ["tag", "-a", "v1", "-m", "v1", "HEAD"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        repo_dir
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", repo_dir.display()))
+    }
+
+    /// The rendering of `peel_commit(id)`'s error; fails the test when it
+    /// succeeds.
+    fn peel_refusal(repo: &Repo, id: &ObjectId) -> String {
+        match repo.peel_commit(id) {
+            Err(err) => err.to_string(),
+            Ok(peeled) => panic!("peel_commit({id:?}) accepted it, peeling to {peeled}"),
+        }
+    }
+
     #[test]
     fn peel_commit_of_a_commit_is_that_commit() {
         if testing::rerun_scrubbed() {
@@ -264,5 +295,80 @@ mod tests {
             "{hex} from <root>/other exists in <root>/repo"
         );
         assert_refused_as_git_does(&scratch, &repo_dir, &repo, &foreign);
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_sha1_id_in_a_sha256_repository() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-sha1-in-sha256").expect("create scratch");
+        let sha1_dir = repo_with_format(&scratch, "sha1", "sha1");
+        let sha256_dir = repo_with_format(&scratch, "sha256", "sha256");
+        let repo = Repo::discover(&sha256_dir).expect("discover the SHA-256 fixture");
+
+        let sha1 = id(&scratch, &sha1_dir, "HEAD");
+        let git = git_peel(&scratch, &sha256_dir, &sha1.to_string());
+        assert_ne!(
+            git.status.code(),
+            Some(0),
+            "git peeled the SHA-1 id {sha1} in a SHA-256 repository to {:?}",
+            String::from_utf8_lossy(&git.stdout).trim_end()
+        );
+        assert_eq!(
+            peel_refusal(&repo, &sha1),
+            format!("read object id {sha1}: a sha1 id in a sha256 repository")
+        );
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_sha256_id_in_a_sha1_repository() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-sha256-in-sha1").expect("create scratch");
+        let sha1_dir = repo_with_format(&scratch, "sha1", "sha1");
+        let sha256_dir = repo_with_format(&scratch, "sha256", "sha256");
+        let repo = Repo::discover(&sha1_dir).expect("discover the SHA-1 fixture");
+
+        let sha256 = id(&scratch, &sha256_dir, "HEAD");
+        let git = git_peel(&scratch, &sha1_dir, &sha256.to_string());
+        assert_ne!(
+            git.status.code(),
+            Some(0),
+            "git peeled the SHA-256 id {sha256} in a SHA-1 repository to {:?}",
+            String::from_utf8_lossy(&git.stdout).trim_end()
+        );
+        assert_eq!(
+            peel_refusal(&repo, &sha256),
+            format!("read object id {sha256}: a sha256 id in a sha1 repository")
+        );
+    }
+
+    #[test]
+    fn peel_commit_peels_a_tag_in_a_sha256_repository() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-sha256-tag").expect("create scratch");
+        let sha256_dir = repo_with_format(&scratch, "sha256", "sha256");
+        let repo = Repo::discover(&sha256_dir).expect("discover the SHA-256 fixture");
+
+        let tag = id(&scratch, &sha256_dir, "v1");
+        let from_git = git_peeled(&scratch, &sha256_dir, &tag.to_string());
+        let peeled = repo
+            .peel_commit(&tag)
+            .unwrap_or_else(|err| panic!("peel_commit({tag}): {err}"));
+        assert_eq!(
+            peeled.to_string(),
+            from_git,
+            "peel_commit of tag v1 {tag} against git's {from_git}"
+        );
+        assert_eq!(
+            from_git.len(),
+            64,
+            "git's peel {from_git} is not SHA-256 length"
+        );
+        assert_ne!(peeled, tag, "peel_commit returned the tag v1's own id");
     }
 }
