@@ -371,4 +371,91 @@ mod tests {
         );
         assert_ne!(peeled, tag, "peel_commit returned the tag v1's own id");
     }
+
+    // The inputs below are not ids git printed, so they are built directly.
+    // git resolves each of them; `peel_commit` refuses each at the hex
+    // decode, so a name has no path to a commit through the id boundary.
+
+    #[test]
+    fn peel_commit_refuses_a_branch_name() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-branch-name").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let head = id(&scratch, &repo_dir, "HEAD");
+        assert_eq!(
+            git_peeled(&scratch, &repo_dir, "main"),
+            head.to_string(),
+            "git peels the branch name main to HEAD"
+        );
+        assert_eq!(
+            peel_refusal(&repo, &ObjectId("main".to_owned())),
+            "read object id main: A hash sized 4 hexadecimal characters is invalid"
+        );
+    }
+
+    #[test]
+    fn peel_commit_refuses_an_abbreviated_id() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-abbreviated").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        let head = id(&scratch, &repo_dir, "HEAD").to_string();
+        let short = head.get(..7).expect("HEAD's id is longer than 7");
+        assert_eq!(
+            git_peeled(&scratch, &repo_dir, short),
+            head,
+            "git peels the prefix {short} to HEAD"
+        );
+        assert_eq!(
+            peel_refusal(&repo, &ObjectId(short.to_owned())),
+            format!("read object id {short}: A hash sized 7 hexadecimal characters is invalid")
+        );
+    }
+
+    #[test]
+    fn peel_commit_refuses_an_empty_id() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-empty").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let repo = Repo::discover(&repo_dir).expect("discover fixture");
+
+        assert_eq!(
+            peel_refusal(&repo, &ObjectId(String::new())),
+            "read object id : A hash sized 0 hexadecimal characters is invalid"
+        );
+    }
+
+    #[test]
+    fn peel_commit_refuses_a_describe_shaped_ref_name() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("peel-describe-shaped").expect("create scratch");
+        let fixture = testing::describe_shaped_ref(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+
+        assert_eq!(
+            git_peeled(&scratch, &fixture.repo, &fixture.name),
+            fixture.one,
+            "git peels {} to ONE",
+            fixture.name
+        );
+        assert_eq!(
+            peel_refusal(&repo, &ObjectId(fixture.name.clone())),
+            format!(
+                "read object id {}: A hash sized {} hexadecimal characters is invalid",
+                fixture.name,
+                fixture.name.len()
+            )
+        );
+    }
 }
