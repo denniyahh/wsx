@@ -76,6 +76,9 @@ exit-code contract (IF-01). Config and blob reads for the repo model are phase 4
 - **Reftable is detected from `extensions.refStorage` in the repo config, before refs are
   touched.** gix's "unsupported storage backend" error maps to the same refusal as a backstop.
   The message names reftable and says this version of wsx cannot read it.
+  *Amended 2026-11-03 by the operator (Phase 03.1): the backstop is retired with `Repo::resolve`.
+  The refusal at discover (`refuse_ref_storage`) is the only reftable guard; on reftable gix's ref
+  reads return "missing", never "unsupported" (04-RESEARCH Pitfall 10), so no backstop could fire.*
 - **Repositories using SHA-256 are supported:** gix's `sha256` feature is on (research measured about
   77 KB), with one open test.
 - **Paths are canonicalised once, when the repo is resolved:** the worktree, the git dir and the

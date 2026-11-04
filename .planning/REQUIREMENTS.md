@@ -267,7 +267,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | HOOK-01 | Phase 11 | Pending |
 | HOOK-02 | Phase 11 | Pending |
 | HOOK-03 | Phase 11 | Pending |
-| GIT-01 | Phase 3 | Complete |
+| GIT-01 | Phase 3, Phase 03.1 | Complete (Phase 3); read-side fix pending (Phase 03.1) |
 | GIT-02 | Phase 3 | Complete |
 | GIT-03 | Phase 3 | Complete |
 | GIT-04 | Phase 3 | Complete |

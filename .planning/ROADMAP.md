@@ -24,6 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Development foundation** - Pinned toolchain, one gate script, container parity, CI with required checks, and supply-chain scanners proven to bite (completed 2026-10-25)
 - [x] **Phase 2: Oracle harness** - Hermetic scenario suite over the vendored shell oracle and the Rust binary, with recorded expectations and the hard-case matrix (completed 2026-10-26)
 - [x] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal (completed 2026-10-27)
+- [ ] **Phase 03.1: Resolve ref names as git does** (INSERTED) - `Repo`'s reads take commit ids; gix's revspec parser is banned from the git layer
 - [ ] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths
 - [ ] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins
 - [ ] **Phase 6: Pre-push guard** - Fail-closed push guard over the real pushed refs, every commit in the range and the tip tree
@@ -153,13 +154,25 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### Phase 03.1: Resolve ref names as git does (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** No wsx read resolves a name differently from git: `Repo`'s reads take commit ids, and gix's revspec parser is banned from the git layer
+**Requirements**: GIT-01
 **Depends on:** Phase 3
-**Plans:** 0 plans
+**Success Criteria** (what must be TRUE):
+  1. `merge_base`, `ahead_behind`, `range_walk` and `tree_diff` take commit ids and answer as git does on the Phase 3 fixtures; `resolve` and `resolve_commit` are gone
+  2. A planted `rev_parse` or `rev_parse_single` call fails `scripts/check.sh clippy`, and the ban list is pinned so a stale path is caught
+  3. `peel_commit` peels an id, including an annotated tag, to the commit git names, with 04-01's signature
+**Plans:** 4 plans
+**Wave 1**
+- [ ] 03.1-01-PLAN.md — Tracer: `merge_base` on ids through `peel_commit`, RED on a describe-shaped ref; `peel_commit` pinned against git per object kind; refs suite under the runner-`GIT_DIR` check
 
-Plans:
-- [ ] TBD (run /gsd-plan-phase 03.1 to break down)
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03.1-02-PLAN.md — `peel_commit` refuses an id of the other hash kind (RED: gix-odb panic) and a name, abbreviation or empty id
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03.1-03-PLAN.md — `range_walk`, `ahead_behind` and `tree_diff` on ids, each RED first on the describe-shaped ref
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 03.1-04-PLAN.md — `resolve`, `resolve_commit` and the reftable backstop removed; four revspec entry points banned and pinned with both scratch controls; Phase 4 and 8 obligations in STATE.md
 
 ### Phase 4: Repo model
 
@@ -352,13 +365,14 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15
+Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Development foundation | 7/7 | Complete    | 2026-10-25 |
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
+| 03.1. Resolve ref names as git does | 0/4 | Not started | - |
 | 4. Repo model | 0/11 | Not started | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |

@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v0.1.0
-current_phase: 04
-current_phase_name: Repo model
+current_phase: "03.1"
+current_phase_name: Resolve ref names as git does
 status: executing
 stopped_at: Phase 03.1 context gathered
-last_updated: "2026-11-03T21:40:02.914Z"
+last_updated: "2026-11-04T00:09:59.888Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 3 complete, transitioned to Phase 4
-state_head: 45b26b748e3f1f47867b96097d9a30e464003a89
+state_head: 7f3858be84b00a82aa922ec565d542134fbe5a5c
 progress:
   total_phases: 16
   completed_phases: 3
-  total_plans: 43
+  total_plans: 47
   completed_plans: 32
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-10-27)
 
 ## Current Position
 
-Phase: 04 (Repo model) — READY TO EXECUTE
+Phase: 03.1 (Resolve ref names as git does) — READY TO EXECUTE
 Plan: Not started
 Status: Ready to execute
 Last activity: 2026-10-27 — Phase 3 complete, transitioned to Phase 4
@@ -177,6 +177,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 03.1 inserted after Phase 3: Resolve ref names as git does: gix rev_parse_single resolves describe-shaped ref names to another object (URGENT)
+- Phase 03.1 edited: edited fields: goal, requirements, success_criteria
 
 ## Deferred Items
 
