@@ -625,6 +625,68 @@ mod tests {
         );
     }
 
+    /// A walk from a ref named like `describe` output, with `main` hidden, is
+    /// git's walk: git reads the name as the ref, which holds `main`'s commit,
+    /// and gix's revspec parser would read it as the other commit.
+    #[test]
+    fn range_walk_of_a_describe_shaped_ref_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("describe-shaped-walk").expect("create scratch");
+        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+
+        let name = fixture.name.as_str();
+        let from_git = git_ids(
+            &scratch,
+            &fixture.repo,
+            &["rev-list", name, "--not", "main"],
+        );
+        assert_eq!(from_git, BTreeSet::new(), "git rev-list {name} --not main");
+        let walked = hex(&repo
+            .range_walk(&[name.as_bytes()], &[b"main"])
+            .expect("wsx walk of the describe-shaped ref --not main"));
+        assert_eq!(
+            walked, from_git,
+            "walk {name} --not main: wsx against git rev-list; \
+             gix's revspec parser reads {name} as {}",
+            fixture.other
+        );
+    }
+
+    /// Ahead/behind of a ref named like `describe` output against `main` is
+    /// git's count: the ref holds `main`'s commit, so the two are level.
+    #[test]
+    fn ahead_behind_of_a_describe_shaped_ref_matches_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("describe-shaped-level").expect("create scratch");
+        let fixture = describe_shaped_ref(&scratch).expect("build describe-shaped fixture");
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+
+        let name = fixture.name.as_str();
+        let from_git = git_ahead_behind(&scratch, &fixture.repo, name, "main");
+        assert_eq!(
+            from_git,
+            AheadBehind {
+                ahead: 0,
+                behind: 0
+            },
+            "git ahead/behind {name} main"
+        );
+        let from_wsx = repo
+            .ahead_behind(name.as_bytes(), b"main")
+            .expect("wsx ahead/behind of the describe-shaped ref and main");
+        assert_eq!(
+            from_wsx, from_git,
+            "ahead/behind {name} main: wsx {from_wsx:?} against git {from_git:?}; \
+             gix's revspec parser reads {name} as {}",
+            fixture.other
+        );
+    }
+
     #[test]
     fn range_walk_changes_with_the_hidden_tip() {
         if testing::rerun_scrubbed() {
