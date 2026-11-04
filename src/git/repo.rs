@@ -155,53 +155,6 @@ impl Repo {
             message: err.to_string(),
         }
     }
-
-    /// The object a revspec (`main`, `feat~3`, a hex id) names. A ref gix
-    /// cannot decode because of its storage backend is the reftable refusal,
-    /// never a generic read error.
-    pub(super) fn resolve(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        match self.repo.rev_parse_single(rev) {
-            Ok(id) => Ok(id.detach()),
-            Err(err) if err.is_unsupported() => Err(self.unsupported_backend()),
-            Err(err) => Err(Error::Gix {
-                what: format!("resolve {}", String::from_utf8_lossy(rev)),
-                message: err.to_string(),
-            }),
-        }
-    }
-
-    /// The commit a revspec names, peeling annotated tags as git's
-    /// commit-taking commands do (`rev-list`, `merge-base`). Resolution
-    /// errors are `resolve`'s; an object that does not peel to a commit is
-    /// `Error::Gix` naming the revision.
-    pub(super) fn resolve_commit(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        let id = self.resolve(rev)?;
-        self.repo
-            .find_object(id)
-            .map_err(|err| err.to_string())
-            .and_then(|object| object.peel_to_commit().map_err(|err| err.to_string()))
-            .map(|commit| commit.id)
-            .map_err(|message| Error::Gix {
-                what: format!("peel {} to a commit", String::from_utf8_lossy(rev)),
-                message,
-            })
-    }
-
-    /// The backstop behind `refuse_ref_storage`: the refusal for a ref whose
-    /// storage backend gix reports as unsupported, naming the configured
-    /// `extensions.refStorage`, or `unsupported` when none is set.
-    fn unsupported_backend(&self) -> Error {
-        Error::Reftable {
-            path: self
-                .worktree
-                .clone()
-                .unwrap_or_else(|| self.git_dir.clone()),
-            format: ref_storage(&self.repo).map_or_else(
-                || "unsupported".to_owned(),
-                |value| String::from_utf8_lossy(&value).into_owned(),
-            ),
-        }
-    }
 }
 
 /// The `extensions.refStorage` of the repository's own config (gix's
@@ -635,11 +588,11 @@ mod tests {
 
     use gix::sec::trust::DefaultForLevel;
 
-    use super::super::Error;
     use super::super::spawn::Git;
     use super::super::testing::{
         self, Env, ForeignOwned, Scratch, T0, TICK, commit_all, git, git_ok, write,
     };
+    use super::super::{Error, ObjectId};
     use super::Repo;
 
     /// The trimmed stdout of `git <args>` run in `dir`.
@@ -821,67 +774,6 @@ mod tests {
     /// Default upwards-discovery options.
     fn upwards() -> gix::discover::upwards::Options<'static> {
         gix::discover::upwards::Options::default()
-    }
-
-    /// The repository at `dir`, opened past `refuse_ref_storage`, as only a
-    /// test can.
-    fn open_unchecked(dir: &Path) -> Repo {
-        let repo = Repo::open_gix(dir).expect("gix opens the repository");
-        Repo::from_gix(repo).expect("wrap the open repository")
-    }
-
-    /// With the configuration check bypassed, a reftable repository opens,
-    /// and resolving `HEAD` is the reftable refusal, not a generic read
-    /// error.
-    #[test]
-    fn reftable_ref_decode_maps_to_the_refusal() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("reftable-decode").expect("scratch");
-        let (_files, table) = twins(&scratch);
-        let repo = open_unchecked(&table);
-        match repo.resolve(b"HEAD") {
-            Err(Error::Reftable { format, .. }) => assert_eq!(format, "reftable"),
-            Err(other) => panic!("resolve HEAD: expected a Reftable refusal, got {other}"),
-            Ok(id) => panic!("resolve HEAD on reftable: expected a refusal, got {id}"),
-        }
-    }
-
-    /// Control: the files twin resolves `HEAD` through the same path, to
-    /// the id git prints.
-    #[test]
-    fn files_repo_resolves_head_through_the_same_path() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("files-decode").expect("scratch");
-        let (files, _table) = twins(&scratch);
-        let repo = open_unchecked(&files);
-        let id = repo
-            .resolve(b"HEAD")
-            .unwrap_or_else(|err| panic!("resolve HEAD on the files twin: {err}"));
-        assert_eq!(
-            id.to_string(),
-            git_line(&scratch, &files, &["rev-parse", "HEAD"])
-        );
-    }
-
-    /// A ref that does not exist is an ordinary read error, never the
-    /// reftable refusal.
-    #[test]
-    fn unknown_revision_is_not_reported_as_reftable() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("unknown-rev").expect("scratch");
-        let (files, _table) = twins(&scratch);
-        let repo = open_unchecked(&files);
-        match repo.resolve(b"refs/heads/no-such-branch") {
-            Err(Error::Gix { .. }) => {}
-            Err(other) => panic!("missing branch: expected Error::Gix, got {other}"),
-            Ok(id) => panic!("missing branch resolved to {id}"),
-        }
     }
 
     /// Calls every gix open/discover entry point `clippy.toml` bans, each
@@ -2924,8 +2816,8 @@ mod tests {
         testing::child_print("scrubbed_cached", helper_cached(&scrubbed, &cwd));
     }
 
-    /// The variable an object-store test hands its child: the revision the
-    /// child reads.
+    /// The variable an object-store test hands its child: the object id the
+    /// child peels to a commit.
     const REV_VAR: &str = "WSX_TEST_REV";
 
     /// What git and wsx each read of one revision in one repository.
@@ -2985,15 +2877,15 @@ mod tests {
     }
 
     /// gix ignores `GIT_OBJECT_DIRECTORY`: with it aimed at an empty object
-    /// store, git cannot read `HEAD`'s commit, while gix would read the
+    /// store, git cannot read the commit, while gix would read the
     /// repository's own store. wsx refuses the variable, naming it.
     #[test]
     fn git_object_directory_is_refused() {
         let scratch = Scratch::new("object-directory").expect("scratch");
-        let (repo, _head) = object_repo(&scratch, "repo");
+        let (repo, head) = object_repo(&scratch, "repo");
         let empty = scratch.root.join("emptyobjs");
         std::fs::create_dir_all(&empty).expect("create the empty object store");
-        let run = object_run(&scratch, &repo, "HEAD", &[("GIT_OBJECT_DIRECTORY", &empty)]);
+        let run = object_run(&scratch, &repo, &head, &[("GIT_OBJECT_DIRECTORY", &empty)]);
         assert_ne!(run.git.status.code(), Some(0), "{}", run.both());
         assert_eq!(run.result(), "refused", "{}", run.both());
         let error = fact(&run.child, "error");
@@ -3004,12 +2896,12 @@ mod tests {
     }
 
     /// Control: without `GIT_OBJECT_DIRECTORY`, git and wsx both read
-    /// `HEAD` as the same commit.
+    /// the commit as the same commit.
     #[test]
     fn the_repository_object_store_reads_like_git() {
         let scratch = Scratch::new("object-directory-unset").expect("scratch");
         let (repo, head) = object_repo(&scratch, "repo");
-        let run = object_run(&scratch, &repo, "HEAD", &[]);
+        let run = object_run(&scratch, &repo, &head, &[]);
         assert_eq!(run.git.status.code(), Some(0), "{}", run.both());
         assert_eq!(run.result(), "opened", "{}", run.both());
         assert_eq!(fact(&run.child, "commit"), head, "{}", run.both());
@@ -3113,17 +3005,18 @@ mod tests {
         assert_eq!(run.result(), "unreadable", "{}", run.both());
     }
 
-    /// Prints what wsx reads of `REV_VAR` in the working directory:
-    /// `result=opened` with `commit`, `result=unreadable` with `error` when
-    /// the repository opens but the revision does not read as a commit, or
-    /// `result=refused` with `error` when `Repo::discover` refuses.
+    /// Prints what wsx reads of the object id in `REV_VAR` in the working
+    /// directory, peeled to a commit: `result=opened` with `commit`,
+    /// `result=unreadable` with `error` when the repository opens but the id
+    /// does not peel to a commit, or `result=refused` with `error` when
+    /// `Repo::discover` refuses.
     #[test]
     #[ignore = "child half of the object-store tests; runs only when re-executed"]
     fn object_env_child() {
         let cwd = std::env::current_dir().expect("read the working directory");
-        let rev = std::env::var(REV_VAR).expect("the parent set the revision");
+        let rev = std::env::var(REV_VAR).expect("the parent set the object id");
         match Repo::discover(&cwd) {
-            Ok(found) => match found.resolve_commit(rev.as_bytes()) {
+            Ok(found) => match found.peel_commit(&ObjectId(rev)) {
                 Ok(id) => {
                     testing::child_print("result", "opened");
                     testing::child_print("commit", id);
