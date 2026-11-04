@@ -4,6 +4,9 @@ Out-of-scope discoveries logged during execution. Not fixed by the plan that fou
 
 ## The test suite fails when run with `GIT_DIR` in the test process environment
 
+- **Status:** resolved
+- **Resolved (2026-11-04):** fixed in 03-10 (see the fix paragraph below). Re-checked with
+  `GIT_DIR` exported: `scripts/check.sh test` gives `333 tests run: 333 passed, 58 skipped`, rc 0.
 - **Found during:** 03-04, while stating the limits of the gix ban-list pin test.
 - **Observed:** `GIT_DIR=<this checkout's git dir> scripts/check.sh test` gives
   `207 tests run: 190 passed, 17 failed, 42 skipped` (rc 100). Without `GIT_DIR`, all 207 pass.
@@ -46,6 +49,14 @@ Out-of-scope discoveries logged during execution. Not fixed by the plan that fou
   global config. 03-10 made wsx ignore that key, as git does. The
   property the owner's rule asks for (configuration paths aimed at scratch) still does not hold
   for these 26 tests; it does hold for every re-executed child and every git child.
+- **Measured (2026-11-04):** with `GIT_CONFIG_GLOBAL` aimed at a config setting `core.bare=true`,
+  `core.worktree`, `core.hooksPath`, `extensions.refStorage=reftable`,
+  `extensions.objectFormat=sha256`, `init.defaultBranch=trunk` and `safe.directory=*`
+  (`GIT_CONFIG_NOSYSTEM=1`), `scripts/check.sh test` gives `333 tests run: 333 passed, 58
+  skipped`, rc 0. Control: that config makes `git init` create `refs/heads/trunk`; an empty one
+  gives `master`. Not covered: `HOME`/`XDG_CONFIG_HOME` config files, `GIT_CONFIG_SYSTEM`, a
+  hostile `GIT_CEILING_DIRECTORIES`, or any key outside that list. No failing test is known; the
+  property above still does not hold.
 - **Possible fix (owner's call):** run those tests in a child with the scratch environment, as
   the ceiling and foreign-owner tests do, or have `rerun_scrubbed` always re-execute with a
   scratch `HOME` and `GIT_CONFIG_NOSYSTEM=1`.

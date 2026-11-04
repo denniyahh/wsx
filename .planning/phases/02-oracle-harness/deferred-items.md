@@ -1,7 +1,11 @@
 ## Deferred Items
 
 - `cargo fmt` (and so `scripts/check.sh fmt`) never checks the scenario modules
-  status: open
+  status: resolved
+  **Resolved (2026-11-04):** `scripts/check.sh fmt` now also runs `rustfmt --edition 2024 --check`
+  on every `.rs` file git does not ignore (check.sh `run_fmt`), so macro-declared modules are
+  read. Checked 2026-11-04: `check.sh fmt` exits 0; all 18 `tests/harness/*.rs` pass rustfmt;
+  `gate_controls::fmt_checks_an_untracked_rs_file` runs and passes (a mis-formatted file must fail).
   **Found during:** 02-10, Task 2.
   **What:** `tests/harness/main.rs` declares `sync`, `worktree`, `check`, `cut`, `guard` and
   `signing` inside the `harness_modules!` macro invocation. rustfmt does not follow `mod`
