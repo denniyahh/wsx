@@ -1,7 +1,8 @@
 //! Read queries answered by gix; callers never hold a gix type.
-//! `merge_base` takes object ids and peels each to its commit with
-//! `Repo::peel_commit`, so it parses no revspec. Each other read's own doc
-//! says what it takes.
+//! Each read takes object ids, never a name. The commit queries
+//! (`merge_base`, `ahead_behind`, `range_walk`) peel their ids to commits
+//! with `Repo::peel_commit`, and `tree_diff` peels its ids to trees, so no
+//! read resolves a name or passes one to gix's revspec parser.
 
 use std::collections::BTreeSet;
 
@@ -111,17 +112,13 @@ impl Repo {
     /// The files that differ between the trees of `from` and `to`, sorted by
     /// path bytes, then kind, as `git diff-tree -r --no-renames` lists them:
     /// no rename detection (a rename is a deletion plus an addition) and no
-    /// directory entries. Takes revspec bytes, resolved through
-    /// `Repo::resolve`.
-    pub fn tree_diff(&self, from: &[u8], to: &[u8]) -> Result<Vec<TreeChange>, Error> {
+    /// directory entries. Takes object ids, each peeled to its tree as
+    /// `tree_of` peels it.
+    pub fn tree_diff(&self, from: &ObjectId, to: &ObjectId) -> Result<Vec<TreeChange>, Error> {
         use gix::prelude::FindExt;
 
         let failed = |message: String| Error::Gix {
-            what: format!(
-                "diff {} {}",
-                String::from_utf8_lossy(from),
-                String::from_utf8_lossy(to)
-            ),
+            what: format!("diff {from} {to}"),
             message,
         };
         let from_tree = self.tree_of(from)?;
@@ -156,18 +153,21 @@ impl Repo {
         Ok(changes)
     }
 
-    /// The tree a revision peels to. Resolution errors are `resolve`'s,
-    /// unchanged, so the reftable refusal stays typed; an object that does
-    /// not peel to a tree is `Error::Gix` naming the revision.
-    fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        let id = self.resolve(rev)?;
+    /// The tree the object id `id` peels to: a tree is itself, a commit or
+    /// an annotated tag peels to its tree. That is a tree-ish, as
+    /// `git diff-tree` takes one, where the commit reads peel their ids to a
+    /// commit through `Repo::peel_commit` instead. An id of the other hash
+    /// kind is `ObjectId::to_gix`'s refusal; an object that is missing or
+    /// does not peel to a tree is `Error::Gix` naming the id.
+    fn tree_of(&self, id: &ObjectId) -> Result<gix::ObjectId, Error> {
+        let gix_id = id.to_gix(self.repo.object_hash())?;
         self.repo
-            .find_object(id)
+            .find_object(gix_id)
             .map_err(|err| err.to_string())
             .and_then(|object| object.peel_to_tree().map_err(|err| err.to_string()))
             .map(|tree| tree.id)
             .map_err(|message| Error::Gix {
-                what: format!("tree of {}", String::from_utf8_lossy(rev)),
+                what: format!("tree of {id}"),
                 message,
             })
     }
@@ -761,7 +761,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let from_gix = repo
-            .tree_diff(b"main", b"feat")
+            .tree_diff(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix diff main feat");
         let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat");
         assert_eq!(
@@ -805,7 +808,10 @@ mod tests {
             "git diff-tree {name} main"
         );
         let from_wsx = repo
-            .tree_diff(name.as_bytes(), b"main")
+            .tree_diff(
+                &id(&scratch, &fixture.repo, name),
+                &id(&scratch, &fixture.repo, "main"),
+            )
             .expect("wsx diff of the describe-shaped ref and main");
         assert_eq!(
             from_wsx, from_git,
@@ -825,7 +831,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let moved = repo
-            .tree_diff(b"main", b"feat~3")
+            .tree_diff(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat~3"),
+            )
             .expect("gix diff main feat~3");
         let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat~3");
         assert_eq!(
@@ -835,7 +844,10 @@ mod tests {
         assert!(!moved.is_empty(), "diff main feat~3 is empty");
 
         let main_feat = repo
-            .tree_diff(b"main", b"feat")
+            .tree_diff(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix diff main feat");
         assert_ne!(
             moved, main_feat,
@@ -853,7 +865,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let from_gix = repo
-            .tree_diff(b"feat", b"feat")
+            .tree_diff(
+                &id(&scratch, &repo_dir, "feat"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
             .expect("gix diff feat feat");
         assert_eq!(
             from_gix,
@@ -1172,7 +1187,10 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
         let from_gix = repo
-            .tree_diff(b"main~1", b"main")
+            .tree_diff(
+                &id(&scratch, &repo_dir, "main~1"),
+                &id(&scratch, &repo_dir, "main"),
+            )
             .expect("gix diff main~1 main");
         let from_git = git_tree_diff(&scratch, &repo_dir, "main~1", "main");
         assert_eq!(
@@ -1229,10 +1247,7 @@ mod tests {
             "walk feat --not main twice: {first:?} then {second:?}"
         );
 
-        let diff = || {
-            repo.tree_diff(b"main", b"feat")
-                .expect("gix diff main feat")
-        };
+        let diff = || repo.tree_diff(&main, &feat).expect("gix diff main feat");
         let (first, second) = (diff(), diff());
         assert_eq!(
             first, second,
