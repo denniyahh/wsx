@@ -1,58 +1,114 @@
 # Phase 4: Repo model - Pattern Map
 
-**Mapped:** 2026-11-02
-**Files analyzed:** 11 (5 new, 6 modified)
-**Analogs found:** 10 / 11 (`Cargo.lock` is generated, so it needs none). Four sub-patterns have no analog; see "No Analog Found".
+**Mapped:** 2026-11-04 (regenerated after inserted phase 03.1 landed)
+**Files analyzed:** 12 (4 new, 8 modified)
+**Analogs found:** 10 / 12 (`Cargo.lock` is generated; `.planning/STATE.md` is prose). Four sub-patterns have no analog; see "No Analog Found".
 
-Excerpts were read from the working tree at `e521ad5`. Every analog path was checked as git-tracked. The gix calls for the new reads are not repeated here: `04-RESEARCH.md` Patterns 1-8 hold them. This file holds the repository conventions those calls must be wrapped in.
+Every excerpt below was read from the working tree on branch `workspace/denniyahh` at `6fbea02`, not from 04-RESEARCH.md's description of the code. Every analog path was checked with `git ls-files` and is tracked. Code is cited as symbol plus current line range. The gix calls for the new reads are not repeated here: 04-RESEARCH.md Patterns 1-8 hold them, subject to the corrections in the next section.
 
-## Corrections and additions to RESEARCH.md
+## Corrections to RESEARCH.md after phase 03.1
 
-The planner should treat these as part of the file list. Each was read from source; none has been run.
+04-RESEARCH.md (2026-11-02) predates 03.1. Parts of it were later patched (Pattern 3, Pattern 6 and the Code Examples already use `peel_commit`/`peeled_commit` and `refuse_unfollowable_replacements`), but these statements no longer match the code:
 
-1. **`src/git/testing.rs` must change, and RESEARCH.md does not list it.** `DISCOVERING_SUITES` (`src/git/testing.rs:975`) names the modules whose tests discover a repository in-process, and `discovering_tests_pass_with_a_runner_git_dir` (`:1007`) re-runs only those under a decoy `GIT_DIR`. Add `git::config::tests::`, `git::refs::tests::` and `model::tests::`, and change the array length. If this is skipped, nothing fails: a new test that forgets `rerun_scrubbed` just goes uncaught when the suite runs from a hook.
-2. **Model tests cannot use `Git` from `spawn`.** `mod spawn;` is private to `git` and is not re-exported, and the planned visibility change exposes only `testing`. Model tests must use `testing::git_ok`, the `repo.rs` style, not the `Git::new(...).run` style in `reads.rs`.
-3. **`.as_bstr()` needs an import nothing has yet.** `src/git/` has no `ByteSlice` or `as_bstr` use today, only `gix::bstr::BString` at `repo.rs:212`. RESEARCH Patterns 2, 4 and 5 call `.as_bstr()`, so those files need `use gix::bstr::ByteSlice;`. `gix::bstr` is `pub use gix_object::bstr;` at `gix-0.90.0/src/lib.rs:155`.
-4. **The harness config snapshots do not block Pitfall 14's fixture change.** `tests/harness/outcome.rs:414` reads `config --local --list -z`, but `RefsExpect` compares it before and after an action (`:58-71`), so two more keys set at build time should not move an expectation. This comes from reading the code; the harness has not been run with the change.
-5. **`04-RESEARCH.md` has stray tool-call tags at lines 1000-1001** (`</content>`, `</invoke>`). They do not change its content. Left as is, because this agent writes only PATTERNS.md.
+1. **`Repo::resolve` and `Repo::resolve_commit` no longer exist** (`rg 'fn resolve|resolve_commit' src/` finds nothing). CONTEXT.md's Reusable Assets still lists them. The replacement is in `src/git/refs.rs`:
+   - `Repo::peel_commit(&self, id: &ObjectId) -> Result<ObjectId, Error>` (lines 7-13), `pub`.
+   - `Repo::peeled_commit(&self, id: &ObjectId) -> Result<gix::Commit<'_>, Error>` (lines 15-28), **private** (`fn`, no `pub`). It is callable only from code in `src/git/refs.rs` itself, so `root_entry` must live in `refs.rs` (as planned) or `peeled_commit` must become `pub(super)`.
+   - Both take an `ObjectId` and decode it as hex (`ObjectId::to_gix`, `src/git/mod.rs` 46-64). A name or short prefix is refused. Nothing in `src/git/` resolves a name any more.
+2. **gix's revspec parsers are clippy errors.** `clippy.toml` lines 52-66 ban `gix::Repository::rev_parse`, `gix::Repository::rev_parse_single`, `gix::revision::Spec::from_bstr` and `gix::revision::plumbing::spec::parse`. RESEARCH Pattern 3 (line 354), Pattern 6's table (`rev_parse_single("<tip>:.wsx.conf")`, line 465), Pitfall 5 and Pitfall 8 describe measurements made with them. Those measurements stand as evidence, but no production code may call them. A test that calls one as a gix control needs the reasoned expectation shown under "Test-only use of a banned call" below; the alternative is to drop the gix control and cite `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object` (`src/git/repo.rs` 985-1057), which already pins the divergence.
+3. **`src/git/refs.rs` exists.** RESEARCH's project structure (line 261) marks it `# NEW`. It is a modification: 04-01 adds `find_ref`, `ref_commit`, `root_entry`, `is_branch_name` and `RefTarget`/`RootEntry` to the existing file, and must not re-stub `peel_commit`. `mod refs;` is already declared (`src/git/mod.rs` line 26).
+4. **Line references that moved:**
+   - `src/git/mod.rs:25-29` (RESEARCH line 270) is now lines 25-30: `mod reads; mod refs; mod repo; mod spawn; #[cfg(test)] mod testing;`.
+   - `#[cfg(test)] mod testing;` (Pitfall 12, `:28-29`) is now lines 29-30.
+   - `ref_storage_in_global_config_does_not_refuse_a_files_repo` (Pitfall 13, `src/git/repo.rs:2221`) is now at 2231 (doc 2227-2229).
+   - Unchanged and still correct: `src/git/mod.rs:23` (dead_code attribute), `src/git/mod.rs:52`-area text "Why the git layer could not answer" (now line 73), `refuse_ref_storage` called at `src/git/repo.rs:37`, `tests/harness/fixture.rs:263-266`, `:670`, `:828`.
+5. **Pitfall 10's backstop is gone.** It says "the `is_unsupported()` backstop in `Repo::resolve` does not fire". There is no `is_unsupported` call and no `Repo::resolve`. The conclusion still holds: `refuse_ref_storage` (`src/git/repo.rs` 541-554) runs in `Repo::discover` (line 37) before any read.
+6. **`DISCOVERING_SUITES` already has length 3**, not 2: `git::reads::tests::`, `git::refs::tests::`, `git::repo::tests::` (`src/git/testing.rs` 1052-1058). 04-01 Task 2's baseline text "the array has length 2" is stale.
+7. **Defect in 04-01 Task 2 as written: adding `model::tests::` to `DISCOVERING_SUITES` fails an existing test.** `discovering_suites_are_the_modules_that_rerun_scrubbed` (`src/git/testing.rs` 1120-1166) scans only `src/git` (line 1126, `Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git")`) for files containing `rerun_scrubbed() {` and asserts that set equals `DISCOVERING_SUITES` (lines 1162-1165). `model::tests::` would be listed but never found as a caller. The plan must also extend the scan to `src/model` (mapping `src/model/mod.rs` to `model::tests::`), or the suite goes red. Likewise, `git::config::tests::` is accepted only if `src/git/config.rs` contains the literal text `rerun_scrubbed() {`; a config test module that uses only `testing::reexec` children would make the two sets disagree. This was read from source, not run.
+8. **Model tests cannot use `Git` from `spawn`.** `mod spawn;` is private to `git` (line 28) and not re-exported. Model tests use `testing::git_ok` (the `refs.rs`/`repo.rs` style), not `Git::new(...).run` (the `reads.rs` style, `src/git/reads.rs` 263-270).
+9. **`.as_bstr()` needs an import nothing in `src/git/` has yet.** There is no `ByteSlice` import; production code names `gix::bstr::BString` only (`src/git/repo.rs` line 165) and tests import `gix::bstr::BStr` (`src/git/repo.rs` line 589). RESEARCH Patterns 2, 4 and 5 call `.as_bstr()`, so `config.rs`, `refs.rs` and `quote.rs` need `use gix::bstr::ByteSlice;` (or `BStr::new(bytes)`, as the pin test does at line 1003).
+10. **Ref differentials must not ask `git rev-parse`.** `testing::object_id` (`src/git/testing.rs` 308-313) runs `git rev-parse --verify`, which resolves by git's DWIM rules (RESEARCH Pitfall 5). Use it to get an id for a revision the test made; to ask whether a full ref name exists, use `git show-ref --verify <full>` through `testing::git`.
 
 ## File Classification
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
 |-------------------|------|-----------|----------------|---------------|
-| `src/git/config.rs` (new) | service, git read | request-response | `src/git/repo.rs:212-218` `ref_storage`; `src/git/reads.rs` for module shape | role-match: same read, but RESEARCH Pattern 1 replaces the call |
-| `src/git/refs.rs` (new) | service, git read | request-response | `src/git/reads.rs` | exact |
-| `src/git/quote.rs` (new) | utility | transform | `src/git/mod.rs:39-44` `ObjectId::from_gix`, a thin gix wrapper | partial |
-| `src/model/mod.rs` (new) | service, policy, plus error type | transform over git reads | `src/git/mod.rs` for the module header and `Error`; `src/git/repo.rs` for repo-backed tests | role-match: errors are exact, no policy layer exists yet |
-| `src/model/manifest.rs` (new) | utility, pure parser | transform | `src/git/spawn.rs:35-55` `parse_git_version`; oracle `scripts/workspace/cut-pr-branch.sh:161-170` for behaviour | partial |
+| `src/git/config.rs` (new) | service, git read | request-response | `src/git/repo.rs` `ref_storage` (160-171) and `implicit_worktree` filters (490-495); `src/git/reads.rs` for module shape | role-match: same read API, but RESEARCH Pattern 1 swaps `string_filter` for `strings_filter` |
+| `src/git/refs.rs` (modified) | service, git read | request-response | itself (`peel_commit`/`peeled_commit` 6-29, tests 31-461); `src/git/reads.rs` `tree_of` (162-179), `file_change`/`entry_class` (194-235) | exact |
+| `src/git/quote.rs` (new) | utility | transform | `src/git/mod.rs` `ObjectId::from_gix`/`to_gix` (41-64), a thin gix wrapper | partial |
+| `src/model/mod.rs` (new) | service (policy) plus error type | transform over git reads | `src/git/mod.rs` header (1-23) and `Error` (73-231); `src/git/refs.rs` tests for repo-backed fixtures | role-match: errors exact, no policy layer exists yet |
+| `src/model/manifest.rs` (new) | utility, pure parser | transform | `src/git/spawn.rs` `version_part`/`parse_git_version` (34-55); oracle `scripts/workspace/cut-pr-branch.sh` 163-164 for behaviour | partial |
 | `src/main.rs` (modified) | config, module list | none | itself, line 10 | exact |
-| `src/git/mod.rs` (modified) | config, module list | none | itself, lines 25-29 | exact |
-| `src/git/testing.rs` (modified) | test support | none | itself, line 975 | exact |
+| `src/git/mod.rs` (modified) | config, module list, error enum | none | itself, lines 25-30 and 73-231 | exact |
+| `src/git/testing.rs` (modified) | test support | none | itself, lines 1052-1166 | exact |
 | `tests/harness/fixture.rs` (modified) | test fixture | batch | itself, lines 263-272, 668-671, 827-830 | exact |
-| `Cargo.toml` (modified) | config | none | itself, lines 29-34 (`tempfile`) | exact |
-| `Cargo.lock` (modified) | config | none | generated by cargo; no hand edit | not applicable |
+| `Cargo.toml` (modified) | config | none | itself, lines 31-37 (`tempfile`) | exact |
+| `Cargo.lock` (modified) | config | none | generated by cargo | not applicable |
+| `.planning/STATE.md` (modified, 04-10) | docs | none | none needed | not applicable |
 
 ## Pattern Assignments
 
-### `src/git/refs.rs` (service, request-response)
+### `src/git/refs.rs` (service, request-response) — modified
 
-**Analog:** `src/git/reads.rs`. Same role: read queries on `Repo`, gix inside, wsx types out.
+**Analog:** the file itself plus `src/git/reads.rs`.
 
-**Module header and imports** (`reads.rs:1-9`):
+**Module header and imports today** (`refs.rs` 1-4). The header must grow to describe exact-name ref reads and the root-entry read; keep `reads.rs`'s style of stating what the read never does (`reads.rs` 1-9):
 ```rust
-//! Read queries answered by gix. Each takes revisions as revspec bytes and
-//! resolves them through `Repo::resolve` (commit queries through
-//! `Repo::resolve_commit`, which peels annotated tags as git does), so
-//! callers never hold a gix type.
-
-use std::collections::BTreeSet;
+//! Peeling object ids to the commits git names for them.
 
 use super::repo::Repo;
 use super::{Error, ObjectId};
 ```
-
-**Public result types: documented fields, derives, raw-byte paths** (`reads.rs:36-43`). `RefTarget` and `RootEntry` follow this:
+`reads.rs` 1-9, the model for the expanded header:
 ```rust
+//! Read queries answered by gix; callers never hold a gix type.
+//! Each read takes object ids, never a name. The commit queries
+//! (`merge_base`, `ahead_behind`, `range_walk`) peel their ids to commits
+//! with `Repo::peel_commit`, and `tree_diff` peels its ids to trees, so no
+//! read resolves a name or passes one to gix's revspec parser. The
+//! `&ObjectId` signatures are the guard against a name reaching that parser;
+//! the clippy ban in `clippy.toml` and its pin test in `repo.rs`
+//! (`banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`)
+//! keep it that way.
+```
+
+**The peel every new read builds on** (`refs.rs` 6-29). `ref_commit` peels the id a `find_ref` read returned through `peel_commit`; `root_entry` calls `peeled_commit` to get the `gix::Commit` and then `.tree()`:
+```rust
+impl Repo {
+    /// The commit `id` names, peeling annotated tags as git's
+    /// `<id>^{commit}` does. No ref is read and no revspec is parsed: `id`
+    /// is decoded as hex, so a name or a short prefix is refused.
+    pub fn peel_commit(&self, id: &ObjectId) -> Result<ObjectId, Error> {
+        self.peeled_commit(id)
+            .map(|commit| ObjectId::from_gix(&commit.id))
+    }
+
+    /// The commit `id` peels to, as gix's commit. A decode failure is
+    /// `ObjectId::to_gix`'s error; a missing object, or one that does not
+    /// peel to a commit, is `Error::Gix` naming `id`.
+    fn peeled_commit(&self, id: &ObjectId) -> Result<gix::Commit<'_>, Error> {
+        let gix_id = id.to_gix(self.repo.object_hash())?;
+        self.repo
+            .find_object(gix_id)
+            .map_err(|err| err.to_string())
+            .and_then(|object| object.peel_to_commit().map_err(|err| err.to_string()))
+            .map_err(|message| Error::Gix {
+                what: format!("peel {id} to a commit"),
+                message,
+            })
+    }
+}
+```
+
+**Public result types: documented variants, derives, raw bytes** (`reads.rs` 27-48). `RefTarget { Object(ObjectId), Symbolic(Vec<u8>) }` and `RootEntry { Absent, Blob(Vec<u8>), NotABlob { kind } }` follow this:
+```rust
+/// How a path differs between two trees.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeKind {
+    /// The path exists only in the second tree.
+    Added,
+    ...
+}
+
 /// One changed file between two trees: what changed and at which path.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TreeChange {
@@ -63,89 +119,89 @@ pub struct TreeChange {
 }
 ```
 
-**`impl Repo` in a sibling module, returning `ObjectId`** (`reads.rs:45`, `51-66`). The `pub(super) repo` field and `pub(super) resolve_commit` are reachable from any `src/git/` file:
+**Error wrapping: a `failed` closure naming the operation** (`reads.rs` 101-110), the shape for every gix call in `find_ref`, `refs_directly_under` and `root_entry`:
 ```rust
-impl Repo {
-    pub fn merge_base(&self, one: &[u8], two: &[u8]) -> Result<Option<ObjectId>, Error> {
-        let one_id = self.resolve_commit(one)?;
-        let two_id = self.resolve_commit(two)?;
-        let base = self
+        let failed = |message: String| Error::Gix {
+            what: format!("walk {} --not {}", render_ids(tips), render_ids(hidden)),
+            message,
+        };
+        let walk = self
             .repo
-            .merge_base(one_id, two_id)
-            .map_err(|err| Error::Gix {
-                what: format!(
-                    "merge-base {} {}",
-                    String::from_utf8_lossy(one),
-                    String::from_utf8_lossy(two)
-                ),
-                message: err.to_string(),
-            })?;
-        Ok(base.map(|id| ObjectId::from_gix(&id)))
-    }
+            .rev_walk(tip_ids)
+            .with_hidden(hidden_ids)
+            .all()
+            .map_err(|err| failed(err.to_string()))?;
 ```
 
-**Error handling.** Every gix failure becomes `Error::Gix { what, message }`, with `what` naming the operation and its subject. `Repo::list_failed` (`repo.rs:150-157`) is the helper form, and RESEARCH Pattern 4's `failed` closure should copy it:
+**Tree-entry mode, read without following** (`reads.rs` 222 and 228-235). `root_entry` classifies `.wsx.conf`'s entry the same way, through `EntryMode`, never through `find_blob` alone (RESEARCH Pitfall 8):
 ```rust
-    fn list_failed(&self, err: impl std::fmt::Display) -> Error {
-        Error::Gix {
-            what: format!("list worktrees of {}", self.git_dir.display()),
-            message: err.to_string(),
-        }
+    (!mode.is_tree()).then(|| TreeChange {
+        kind,
+        path: path.into(),
+    })
+...
+fn entry_class(mode: gix::object::tree::EntryMode) -> gix::object::tree::EntryKind {
+    match mode.kind() {
+        gix::object::tree::EntryKind::BlobExecutable => gix::object::tree::EntryKind::Blob,
+        kind => kind,
     }
+}
 ```
 
-**Peel and tree read** (`reads.rs:156-170`, `tree_of`). `root_entry` starts from `resolve_commit` the same way, then goes on to RESEARCH Pattern 6's mode check:
-```rust
-    fn tree_of(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        let id = self.resolve(rev)?;
-        self.repo
-            .find_object(id)
-            .map_err(|err| err.to_string())
-            .and_then(|object| object.peel_to_tree().map_err(|err| err.to_string()))
-            .map(|tree| tree.id)
-            .map_err(|message| Error::Gix {
-                what: format!("tree of {}", String::from_utf8_lossy(rev)),
-                message,
-            })
-    }
-```
-
-**Test module imports** (`reads.rs:229-237`):
+**Test module imports** (`refs.rs` 31-38). New tests extend this list; no `Git` import (correction 8):
 ```rust
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Output;
 
-    use super::super::spawn::Git;
-    use super::super::testing::{self, Scratch, T0, TICK, commit_all, criss_cross, git_ok, write};
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, ObjectId};
-    use super::{AheadBehind, ChangeKind, Repo, TreeChange};
+    use super::Repo;
 ```
 
-**Differential test against git, with its control as a separate test** (`reads.rs:604-619`, `637-663`):
+**Fixture builder that checks git agrees before the test relies on it** (`refs.rs` 40-65, `tagged_repo`): build with `git_ok`, then assert git's own view of what was built (`cat-file -t`) so a broken fixture fails as a fixture fault. The SHA-256 variant is `repo_with_format` (`refs.rs` 125-145).
+
+**Git oracle helper that returns the whole `Output`** (`refs.rs` 73-79), the shape for `git show-ref --verify <full>`, `git ls-tree`, `git cat-file -e`:
+```rust
+    fn git_peel(scratch: &Scratch, dir: &Path, hex: &str) -> Output {
+        let rev = format!("{hex}^{{commit}}");
+        testing::git(scratch, dir, ["rev-parse", "--verify", rev.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+```
+
+**Refusal asserted against git's refusal** (`refs.rs` 96-123, `assert_refused_as_git_does`): git must exit non-zero, and wsx must return the specific variant with a rendered prefix. Use for missing blob, missing tree, symlink, directory and submodule `root_entry` cases.
+
+**Test body shape** (`refs.rs` 156-180):
 ```rust
     #[test]
-    fn tree_diff_matches_git() {
+    fn peel_commit_of_a_commit_is_that_commit() {
         if testing::rerun_scrubbed() {
             return;
         }
-        let scratch = Scratch::new("tree-diff").expect("create scratch");
-        let repo_dir = criss_cross(&scratch).expect("build criss-cross fixture");
+        let scratch = Scratch::new("peel-commit").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
         let repo = Repo::discover(&repo_dir).expect("discover fixture");
 
-        let from_gix = repo
-            .tree_diff(b"main", b"feat")
-            .expect("gix diff main feat");
-        let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat");
+        let head = id(&scratch, &repo_dir, "HEAD");
+        let from_git = git_peeled(&scratch, &repo_dir, &head.to_string());
+        ...
         assert_eq!(
-            from_gix, from_git,
-            "diff main feat: gix against git diff-tree --no-renames"
+            peeled.to_string(),
+            from_git,
+            "peel_commit({head}) against git's {from_git}"
         );
+    }
 ```
-`tree_diff_changes_with_the_pair` at `:638` is the control: the same fixture with a different input must give a different answer. `candidates_match_for_each_ref` and the `root_entry` tests against `git ls-tree` should follow this pair.
 
-**Raw-byte differential parsing with `-z`** (`reads.rs:318-321`). Use this for `git for-each-ref` and `git ls-files -z` output:
+**Describe-shaped ref fixture already exists** (`src/git/testing.rs` 423-491, `describe_shaped_ref`): `refs/remotes/origin/rel-1-g<7 hex of Y>` holding ONE. `ref_commit_reads_the_commit_a_describe_shaped_ref_holds` should reuse it; `refs.rs` 437-460 (`peel_commit_refuses_a_describe_shaped_ref_name`) shows the call:
+```rust
+        let fixture = testing::describe_shaped_ref(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let repo = Repo::discover(&fixture.repo).expect("discover fixture");
+```
+
+**Raw-byte differential parsing with `-z`** (`reads.rs` 334-337), for `git for-each-ref` (`candidates_match_for_each_ref`, `refs_directly_under_matches_for_each_ref`) and `git ls-tree -z`:
 ```rust
         let mut fields: Vec<&[u8]> = raw.split(|byte| *byte == 0).collect();
         if fields.last() == Some(&&b""[..]) {
@@ -153,21 +209,36 @@ mod tests {
         }
 ```
 
-**Symlink fixture** (`testing.rs:375-376`), for `symlink_manifest_fails_closed`:
+**Symlink fixture** (`src/git/testing.rs` 384-385), for `symlink_manifest_fails_closed`:
 ```rust
     std::os::unix::fs::symlink("a.txt", &p)
         .map_err(|err| format!("symlink {} -> a.txt: {err}", p.display()))?;
 ```
 
-**Asking git in a differential.** Use `git show-ref --verify <full>`, not `rev-parse` (RESEARCH Pitfall 5).
+**Replacement-ref refusal (04-11)** reads the environment like `refuse_object_store_env` (`src/git/repo.rs` 271-293): a `const` list or name, `std::env::var_os`, and a typed `Error` naming the variable and value:
+```rust
+fn refuse_object_store_env() -> Result<(), Error> {
+    match OBJECT_STORE_VARS
+        .into_iter()
+        .find_map(|name| Some((name, std::env::var_os(name)?)))
+    {
+        None => Ok(()),
+        Some((name, value)) => Err(Error::ObjectStoreEnv {
+            name,
+            value: PathBuf::from(value),
+        }),
+    }
+}
+```
+Tests that need `GIT_REPLACE_REF_BASE` set must go through `testing::reexec` with an `Env` (see Shared Patterns, child halves), never `set_var`.
 
 ---
 
-### `src/git/config.rs` (service, request-response)
+### `src/git/config.rs` (service, request-response) — new
 
-**Analog:** `src/git/repo.rs:207-218` `ref_storage` for the call and the doc-comment style. Module shape comes from `reads.rs`, above.
+**Analog:** `src/git/repo.rs` `ref_storage` (160-171) for the config call, `src/git/reads.rs` for module shape (header, `impl Repo`, `use super::repo::Repo;`).
 
-**The call to start from, not to copy as is** (`repo.rs:207-218`):
+**The local-scope read to adapt** (`repo.rs` 160-171). Keep the doc comment's habit of recording what git was measured to do:
 ```rust
 /// The `extensions.refStorage` of the repository's own config (gix's
 /// `Source::Local`, the common dir's `config`), or `None` when it is not set
@@ -182,9 +253,19 @@ fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
         })
 }
 ```
-**Required changes:** `strings_filter` in place of `string_filter`, and `meta.level == 0` added to the filter (RESEARCH Pattern 1, Pitfalls 1-2). `remote_configured` is RESEARCH Pattern 2. Keep the doc-comment habit of recording what was measured against git.
+**Differences:** `local_config_values` is a `pub fn` on `impl Repo` (reading `self.repo`, which is `pub(super)` at `repo.rs` line 12), uses `strings_filter`, and adds `meta.level == 0` (RESEARCH Pattern 1, Pitfalls 1-2). Do not reuse `string_filter`: it returns the last value and reads a no-`=` key as absent.
 
-**Scope tests, one source per test** (`repo.rs:2220-2258`). These are the direct analogs for `global_source_branch_does_not_configure` and `included_key_is_not_read`:
+**Named filter closures over `Metadata`** (`repo.rs` 490-495), the shape for `remote_configured`'s `Source::Local | Source::Worktree` match:
+```rust
+    let config = repo.config_snapshot();
+    let config = config.plumbing();
+    let in_worktree_config =
+        |meta: &gix::config::file::Metadata| meta.source == gix::config::Source::Worktree;
+    let in_repo_config =
+        |meta: &gix::config::file::Metadata| meta.source == gix::config::Source::Local;
+```
+
+**Global-config tests run in a child** (`repo.rs` 2184-2239). `global_source_branch_does_not_configure` and `global_remote_section_is_not_a_remote` follow `ref_storage_in_global_config_does_not_refuse_a_files_repo`: append to `scratch.home.join(".gitconfig")`, then re-execute a child half:
 ```rust
     #[test]
     fn ref_storage_in_global_config_does_not_refuse_a_files_repo() {
@@ -197,32 +278,7 @@ fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
         assert_both_read_files(&scratch, &env, &repo);
     }
 ```
-```rust
-        for args in [
-            ["config", "core.repositoryformatversion", "1"].as_slice(),
-            &["config", "extensions.worktreeConfig", "true"],
-            &["config", "--worktree", "extensions.refStorage", "reftable"],
-        ] {
-            git_ok(&scratch, &repo, args).unwrap_or_else(|err| panic!("{err}"));
-        }
-```
-`GIT_CONFIG_COUNT` variant, `repo.rs:2251-2258`:
-```rust
-        let (repo, mut env) = files_repo_and_env(&scratch);
-        env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
-        env.push(("GIT_CONFIG_KEY_0".into(), "extensions.refStorage".into()));
-        env.push(("GIT_CONFIG_VALUE_0".into(), "reftable".into()));
-```
-
-**The child half and the parent's assertion** (`repo.rs:2192-2215`, `2260-2264`). The global-config cases must run through this, because an in-process `Repo::discover` reads the runner's real global config (RESEARCH Pitfall 13):
-```rust
-        let child = testing::reexec(&child_path("ref_storage_child"), env, &scratch.root, b"")
-            .unwrap_or_else(|err| panic!("{err}"));
-```
-```rust
-        let result = testing::marker(&child, "result").unwrap_or_else(|err| panic!("{err}"));
-        assert_eq!(result, "opened", "{both}");
-```
+`files_repo_and_env` (2184-2196) builds the repo and an `Env` carrying `START_VAR`; `assert_both_read_files` (2198-2225) runs git with `testing::git_in_env` and the child with `testing::reexec(&child_path("ref_storage_child"), env, &scratch.root, b"")`, combines both outputs into one failure message, and asserts `testing::marker(&child, "result")`. The child half (2270-2274):
 ```rust
     #[test]
     #[ignore = "child half of the ref-storage source tests; runs only when re-executed"]
@@ -230,38 +286,53 @@ fn ref_storage(repo: &gix::Repository) -> Option<gix::bstr::BString> {
         print_discovery();
     }
 ```
-Helper, per module (`repo.rs:1087-1090`). A new module uses its own path, for example `git::config::tests::{name}`:
-```rust
-    fn child_path(name: &str) -> String {
-        format!("git::repo::tests::{name}")
-    }
-```
+`child_path` (1097-1100) builds the libtest path, `format!("git::repo::tests::{name}")`; config.rs needs its own with `git::config::tests::`. `print_discovery` (2153-2176) prints `result=` plus details through `testing::child_print`, replacing `\n` in error text.
 
-**Set config before discovering.** `Repo` freezes config at open (RESEARCH Pitfall 9).
+**Differential control for config:** `git config --local --get-all <key>` through `testing::git` (exit 1 means absent). CONTEXT's D-01 control: plain `git config --get` returns the global value, `--local --get` does not.
+
+**Test-module discovery note:** if any config test discovers in-process it must start with `if testing::rerun_scrubbed() { return; }`, and that literal text is what `discovering_suites_are_the_modules_that_rerun_scrubbed` looks for (correction 7).
 
 ---
 
-### `src/git/quote.rs` (utility, transform)
+### `src/git/quote.rs` (utility, transform) — new
 
-**Analog:** `src/git/mod.rs:39-44`, the only existing thin wrapper that hides a gix type. The bodies are RESEARCH Pattern 5.
+**Analog:** `src/git/mod.rs` `ObjectId::from_gix` and `ObjectId::to_gix` (41-64): a thin conversion at the gix boundary, wsx types in and out, gix's error crossing only as its message.
 ```rust
 impl ObjectId {
     /// The wsx form of a gix object id: its lowercase hex.
     fn from_gix(id: &gix::oid) -> ObjectId {
         ObjectId(id.to_hex().to_string())
     }
+
+    /// The gix form of this id in a repository whose objects are hashed
+    /// with `kind`: hex decoding only, never revspec parsing, so no ref is
+    /// read and no prefix or describe output is expanded. ...
+    fn to_gix(&self, kind: gix::hash::Kind) -> Result<gix::ObjectId, Error> {
+        let failed = |message: String| Error::Gix {
+            what: format!("read object id {self}"),
+            message,
+        };
+        let id =
+            gix::ObjectId::from_hex(self.0.as_bytes()).map_err(|err| failed(err.to_string()))?;
+        ...
+    }
 }
 ```
-**Differences:** `c_quote` and `c_unquote` are `pub`, and they take and return `&[u8]`/`Vec<u8>`, so no gix type crosses the boundary. `c_unquote` must check `consumed` (RESEARCH Pitfall 6).
+**Differences:** `c_quote` and `c_unquote` are `pub` (the model calls them), take `&[u8]`, return `Vec<u8>` / `Result<Vec<u8>, String>`, and `c_unquote` checks `consumed` (RESEARCH Pattern 5, Pitfall 6). Needs `use gix::bstr::ByteSlice;` (correction 9).
 
-**Tests:** these are hermetic git children with no in-process discover, so no `rerun_scrubbed` call and no `DISCOVERING_SUITES` entry. `git_ok` is enough. Parse `git ls-files -z` with the raw-byte split shown under `refs.rs`.
+**Tests:** hermetic git children only, no in-process discover, so no `rerun_scrubbed` and no `DISCOVERING_SUITES` entry. Build the all-bytes fixture with `testing::write` and `testing::git_ok`; split `git ls-files -z` with the `-z` pattern above and `git ls-files` (quoted) on `\n`.
 
 ---
 
-### `src/model/mod.rs` (service and error type, transform over git reads)
+### `src/model/mod.rs` (policy service and error type) — new
 
-**Analog for the module header and attribute:** `src/git/mod.rs:1-23`. The module doc states the boundary, and the `dead_code` expectation covers child modules, so `manifest.rs` needs no copy of it:
+**Analog:** `src/git/mod.rs` for the module header, the `dead_code` expectation and the hand-written `Error`; `src/git/refs.rs` tests for repo-backed fixtures.
+
+**Module header and dead-code expectation** (`git/mod.rs` 1-23). Copy the attribute verbatim; the reason string must stay short enough for rustfmt to keep it on one line (comment at 19-22):
 ```rust
+//! wsx's git layer: repository resolution and reads through gix, history
+//! changes through the `git` binary.
+...
 //! gix types never leave this module: callers get wsx's own types (`ObjectId`,
 //! raw-byte paths), and a gix error crosses the boundary only as its message.
 //!
@@ -274,28 +345,26 @@ impl ObjectId {
 // reason is short so rustfmt keeps the attribute on one line.
 #![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 ```
-**Consequence (RESEARCH Pitfall 11):** on the test target every error field must be read, so implement `Display` in the same plan as the variants.
 
-**Analog for the error enum:** `src/git/mod.rs:52-65`, `112-132`, `202`. One documented variant per refusal, hand-written `Display`, and messages that name the fix:
+**Error enum: one documented variant per refusal, `Debug` only** (`git/mod.rs` 73-131):
 ```rust
 /// Why the git layer could not answer.
 #[derive(Debug)]
 pub enum Error {
     /// No repository was found from `start`; `reason` is gix's explanation.
     NotARepo { start: PathBuf, reason: String },
-    /// The repository at `path` is owned by another user and no global or
-    /// system `safe.directory` trusts it; git refuses it too.
-    ForeignOwner { path: PathBuf },
+    ...
+    /// The repository at `path` stores its refs in the `format` backend
+    /// (`extensions.refStorage`), which this version of wsx cannot read.
+    Reftable { path: PathBuf, format: String },
+    ...
+    /// A gix operation failed; `what` names the operation, `message` is gix's.
+    Gix { what: String, message: String },
+}
 ```
+
+**Hand-written `Display` that names the fix** (`git/mod.rs` 133-221). A multi-line message with the command to run on its own tab-indented line:
 ```rust
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::NotARepo { start, reason } => {
-                write!(f, "not a git repository: {} ({reason})", start.display())
-            }
-            // The fix line is git's own: a global `safe.directory` is the one
-            // both git and gix honour (gix ignores `-c safe.directory`).
             Error::ForeignOwner { path } => write!(
                 f,
                 "refusing {path}: it is owned by another user, and git refuses such a repository too\n\
@@ -303,69 +372,52 @@ impl fmt::Display for Error {
                  \tgit config --global --add safe.directory {path}",
                 path = path.display()
             ),
+            ...
+            Error::StaleWorktree { worktree, git_dir } => write!(
+                f,
+                "worktree {} is missing, but {} still registers it (git lists it as prunable)\n\
+                 If it is gone for good, run:\n\
+                 \tgit worktree prune",
+                worktree.display(),
+                git_dir.display()
+            ),
 ```
-```rust
-impl std::error::Error for Error {}
-```
-**Required difference (RESEARCH Pitfall 16):** the existing `String::from_utf8_lossy` message pattern passes escape sequences through. Manifest lines, paths and config values in `model::Error` render through `c_quote`, so do not copy that part of the analog.
+then `impl std::error::Error for Error {}` (line 223). `model::Error` adds `impl From<git::Error> for Error` (variant `Git`), which has no analog in the codebase (see No Analog Found). Render manifest lines, paths and config values with `c_quote`, not `String::from_utf8_lossy` (RESEARCH Pitfall 16); the lossy rendering `git/mod.rs` uses for stderr (lines 171-177) is the pattern not to copy here.
 
-**Tests of messages** (`git/mod.rs:224-230`), asserting the whole rendered string:
+**Display test: one rendering per variant, exact strings** (`git/mod.rs` 245-364, `error_messages_name_their_cause`):
 ```rust
-    #[test]
-    fn error_messages_name_their_cause() {
-        let not_a_repo = Error::NotARepo {
-            start: PathBuf::from("/s"),
-            reason: "r".to_owned(),
+        let stale = Error::StaleWorktree {
+            worktree: PathBuf::from("/w"),
+            git_dir: PathBuf::from("/m/.git/worktrees/w"),
         };
-        assert_eq!(not_a_repo.to_string(), "not a git repository: /s (r)");
+        assert_eq!(
+            stale.to_string(),
+            "worktree /w is missing, but /m/.git/worktrees/w still registers it (git lists it as prunable)\n\
+             If it is gone for good, run:\n\
+             \tgit worktree prune"
+        );
 ```
-This test chains many variants. The global atomic-test rule says to use one test per variant here. Copy the assertion style, not the grouping.
+Implement `Display` in the same plan that adds a variant: on the test target the `dead_code` expectation is off, and a field read nowhere fails clippy (RESEARCH Pitfall 11).
 
-**Repo-backed test shape** (`repo.rs:631-643`, `735-758`). The refusal and its control are separate tests:
-```rust
-    use super::super::Error;
-    use super::super::spawn::Git;
-    use super::super::testing::{
-        self, Env, ForeignOwned, Scratch, T0, TICK, commit_all, git, git_ok, write,
-    };
-    use super::Repo;
-```
-```rust
-    #[test]
-    fn reftable_repo_is_refused() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("reftable").expect("scratch");
-        let (_files, table) = twins(&scratch);
-        let (format, message) = refused_format(Repo::discover(&table.join("sub")), "reftable twin");
-        assert_eq!(format, "reftable");
-        assert!(message.contains("reftable"), "message: {message}");
-        assert!(message.contains("cannot read"), "message: {message}");
-    }
-```
-From `src/model/`, imports become `use crate::git::testing::{self, Scratch, T0, commit_all, git_ok, write};`. Do not import `Git` (correction 2 above).
+**Repo-backed tests:** `use crate::git::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};` once `testing` is `pub(crate)`. Each test opens with `if testing::rerun_scrubbed() { return; }` (`refs.rs` 158-160). Set config with `git_ok(&scratch, &dir, ["config", "--local", key, value])` **before** `Repo::discover`: config is frozen at open (RESEARCH Pitfall 9). The shared fixture (remote, `develop`, `next`, `workspace/dev` with `.wsx.conf`) follows `tagged_repo` (`refs.rs` 40-65): `git_ok` steps, `write`, `commit_all(..., T0 + n * TICK)`, then a git check that the fixture is what the test assumes.
 
-**Fixture helper to base `repo_with_remote` on.** `files_repo_and_env` (`repo.rs:2176-2186`), plus the fixture's clone step (`tests/harness/fixture.rs:240-250`):
-```rust
-    fn files_repo_and_env(scratch: &Scratch) -> (PathBuf, Env) {
-        let dir = scratch.root.join("repo");
-        std::fs::create_dir_all(&dir).expect("create repo dir");
-        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).expect("git init");
-        write(&dir.join("a.txt"), b"a\n").expect("write a.txt");
-        commit_all(scratch, &dir, "a", T0).expect("commit a");
-        let dir = dir.canonicalize().expect("canonicalize the repository");
-```
-The repository under test must be canonicalized, because `Repo` compares canonical paths (`repo.rs:72`). `Scratch` writes `init.defaultBranch = main` and `user.*` into its global config (`testing.rs:43-57`), and `command` clears the environment, so a fixture child sees no host config.
-
-**Control pattern for "same repo, one change":** `tree_diff_changes_with_the_pair`, as above. Use it for `recorded_branches_are_not_candidates`, `undeclared_path_is_not_personal` and `declared_path_is_personal`.
+**Imports from `git`:** `git` is a private module of the crate root (`src/main.rs` line 10), so `model` (a sibling) reaches `crate::git::{Error, ObjectId, Repo, ...}` only for items that are `pub` in `git/mod.rs`. `Repo` is defined in the private `mod repo`, so `git/mod.rs` needs `pub use repo::Repo;` (and likewise `pub use refs::{RefTarget, RootEntry};`, `pub use quote::{c_quote, c_unquote};` or equivalent).
 
 ---
 
-### `src/model/manifest.rs` (utility, transform)
+### `src/model/manifest.rs` (utility, pure parser, transform) — new
 
-**Analog for a pure byte parser and its tests:** `src/git/spawn.rs:34-55`, `395-409`. A small named helper per rule, doc comments that state the accepted shape, and tests that need no repository:
+**Analog:** `src/git/spawn.rs` `version_part` and `parse_git_version` (34-55): a small byte/text parser, documented with the exact shape it accepts, returning `None` on anything else. `manifest.rs` returns a typed `ParseError` naming the line instead.
 ```rust
+/// One dot-separated version part as a number: ASCII digits only.
+fn version_part(part: Option<&str>) -> Option<u32> {
+    let part = part?;
+    if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    part.parse().ok()
+}
+
 /// The (major, minor) of `git --version` output: the first line's token after
 /// `git version `, its first two dot-separated parts. Anything after them
 /// (`.windows.1`, ` (Apple Git-155)`) is ignored. `None` when the output does
@@ -380,86 +432,84 @@ fn parse_git_version(output: &[u8]) -> Option<(u32, u32)> {
     Some((version_part(parts.next())?, version_part(parts.next())?))
 }
 ```
-```rust
-    #[test]
-    fn git_version_output_parses_leniently() {
-        assert_eq!(parse_git_version(b"git version 2.56.0\n"), Some((2, 56)));
-```
-**Differences:** the manifest parser returns a typed `Problem` with a line number and text rather than `None`, and it stays on `&[u8]`, never `str`. Its `Problem` and entry-kind enums follow `ChangeKind` (`reads.rs:22-34`): one doc comment per variant. Its grammar is RESEARCH Pattern 7.
+**Differences:** operate on `&[u8]`, never `String::from_utf8_lossy` (paths are raw bytes, D-14/D-19). No gix import; quoting goes through `crate::git::c_unquote`/`c_quote`.
 
-**Oracle behaviour to match where the decisions agree, and to differ from on purpose** (`scripts/workspace/cut-pr-branch.sh:163-170`):
+**Behavioural reference, the oracle** (`scripts/workspace/cut-pr-branch.sh` 163-164; tracked):
 ```bash
     while read -r KIND ENTRY _; do
         if [ "$KIND" = "only" ] && [ -n "$ENTRY" ]; then
-            FORBIDDEN_PATHS+=("$ENTRY")
-        fi
-    done <<< "$MANIFEST"
-fi
-# Each entry matches that exact path or anything under it, nothing else.
-FORBIDDEN_REGEX="^($(printf '%s\n' "${FORBIDDEN_PATHS[@]%/}" | sed 's/[][\.*^$()+?{}|]/\\&/g' | paste -sd '|' -))(/|$)"
 ```
-- **Keep:** one trailing `/` stripped, literal paths, the `(/|$)` boundary (`covers`), and only `only` lines being personal.
-- **Differ:** `read -r KIND ENTRY _` drops a third word and splits on tabs. D-19 reads `only a b` as `a b` and refuses `only\ta`.
+wsx deliberately differs: `only a b` is the path `a b` and `only\ta` is an error (RESEARCH Pattern 7, D-19). Only `only` lines are personal.
 
-**Real input to parse in a test:** `.workspace-divergence` uses comments, blank lines, `only scripts/workspace` and `modified .gitignore`. The harness writes `only .planning`, `only .workspace-divergence` and `only notes` (`tests/harness/fixture.rs:371-374`, `:391`).
-
-**The pure tests need no `rerun_scrubbed` and no `DISCOVERING_SUITES` entry.** A differential that shells out to `git ls-files` through `git_ok` is hermetic through `command`.
+**Tests:** no repository, so no `rerun_scrubbed` and no `DISCOVERING_SUITES` entry (04-01 Task 2 already keeps `model::manifest::tests::` out). One atomic test per grammar rule (global rule; RESEARCH Pattern 7 table). Proptest uses `failure_persistence: None` and a shared `property_config()` (RESEARCH Pitfall 17, Code Examples).
 
 ---
 
-### `src/main.rs` (config)
+### `src/main.rs` (config) — modified
 
-**Analog:** itself, line 10. Add `mod model;` beside it:
+**Analog:** itself, line 10:
 ```rust
 mod git;
 ```
+Add `mod model;` beside it. No other change: nothing in `main` calls the model until Phase 5.
 
 ---
 
-### `src/git/mod.rs` (config)
+### `src/git/mod.rs` (config, error enum) — modified
 
-**Analog:** itself, lines 25-29. There is no `pub use` in this file today.
+**Module list today** (lines 25-30):
 ```rust
 mod reads;
+mod refs;
 mod repo;
 mod spawn;
 #[cfg(test)]
 mod testing;
 ```
-**Changes:**
-- `mod config; mod quote; mod refs;`, in the existing alphabetical order.
-- `#[cfg(test)] pub(crate) mod testing;` (RESEARCH Pitfall 12).
-- `pub use repo::Repo;`, plus re-exports of whatever the model names from the new files: `RefTarget`, `RootEntry`, `c_quote`, `c_unquote`, `is_branch_name`.
+Add `mod config;` and `mod quote;` (keep alphabetical order), change the last line to `pub(crate) mod testing;` (RESEARCH Pitfall 12), and add the `pub use` lines the model needs (see `src/model/mod.rs` above). `ObjectId` (line 38) and `Error` (line 75) are already `pub`.
 
-The module doc at lines 1-17 stays true. `ObjectId` and `Error` are already `pub`.
+**04-11 adds `git::Error` variants** (`ReplacementRef`, `ReplacementRefDuplicate`, `ReplaceBaseDiffers`) and `is_replacement_refusal`. Follow the variant doc style at 100-110 (`RelativeRepoEnv`: every field named in the doc) and add one exact-string case per variant to `error_messages_name_their_cause` (245-364).
 
 ---
 
-### `src/git/testing.rs` (test support)
+### `src/git/testing.rs` (test support) — modified
 
-**Analog:** itself, `:973-975`. Not in RESEARCH.md; see correction 1.
+**`DISCOVERING_SUITES` today** (lines 1052-1058):
 ```rust
 /// The libtest filters for the modules whose tests discover a repository in
 /// the test process itself.
-const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests::"];
+const DISCOVERING_SUITES: [&str; 3] = [
+    "git::reads::tests::",
+    "git::refs::tests::",
+    "git::repo::tests::",
+];
 ```
-**Change:** add `git::config::tests::`, `git::refs::tests::` and `model::tests::`. A libtest filter is a substring match, so `model::tests::` does not match `model::manifest::tests::`, which is correct only while the manifest tests do not discover.
-
-**Test convention (`:661-662`):** the first line of every test that discovers in-process:
+**The scan that guards it** (lines 1120-1166) reads only `src/git`:
 ```rust
-        if testing::rerun_scrubbed() {
-            return;
+fn discovering_suites_are_the_modules_that_rerun_scrubbed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git");
+    ...
+        if source.contains("rerun_scrubbed() {") {
+            callers.insert(if stem == "mod" {
+                "git::tests::".to_owned()
+            } else {
+                format!("git::{stem}::tests::")
+            });
         }
+    ...
+    assert_eq!(
+        callers, listed,
+        "modules calling rerun_scrubbed() against DISCOVERING_SUITES"
+    );
+}
 ```
-**Marker rule (`:550-553`):** assert a `WSXCHILD` marker, never the exit status alone, because a re-exec with a child name that matches nothing exits 0.
+Adding `model::tests::` requires extending this scan to `src/model` (correction 7). `discovering_tests_pass_with_a_runner_git_dir` (1084-1118) needs no change: it iterates the array and requires each suite to pass at least one test.
 
 ---
 
-### `tests/harness/fixture.rs` (test fixture)
+### `tests/harness/fixture.rs` (test fixture, batch) — modified
 
-**Analog:** itself. The change is RESEARCH Pitfall 14.
-
-**Lines 263-272, today:**
+**The writes to change** (lines 263-272):
 ```rust
         let base_ref = format!("{}/{}", config.base_remote, config.integration);
         let mut local = vec![
@@ -472,21 +522,28 @@ const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests:
             self.git_ok(WORK, ["config", "--local", key, value])?;
         }
 ```
-**Change:** drop `base_ref`, set `wsx.baseRef` to `config.integration.clone()`, and add `wsx.baseRemote` and `wsx.pushRemote` from `config.base_remote` and `config.push_remote`.
+Set `wsx.baseRef` to `config.integration`, and add `wsx.baseRemote` and `wsx.pushRemote` from `config.base_remote` and `config.push_remote` in the same `vec!` (RESEARCH Pitfall 14).
 
-**Assertions to update:**
-- `devflow_layout_matches_the_preset` (fn at `:630`, table at `:668-671`): `("wsx.baseRef", "origin/develop\n")` becomes `"develop\n"`.
-- `fork_layout_has_no_integration_branch_on_the_push_remote` (fn at `:788`, table at `:827-830`): `("wsx.baseRef", "upstream/develop\n")` becomes `"develop\n"`. Add `wsx.baseRemote` = `upstream` and `wsx.pushRemote` = `origin` to this table, which gives the fork layout's new values a test.
-
-**What stays:** `tests/harness/oracle.rs:242` builds its own `base_ref` for the oracle script, and `tests/harness/check.rs:51` and `:178` are oracle message text. `rg` over `tests`, `src` and `scripts/workspace` for `wsx.baseRef`, `wsx.sourceBranch`, `wsx.pushRemote`, `wsx.baseRemote` and `wsx.worktree` finds the fixture lines above and nothing else, and the search does hit those known lines. `with_local_config` (`:150`) is applied after these keys and would override them, but its only two callers set `i18n.commitEncoding` (`outcome.rs:1946`) and `fixture.layout` (`fixture.rs:791`).
-
-**Not run:** the harness suite with this change.
+**The two assertions to update** (lines 668-671 and 827-830):
+```rust
+    for (key, value) in [
+        ("wsx.sourceBranch", "workspace/dev\n"),
+        ("wsx.baseRef", "origin/develop\n"),
+    ] {
+```
+```rust
+    for (key, value) in [
+        ("wsx.baseRef", "upstream/develop\n"),
+        ("fixture.layout", "fork\n"),
+    ] {
+```
+**Config snapshots do not move:** `tests/harness/outcome.rs` `RefsExpect` (57-72) compares local config before and after an action (`config_added`, entries built by `config_entry`, 84-87, from `config --local --list -z` at line 414). Keys set at build time are in both snapshots. Read from source; the harness has not been run with the change.
 
 ---
 
-### `Cargo.toml` (config)
+### `Cargo.toml` (config) — modified
 
-**Analog:** itself, lines 28-34. A dev-dependency carries a justification comment stating what it is for, why it is dev-only, its licence and where legitimacy was checked:
+**Analog:** the `tempfile` dev-dependency and its justification (lines 31-37):
 ```toml
 [dev-dependencies]
 # Scenario tests build scratch git trees. tempfile's TempDir removes them even
@@ -496,71 +553,84 @@ const DISCOVERING_SUITES: [&str; 2] = ["git::reads::tests::", "git::repo::tests:
 # MIT. Legitimacy checked in phase 2 research (Package Legitimacy Audit: OK).
 tempfile = "3.27.0"
 ```
-The new line is `proptest = { version = "1.12.0", default-features = false, features = ["std"] }`, with facts from RESEARCH's audit. `Cargo.lock` is generated; `scripts/check.sh deps` must stay clean.
-
----
+The `proptest` entry gets the same kind of comment: purpose, why `default-features = false, features = ["std"]`, dev-only, licence, and "Legitimacy checked in phase 4 research". Then `scripts/check.sh deps`.
 
 ## Shared Patterns
 
 ### Boundary: gix stays in `src/git/`
-**Source:** `src/git/mod.rs:13-14`
-**Apply to:** `src/model/mod.rs`, `src/model/manifest.rs`, every new `src/git/` public signature.
+**Source:** `src/git/mod.rs` 13-14; `src/git/reads.rs` 1-9.
+**Apply to:** `src/model/*` (no `gix::` path at all), and every new `pub fn` in `src/git/`, which takes and returns `&[u8]`, `Vec<u8>`, `ObjectId` or wsx enums. Ref and path names are raw bytes. Branch-name validity (`FullName::try_from`) lives in `git::is_branch_name`, not in the model (RESEARCH Anti-Patterns).
+
+### Reads take ids or exact full names, never revspecs
+**Source:** `clippy.toml` 52-66; `src/git/refs.rs` 7-13; `src/git/mod.rs` 46-64.
+**Apply to:** `find_ref`, `ref_commit`, `root_entry`, every model read. A ref is read by its exact full name (`refs/heads/...`, `refs/remotes/<remote>/...`) and its id is peeled with `peel_commit`; the tip passed to `root_entry` is an `ObjectId`, never `"<tip>:.wsx.conf"`.
+
+### Test-only use of a banned call
+**Source:** `src/git/repo.rs` 1004-1011 (and the same shape at 794-871 for the open/discover ban):
 ```rust
-//! gix types never leave this module: callers get wsx's own types (`ObjectId`,
-//! raw-byte paths), and a gix error crosses the boundary only as its message.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "pins clippy.toml's revspec ban: a renamed entry point stops compiling and a misspelled ban path leaves this expectation unfulfilled"
+        )]
+        let single = found
+            .repo
+            .rev_parse_single(name)
+            .map(|id| Some(id.to_string()));
 ```
-`src/model/` has no `gix::` path at all, and `is_branch_name` lives in `git` for this reason (RESEARCH Anti-Patterns).
+**Apply to:** any test that keeps a gix revspec call as a control (03.1 Phase 4 Impact item 5). `expect` on the smallest item (the `let`), with a reason, never `allow`.
 
 ### Git-layer error handling
-**Source:** `src/git/mod.rs:108-109`, `src/git/repo.rs:162-171`
-**Apply to:** `src/git/config.rs`, `src/git/refs.rs`, `src/git/quote.rs` where fallible.
-```rust
-    pub(super) fn resolve(&self, rev: &[u8]) -> Result<gix::ObjectId, Error> {
-        match self.repo.rev_parse_single(rev) {
-            Ok(id) => Ok(id.detach()),
-            Err(err) if err.is_unsupported() => Err(self.unsupported_backend()),
-            Err(err) => Err(Error::Gix {
-                what: format!("resolve {}", String::from_utf8_lossy(rev)),
-                message: err.to_string(),
-            }),
-        }
-    }
-```
-`refs.rs` must pass full names only (RESEARCH Pattern 3). On reftable these new reads say "missing", not "unsupported"; `refuse_ref_storage` at `repo.rs:37` covers that (RESEARCH Pitfall 10).
+**Source:** `src/git/reads.rs` 101-110 and 168-179; `src/git/mod.rs` 129-130, 218.
+**Apply to:** every gix call in `config.rs`, `refs.rs`, `quote.rs`. `Error::Gix { what, message }`, where `what` names the operation and subject (`format!("peel {id} to a commit")`) and `message` is `err.to_string()`. Policy refusals go in `model::Error`, not in `git::Error`, except the 04-11 replacement-ref refusals (RESEARCH Pattern 8).
 
 ### Test hermeticity
-**Source:** `src/git/testing.rs:10-15`, `:79-90`, `:161-170`; `clippy.toml`
-**Apply to:** every test that touches a repository.
-- `Scratch::new("<name>")`: a `TempDir` under `<target>/tmp`, removed on drop. Never `/tmp`.
-- Children only through `git_ok` or `git`, which use `command` (`env_clear`, then the scratch env).
-- `std::env::set_var` and `remove_var` are banned. A variable goes on `reexec`'s `Env`.
-- `rerun_scrubbed` first for in-process discovery; `reexec` plus `marker` for anything that plants global config.
+**Source:** `src/git/testing.rs` `Scratch` (81-120), `rerun_scrubbed` (735-785), `reexec` (640-680), `marker` (682-703), `MARKER` (633).
+**Apply to:** every repo-backed test in `src/git/{config,refs}.rs` and `src/model/mod.rs`.
+- `Scratch::new("<name>")` per test; every git child gets `scratch.env` (cleared env, scratch HOME with `GLOBAL_CONFIG`).
+- In-process `Repo::discover` tests start with `if testing::rerun_scrubbed() { return; }`, and their module is listed in `DISCOVERING_SUITES`.
+- Global config or environment variables go only to a re-executed child: `testing::reexec(&child_path("..._child"), &env, &scratch.root, b"")`, child marked `#[ignore = "child half of ...; runs only when re-executed"]`, results read with `testing::marker`, never the exit status alone.
+- No `std::env::set_var`/`remove_var` (`clippy.toml` 24-25).
 
 ### Every read has a differential and a control
-**Source:** `src/git/reads.rs:604-663`; the acceptance bar in `CONTRIBUTING.md:151-181`
-**Apply to:** every test of `config.rs`, `refs.rs`, `quote.rs`; model tests where git has an opinion.
-Two rules from that bar shape these tests. A test may not reproduce the production algorithm in its body, so compare against the `git` binary's output. RED evidence may not be a compile failure, so commit a wrong-answer stub first (RESEARCH Pitfall 18).
+**Source:** `src/git/reads.rs` `tree_diff_matches_git` (655-690) and `tree_diff_changes_with_the_pair` (692-724):
+```rust
+        let from_gix = repo
+            .tree_diff(
+                &id(&scratch, &repo_dir, "main"),
+                &id(&scratch, &repo_dir, "feat"),
+            )
+            .expect("gix diff main feat");
+        let from_git = git_tree_diff(&scratch, &repo_dir, "main", "feat");
+        assert_eq!(
+            from_gix, from_git,
+            "diff main feat: gix against git diff-tree --no-renames"
+        );
+```
+and the control, a different input that must give a different answer:
+```rust
+        assert_ne!(
+            moved, main_feat,
+            "diff main feat~3 {moved:?} against main feat {main_feat:?}"
+        );
+```
+**Apply to:** `local_config_values` (vs `git config --local --get-all`), `remote_configured` (vs `git remote add` exit 3), `find_ref` (vs `git show-ref --verify`), `refs_directly_under` (vs `git for-each-ref`), `root_entry` (vs `git ls-tree` / `git cat-file -e`), `c_quote`/`c_unquote` (vs `git ls-files` / `-z`).
 
 ### Doc comments carry the measurement
-**Source:** `src/git/repo.rs:207-211`, `src/git/reads.rs:46-50`
-**Apply to:** any function whose behaviour was chosen because of a measured git or gix difference.
-State what was measured and on which git version, and what the check does not cover, as `merge_base` does ("which shows gix can match git there, not that it always does").
+**Source:** `src/git/repo.rs` `ref_storage` doc (160-164); `refuse_at_ceiling` doc with a measured table (173-200); `implicit_worktree`/`apply_implicit_worktree` doc (444-457).
+**Apply to:** each new read's doc states what git was measured to do and which gix default it avoids (for example, why `level == 0`, why the trailing `/` on `prefixed`).
 
 ## No Analog Found
 
-Use RESEARCH.md for these; nothing in the repository shows them.
-
-| Item | Role | Data Flow | Reason | Use instead |
-|------|------|-----------|--------|-------------|
-| `proptest!` block in `src/model/manifest.rs` | test | transform | `proptest` appears nowhere in `src`, `tests`, `Cargo.toml`, `Cargo.lock`, `deny.toml` or `scripts` | RESEARCH Code Examples "The proptest (SC 1)", Pitfall 17 |
-| `impl From<git::Error> for model::Error` | error conversion | transform | `src/` has no `impl From` today | RESEARCH Pattern 8; a variant `Git(git::Error)` rendering the inner `Display` |
-| `RepoModel` configured / not-configured state | model | transform | First value type carrying policy state | RESEARCH Pattern 8 |
-| Gitlink at `.wsx.conf` for `submodule_manifest_fails_closed` | test fixture | batch | No fixture commits a gitlink; `src/git/` has only the symlink case. Plan it with `git update-index --add --cacheinfo 160000,<id>,.wsx.conf`, which is **not yet tried here** | Test the fixture itself: assert `git ls-tree` prints `160000 commit` before asserting wsx's refusal |
+| File / sub-pattern | Role | Data Flow | Reason |
+|------|------|-----------|--------|
+| `src/model/mod.rs` `From<git::Error> for model::Error` | error conversion | transform | No error type in the crate wraps another; use RESEARCH Pattern 8 |
+| `src/model/mod.rs` `resolve`/`build`/chain | policy service | transform | No policy layer exists yet; use RESEARCH Pattern 8 and Code Examples ("Remotes and the chain") |
+| `src/model/manifest.rs` proptest blocks | test | property | No proptest in the crate; use RESEARCH Code Examples ("The proptest") and Pitfall 17 |
+| `src/git/refs.rs` `refs_directly_under` | git read | iteration over refs | No ref listing exists in `src/git/`; use RESEARCH Pattern 4 |
 
 ## Metadata
 
-**Analog search scope:** `src/`, `tests/harness/`, `tests/*.rs`, `scripts/workspace/`, `.config/nextest.toml`, `clippy.toml`, `Cargo.toml`, `CONTRIBUTING.md`, `.workspace-divergence`
-**Files read for excerpts:** 13
-**Tracked check:** `git ls-files` listed all ten of the source analogs checked, and the new paths do not exist yet
-**Not established:** nothing was compiled or run for this map. Excerpts are copies of current source; the RESEARCH call shapes they are paired with were compiled only in research's prototype.
-**Pattern extraction date:** 2026-11-02
+**Analog search scope:** `src/` (all of `src/git/*.rs`, `src/main.rs`), `tests/harness/{fixture,outcome}.rs`, `Cargo.toml`, `clippy.toml`, `scripts/workspace/cut-pr-branch.sh`.
+**Files scanned:** 12 read in part or whole; line numbers verified against the files as read on 2026-11-04.
+**Not verified here:** nothing was compiled or run. Corrections 7-9 come from reading source; correction 7 in particular predicts a test failure that has not been observed.
+**Plan cross-references:** 04-01, 04-03, 04-04 and 04-08 cite "PATTERNS line N" (lines 14, 15, 97, 148-154, 257) from the previous version of this file. Those line numbers do not carry over; the content they named is under correction 8 (no `Git` in model tests), the `-z` parsing pattern, and the `refs.rs` peel section above.

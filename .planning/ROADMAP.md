@@ -188,18 +188,18 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Plans**: 11 plans
 **Wave 1**
-- [ ] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; new suites under the runner-`GIT_DIR` check
+- [ ] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [ ] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 04-03-PLAN.md — C-quoting equal to git on every byte; `encode_path`; proptest round trip; `proptest` dev-dependency
 - [ ] 04-05-PLAN.md — `wsx.*` read from this repo's own config file only (D-01); repeated or empty key refused per key (D-18)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 04-04-PLAN.md — Full `.wsx.conf` grammar (D-11 to D-14, D-19), cross-kind overlap, matcher against git's literal pathspec
+- [ ] 04-03-PLAN.md — C-quoting equal to git on every byte; `encode_path`; proptest round trip; `proptest` dev-dependency
 - [ ] 04-06-PLAN.md — Base and push remotes separately (D-02 to D-05); a remote exists only as `git remote add` says
 
 **Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 04-04-PLAN.md — Full `.wsx.conf` grammar (D-11 to D-14, D-19), cross-kind overlap, matcher against git's literal pathspec
 - [ ] 04-07-PLAN.md — Integration chain and `wsx.baseRef` (D-06 to D-10), `is_branch_name` agreeing with git
 
 **Wave 5** *(blocked on Wave 4 completion)*
