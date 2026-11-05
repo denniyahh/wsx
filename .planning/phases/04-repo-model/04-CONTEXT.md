@@ -143,8 +143,8 @@ The owner decided this at plan review, after the planner raised the refusal's co
 - `src/git/repo.rs` `ref_storage`: the local-scope config read to copy for D-01,
   `config_snapshot().plumbing().string_filter(key, |meta| meta.source == gix::config::Source::Local)`.
   It returns a single value, so research must find the multi-value read that D-18 needs.
-- `src/git/repo.rs` `Repo::resolve` and `Repo::resolve_commit`: revision resolution, `pub(super)`
-  today.
+- `src/git/refs.rs` `peel_commit` and `peeled_commit`: peel an exact ref or object id to a commit
+  (phase 03.1 replaced `Repo::resolve` and `Repo::resolve_commit`, which no longer exist).
 - `src/git/mod.rs` `Error`: the hand-written enum, one variant per refusal, with no new error crate
   (Phase 3).
 
