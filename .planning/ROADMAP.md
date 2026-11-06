@@ -192,21 +192,21 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 04-05-PLAN.md — `wsx.*` read from this repo's own config file only (D-01); repeated or empty key refused per key (D-18)
+- [ ] 04-05-PLAN.md — `wsx.*` read from this repo's own config file only (D-01); repeated or empty key refused per key (D-18); a refs namespace (config or `GIT_NAMESPACE`) refused at discovery
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 04-03-PLAN.md — C-quoting equal to git on every byte; `encode_path`; proptest round trip; `proptest` dev-dependency
 - [ ] 04-06-PLAN.md — Base and push remotes separately (D-02 to D-05); a remote exists only as `git remote add` says
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 04-04-PLAN.md — Full `.wsx.conf` grammar (D-11 to D-14, D-19), cross-kind overlap, matcher against git's literal pathspec
+- [ ] 04-04-PLAN.md — Full `.wsx.conf` grammar (D-11 to D-14, D-19), cross-kind overlap, 64 KiB manifest limit, matcher against git's literal pathspec
 - [ ] 04-07-PLAN.md — Integration chain and `wsx.baseRef` (D-06 to D-10), `is_branch_name` agreeing with git
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 04-08-PLAN.md — Workspace-branch fallback, recorded-set input, configured state, `RepoModel::require` (D-15 to D-17, D-21)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 04-09-PLAN.md — Only a regular file at the tip is a manifest; built-ins and `wsx.worktreeDir` (D-20); same list from any checkout
+- [ ] 04-09-PLAN.md — Only a regular file at the tip is a manifest; a tree out of git's order is refused; built-ins and `wsx.worktreeDir` (D-20); same list from any checkout
 
 **Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 04-11-PLAN.md — A replacement gix and git follow differently is refused, repo-wide, before any manifest read; one replacement reads the bytes git prints

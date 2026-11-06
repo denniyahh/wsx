@@ -56,6 +56,9 @@ and `--json` (IF-01). CONF-06 stays in Phase 8, apart from reading `wsx.worktree
   ambiguity is invalid, never staleness. A cross-kind overlap is an error naming both lines: `only a`
   with `modified a`, or `only a` with `modified a/b` (either direction). Exact duplicates and nested
   lines of the same kind parse fine.
+  *Operator ruling 2026-11-05:* "only ambiguity is invalid" contrasts ambiguity with staleness; it does
+  not forbid an explicit size limit. A manifest over 64 KiB is invalid (third adversarial review,
+  finding 8: the overlap check is quadratic and the blob can arrive through a merge).
 - **D-13:** A declaration already covered by a built-in must still parse, because Phase 5 reports it
   as a named `wsx check` failure (DIV-02).
 - **D-14:** Paths are literal, with no glob matching, so `*` is an ordinary byte. One trailing `/` is
