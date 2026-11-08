@@ -174,21 +174,62 @@ impl Repo {
     /// The entry `name` in the root tree of `commit`, read from the object
     /// database, never from a working tree. `commit` is peeled with the
     /// peel `peel_commit` uses, so no revspec is parsed.
+    ///
+    /// Only a regular or executable file is read: the entry's mode is
+    /// checked before any object is, because a symlink's blob holds its link
+    /// text, which reads as text, and only the mode tells it apart (RESEARCH
+    /// Pitfall 8). gix's `is_blob` is true for modes 100644 and 100755 and
+    /// false for 120000 (measured); a symlink, a directory or a gitlink is
+    /// `RootEntry::NotABlob`. A blob that cannot be read is `Error::Gix`,
+    /// never `Absent`.
+    ///
+    /// The tree is decoded whole, so a malformed entry fails the read
+    /// instead of dropping out of a scan, and a tree whose entries are not
+    /// strictly increasing in git's tree order (gix-object's `EntryRef`
+    /// order, which compares a directory's name as if it ended in `/`) is
+    /// `Error::TreeNotSorted`, before any entry is read. git looks an entry
+    /// up by name assuming that order: measured on git 2.56.0, in a root
+    /// tree listing `z.txt` before `.wsx.conf`, `git cat-file blob
+    /// <commit>:.wsx.conf` fails, `git ls-tree` lists both entries and `git
+    /// fsck` reports `treeNotSorted`, while a linear scan, gix's
+    /// `Tree::find_entry`, finds `.wsx.conf`. In a strictly increasing tree
+    /// git's lookup and a scan find the same entry or none. The check covers
+    /// the root tree only, the one tree this read looks in, and refuses some
+    /// disordered trees in which git would still reach `name`.
     pub fn root_entry(&self, commit: &ObjectId, name: &[u8]) -> Result<RootEntry, Error> {
         let failed = |message: String| Error::Gix {
             what: format!("read {} in the root tree of {commit}", lossy(name)),
             message,
         };
-        let tree = self
-            .peeled_commit(commit)?
-            .tree()
-            .map_err(|err| failed(err.to_string()))?;
-        let Some(entry) = tree.find_entry(name) else {
+        let peeled = self.peeled_commit(commit)?;
+        let tree = peeled.tree().map_err(|err| failed(err.to_string()))?;
+        let decoded = tree.decode().map_err(|err| failed(err.to_string()))?;
+        if decoded.entries.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(Error::TreeNotSorted {
+                commit: ObjectId::from_gix(&peeled.id),
+                tree: ObjectId::from_gix(&tree.id),
+            });
+        }
+        let Some(entry) = decoded.entries.iter().find(|entry| {
+            let filename: &[u8] = entry.filename;
+            filename == name
+        }) else {
             return Ok(RootEntry::Absent);
         };
+        let mode = entry.mode;
+        if !mode.is_blob() {
+            let kind = if mode.is_link() {
+                "symlink"
+            } else if mode.is_tree() {
+                "directory"
+            } else {
+                "submodule"
+            };
+            return Ok(RootEntry::NotABlob { kind });
+        }
         let blob = self
             .repo
-            .find_blob(entry.oid().to_owned())
+            .find_blob(entry.oid.to_owned())
             .map_err(|err| failed(err.to_string()))?;
         Ok(RootEntry::Blob(blob.data.clone()))
     }

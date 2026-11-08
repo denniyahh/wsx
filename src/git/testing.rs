@@ -315,7 +315,7 @@ pub fn object_id(scratch: &Scratch, dir: &Path, rev: &str) -> Result<ObjectId, S
 
 /// `hex` decoded to bytes; an error naming it when it is not even-length hex.
 fn hex_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(format!("{hex:?} has an odd number of hex digits"));
     }
     (0..hex.len())
