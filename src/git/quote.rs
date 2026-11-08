@@ -12,10 +12,24 @@ pub fn c_quote(raw: &[u8]) -> Vec<u8> {
     gix::quote::ansi_c::quote(raw.as_bstr()).to_vec()
 }
 
-/// The raw bytes of `token`, a path as `c_quote` or git prints it. Not yet
-/// implemented: returns `token` unchanged.
+/// The raw bytes of `token`, a path as `c_quote` or git prints it: a token
+/// that does not start with a double quote comes back unchanged, and one that
+/// does must be exactly one C-quoted string, else `Err` with the reason.
+///
+/// Measured on git 2.56.0: on every byte value a file name can hold, this
+/// reverses `git ls-files` output to the `git ls-files -z` name, with and
+/// without `core.quotePath=false`. An octal escape above 377 is refused, as
+/// git refuses it. gix stops at the closing quote and git accepts `"a"b` as
+/// `a`, dropping the rest; here text after the closing quote is an error, so
+/// a path cannot hide bytes behind its quoting. `\000` gives a NUL byte,
+/// which no git path holds; the manifest refuses it, not this function.
 pub fn c_unquote(token: &[u8]) -> Result<Vec<u8>, String> {
-    Ok(token.to_vec())
+    let (raw, consumed) =
+        gix::quote::ansi_c::undo(token.as_bstr()).map_err(|err| err.to_string())?;
+    if consumed != token.len() {
+        return Err("text after the closing quote".to_owned());
+    }
+    Ok(raw.to_vec())
 }
 
 /// `raw` as one word that `sh`, `bash` and `fish` each read back as exactly
