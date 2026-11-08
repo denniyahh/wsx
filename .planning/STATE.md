@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-06-PLAN.md
-last_updated: "2026-11-08T16:17:33.171Z"
+stopped_at: Completed 04-04-PLAN.md
+last_updated: "2026-11-08T16:29:07.633Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: c5b3536008488376f0a1218884e3e6ff923be39e
+state_head: d1429b1a89bf2fc03c7595b17262c69551b1bf02
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 41
+  completed_plans: 42
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 6 of 11
+Plan: 7 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -99,6 +99,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P05 | 11min | 3 tasks | 5 files |
 | Phase 04 P03 | 11 min | 2 tasks | 6 files |
 | Phase 04 P06 | 7 min | 2 tasks | 2 files |
+| Phase 04 P04 | 8min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -189,6 +190,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-03: every proptest! block in model::manifest takes property_config(); property_runs_its_configured_cases fails below 2048 cases, so PROPTEST_CASES=0 is a named failure
 - [Phase 04]: 04-06: remote_configured counts a remote section with a key from Source::Local or Source::Worktree at any include level, matching git remote add (an included section counts, unlike local_config_values)
 - [Phase 04]: 04-06: build resolves wsx.baseRemote before wsx.pushRemote, after the workspace-branch check; remote.pushDefault and upstream are never read
+- [Phase 04]: 04-04: normalize_path strips exactly one trailing slash; path_value passes the value whole, so only a// is EmptyComponent
+- [Phase 04]: 04-04: the overlap check compares each entry with every earlier entry of the other kind, covers in both directions, and names the earlier line
+- [Phase 04]: 04-04: a manifest over 65,536 bytes is TooLarge at the line holding byte index 65536, checked before any line, with empty text
 
 ### Pending Todos
 
@@ -221,6 +225,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T16:17:32.850Z
-Stopped at: Completed 04-06-PLAN.md
+Last session: 2026-11-08T16:29:07.280Z
+Stopped at: Completed 04-04-PLAN.md
 Resume file: None
