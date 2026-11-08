@@ -39,12 +39,39 @@ impl Repo {
             .collect()
     }
 
-    /// Whether gix lists the remote `name` among this repository's remotes.
+    /// Whether this repository defines the remote `name`: a `[remote "name"]`
+    /// section with at least one key, read from the repository's own config
+    /// (gix's `Source::Local`) or its `config.worktree` (`Source::Worktree`).
+    /// This is the test `git remote add` makes: it refuses a name, exit 3,
+    /// only when the repository already defines it (D-03, D-04, A2).
+    ///
+    /// Unlike `local_config_values`, the include level is not filtered: a
+    /// section from an `include.path` file counts, because `git remote add`
+    /// refuses its name too.
+    ///
+    /// Measured with git 2.56.0 and gix 0.90.0 against `git remote add`:
+    /// a section only in global config (`git remote` lists it, `git remote
+    /// add` succeeds) and a local section with no keys (gix's
+    /// `remote_names()` lists it, `git remote add` succeeds) are not remotes;
+    /// a local, included or `config.worktree` section with a key is
+    /// (`git remote add` exits 3), with or without a `url`. A remote's url is
+    /// never checked, so one whose url is dead still counts.
     pub fn remote_configured(&self, name: &[u8]) -> bool {
-        self.repo
-            .remote_names()
-            .iter()
-            .any(|remote| remote.as_bytes() == name)
+        let snapshot = self.repo.config_snapshot();
+        let Some(mut sections) = snapshot.plumbing().sections_by_name("remote") else {
+            return false;
+        };
+        let in_this_repo = |meta: &gix::config::file::Metadata| {
+            matches!(
+                meta.source,
+                gix::config::Source::Local | gix::config::Source::Worktree
+            )
+        };
+        sections.any(|section| {
+            in_this_repo(section.meta())
+                && section.value_names().next().is_some()
+                && section.header().subsection_name() == Some(name.as_bstr())
+        })
     }
 }
 
