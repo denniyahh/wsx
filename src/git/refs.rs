@@ -1399,8 +1399,9 @@ mod tests {
                 let message =
                     rendered.strip_prefix("list the refs directly under refs/heads/workspace/: ");
                 assert!(
-                    message.is_some_and(|message| !message.is_empty()),
-                    "refs_directly_under({prefix}) rendered {rendered:?}, not the prefix and gix's message"
+                    message.is_some_and(|message| message.contains("refs/heads/workspace/bad")),
+                    "refs_directly_under({prefix}) rendered {rendered:?}, not the prefix and \
+                     gix's message naming refs/heads/workspace/bad"
                 );
             }
             other => panic!("refs_directly_under({prefix}): expected Error::Gix, got {other:?}"),
