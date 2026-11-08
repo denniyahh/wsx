@@ -1,4 +1,17 @@
-//! Peeling object ids to the commits git names for them.
+//! Exact ref reads, the root-tree entry of a commit, and peeling object ids
+//! to the commits git names for them; callers never hold a gix type.
+//!
+//! A ref is read only by its exact full name (`find_ref`), the way
+//! `git show-ref --verify` reads it, and a ref's commit is the id that read
+//! returned, peeled (`ref_commit`). An id is peeled by decoding its hex
+//! (`peel_commit`), and `root_entry` takes the commit id the caller already
+//! holds. So no read here resolves a name through git's DWIM ladder or passes
+//! a name or an id to gix's revspec parser, which reads a name shaped like
+//! `describe` output as the object its hex prefixes (`clippy.toml` bans that
+//! parser; `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
+//! in `repo.rs` pins the ban).
+
+use gix::bstr::ByteSlice;
 
 use super::repo::Repo;
 use super::{Error, ObjectId};
@@ -21,13 +34,22 @@ pub enum RootEntry {
     Blob(Vec<u8>),
 }
 
-/// The most refs `Repo::ref_commit` reads for one name, the first included:
-/// git 2.56.0's limit.
+/// The most refs `Repo::ref_commit` reads for one name, the first included,
+/// so four symbolic hops resolve and a fifth is refused. Measured on git
+/// 2.56.0: `git rev-parse --verify` resolves a ref four symbolic hops from a
+/// commit and refuses one five hops away.
 const SYMREF_MAX_DEPTH: usize = 5;
 
-/// Whether `name` is a valid branch name.
-pub fn is_branch_name(_name: &[u8]) -> bool {
-    false
+/// Whether `name` is a valid branch name: `refs/heads/<name>` is a valid
+/// full ref name. A caller reads the branch only as that one full ref.
+pub fn is_branch_name(name: &[u8]) -> bool {
+    let full = [b"refs/heads/".as_slice(), name].concat();
+    gix::refs::FullName::try_from(full.as_bstr()).is_ok()
+}
+
+/// `bytes` for a message naming a ref.
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 impl Repo {
@@ -54,25 +76,106 @@ impl Repo {
             })
     }
 
-    /// The ref named exactly `full`, read without following it.
-    pub fn find_ref(&self, _full: &[u8]) -> Result<Option<RefTarget>, Error> {
-        Ok(None)
+    /// The ref named exactly `full`, read without following it, or `None`
+    /// when git has no ref of that name.
+    ///
+    /// For a full name gix also tries the loose files `.git/heads/<full>`,
+    /// `.git/tags/<full>`, `.git/remotes/<full>` and
+    /// `.git/remotes/<full>/HEAD` when `<full>` itself is absent, and git
+    /// reads none of them (measured on gix 0.90.0 and git 2.56.0). Such a ref
+    /// comes back under another name, so a ref whose name differs from `full`
+    /// reads as `None`.
+    ///
+    /// The comparison cannot see a ref namespace: under one, gix reads
+    /// `refs/namespaces/<ns>/<full>` and reports the name `<full>`.
+    /// `Repo::discover` refuses any namespace gix would apply, so no `Repo`
+    /// it returns reaches this read with one. A `Repo` from `Repo::siblings`
+    /// is not built by `discover`, a limit recorded where that refusal lives.
+    pub fn find_ref(&self, full: &[u8]) -> Result<Option<RefTarget>, Error> {
+        let failed = |message: String| Error::Gix {
+            what: format!("read {}", lossy(full)),
+            message,
+        };
+        let name =
+            gix::refs::FullName::try_from(full.as_bstr()).map_err(|err| failed(err.to_string()))?;
+        let found = self
+            .repo
+            .try_find_reference(name.as_ref())
+            .map_err(|err| failed(err.to_string()))?;
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        let found_name: &[u8] = found.name().as_bstr();
+        if found_name != full {
+            return Ok(None);
+        }
+        Ok(Some(match found.target() {
+            gix::refs::TargetRef::Object(id) => RefTarget::Object(ObjectId::from_gix(id)),
+            gix::refs::TargetRef::Symbolic(target) => {
+                RefTarget::Symbolic(target.as_bstr().to_vec())
+            }
+        }))
     }
 
-    /// The commit the ref named exactly `full` holds.
+    /// The commit the ref named exactly `full` holds, following symbolic
+    /// refs as git does, to at most `SYMREF_MAX_DEPTH` refs in all.
+    ///
+    /// Each ref on the way is read once, through `find_ref`, and the commit
+    /// is the id that read returned, peeled with `peel_commit`; the name is
+    /// never resolved again. Resolving it again would let a ref changed
+    /// between the two reads hand back a commit the checked read never saw,
+    /// and resolving a name through gix's revspec parser reads a name shaped
+    /// like `describe` output as another object. The read-once property has
+    /// no runtime test: placing a change between two reads needs a seam
+    /// here that exists for no other reason, so that race is accepted
+    /// (T-04-37), and the source check on this function's shape is a lint,
+    /// not evidence for it.
+    ///
+    /// A missing ref is `Error::Gix` naming the ref read last; a chain
+    /// deeper than git follows, a cycle included, is `Error::Gix` naming
+    /// `full`.
     pub fn ref_commit(&self, full: &[u8]) -> Result<ObjectId, Error> {
+        let mut name = full.to_vec();
+        for _ in 0..SYMREF_MAX_DEPTH {
+            match self.find_ref(&name)? {
+                None => {
+                    return Err(Error::Gix {
+                        what: format!("read {}", lossy(&name)),
+                        message: "no such ref".to_owned(),
+                    });
+                }
+                Some(RefTarget::Object(id)) => return self.peel_commit(&id),
+                Some(RefTarget::Symbolic(target)) => name = target,
+            }
+        }
         Err(Error::Gix {
-            what: format!("read {}", String::from_utf8_lossy(full)),
-            message: format!("not implemented (at most {SYMREF_MAX_DEPTH} refs)"),
+            what: format!("read {}", lossy(full)),
+            message: format!(
+                "its symbolic refs go deeper than the {SYMREF_MAX_DEPTH} refs git follows"
+            ),
         })
     }
 
-    /// The entry `name` in the root tree of `commit`.
-    pub fn root_entry(&self, commit: &ObjectId, _name: &[u8]) -> Result<RootEntry, Error> {
-        Err(Error::Gix {
-            what: format!("read the root tree of {commit}"),
-            message: "not implemented".to_owned(),
-        })
+    /// The entry `name` in the root tree of `commit`, read from the object
+    /// database, never from a working tree. `commit` is peeled with the
+    /// peel `peel_commit` uses, so no revspec is parsed.
+    pub fn root_entry(&self, commit: &ObjectId, name: &[u8]) -> Result<RootEntry, Error> {
+        let failed = |message: String| Error::Gix {
+            what: format!("read {} in the root tree of {commit}", lossy(name)),
+            message,
+        };
+        let tree = self
+            .peeled_commit(commit)?
+            .tree()
+            .map_err(|err| failed(err.to_string()))?;
+        let Some(entry) = tree.find_entry(name) else {
+            return Ok(RootEntry::Absent);
+        };
+        let blob = self
+            .repo
+            .find_blob(entry.oid().to_owned())
+            .map_err(|err| failed(err.to_string()))?;
+        Ok(RootEntry::Blob(blob.data.clone()))
     }
 }
 

@@ -19,9 +19,9 @@ pub mod manifest;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::git::{self, ObjectId, Repo};
+use crate::git::{self, ObjectId, Repo, RootEntry};
 
-use manifest::{Manifest, ParseError, covers};
+use manifest::{EntryKind, Manifest, ParseError, covers};
 
 /// The local config key that makes a repository configured (D-15).
 pub const SOURCE_BRANCH: &str = "wsx.sourceBranch";
@@ -132,9 +132,9 @@ impl fmt::Display for Error {
                 write!(f, "{key} = {} is not a valid branch name", shown(value))
             }
             Error::NoIntegrationBranch { remote, tried } => {
-                write!(
+                writeln!(
                     f,
-                    "no integration branch: none of {} names an integration branch.\n",
+                    "no integration branch: none of {} names an integration branch.",
                     listed(tried)
                 )?;
                 match remote {
@@ -186,18 +186,115 @@ impl fmt::Display for Error {
 ///
 /// `Err` means exactly that the repository is configured and the model
 /// fails closed; a repository that is not configured is a value.
-pub fn resolve(_repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
-    Ok(RepoModel::NotConfigured {
-        inferred: Err(Error::WorkspaceCandidates {
-            candidates: Vec::new(),
+pub fn resolve(repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
+    match single(repo, SOURCE_BRANCH) {
+        Some(branch) => {
+            // 03.1 D-04: after this check the branch is read only as the one
+            // full ref `refs/heads/<branch>`, never through a DWIM ladder.
+            if !git::is_branch_name(&branch) {
+                return Err(Error::NotABranchName {
+                    key: SOURCE_BRANCH,
+                    value: branch,
+                });
+            }
+            Ok(RepoModel::Configured(Box::new(build(repo, branch)?)))
+        }
+        None => Ok(RepoModel::NotConfigured {
+            inferred: Err(Error::WorkspaceCandidates {
+                candidates: Vec::new(),
+            }),
         }),
+    }
+}
+
+/// The value of `key` in local config: the last one, or `None` when unset.
+fn single(repo: &Repo, key: &'static str) -> Option<Vec<u8>> {
+    repo.local_config_values(key).pop()
+}
+
+/// `refs/heads/<branch>`.
+fn branch_ref(branch: &[u8]) -> Vec<u8> {
+    [b"refs/heads/".as_slice(), branch].concat()
+}
+
+/// The remote a base or push remote resolves to: `origin` when this
+/// repository defines it, else none (D-02, D-04).
+fn default_remote(repo: &Repo) -> Option<Vec<u8>> {
+    repo.remote_configured(DEFAULT_REMOTE)
+        .then(|| DEFAULT_REMOTE.to_vec())
+}
+
+/// The model with `branch` as the workspace branch. The manifest comes from
+/// the root tree of the commit `refs/heads/<branch>` holds, read from the
+/// object database, so neither an uncommitted edit nor the checked-out
+/// branch changes which paths are personal.
+fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
+    let full = branch_ref(&branch);
+    if repo.find_ref(&full)?.is_none() {
+        return Err(Error::WorkspaceBranchMissing { branch });
+    }
+    let base_remote = default_remote(repo);
+    let push_remote = default_remote(repo);
+    let integration = integration(repo, base_remote.as_deref())?;
+    let worktree_dir = DEFAULT_WORKTREE_DIR.to_vec();
+    let workspace_tip = repo.ref_commit(&full)?;
+    let manifest = match repo.root_entry(&workspace_tip, MANIFEST_NAME)? {
+        RootEntry::Absent => return Err(Error::ManifestMissing { branch }),
+        RootEntry::Blob(bytes) => match manifest::parse(&bytes) {
+            Ok(manifest) => manifest,
+            Err(source) => return Err(Error::ManifestInvalid { branch, source }),
+        },
+    };
+    Ok(Model {
+        workspace_branch: branch,
+        workspace_tip,
+        integration,
+        base_remote,
+        push_remote,
+        worktree_dir,
+        manifest,
     })
 }
 
+/// The integration branch: `develop` on the base remote's tracking refs, or
+/// the local `develop` when there is no base remote (D-06, D-07).
+fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
+    let prefix = match base {
+        Some(remote) => [b"refs/remotes/".as_slice(), remote, b"/".as_slice()].concat(),
+        None => b"refs/heads/".to_vec(),
+    };
+    let branch = b"develop".to_vec();
+    let full_ref = [prefix.as_slice(), branch.as_slice()].concat();
+    match repo.find_ref(&full_ref)? {
+        Some(_) => {
+            let tip = repo.ref_commit(&full_ref)?;
+            Ok(Integration {
+                branch,
+                full_ref,
+                tip,
+            })
+        }
+        None => Err(Error::NoIntegrationBranch {
+            remote: base.map(<[u8]>::to_vec),
+            tried: vec![full_ref],
+        }),
+    }
+}
+
 impl Model {
-    /// The paths that never reach a shared branch.
+    /// The paths that never reach a shared branch: `.wsx.conf`, then the
+    /// worktree directory, then each `only` path in file order, duplicates
+    /// kept. A `modified` path is shared, so it is not listed.
     pub fn personal_paths(&self) -> Vec<&[u8]> {
-        Vec::new()
+        let mut paths = vec![MANIFEST_NAME, self.worktree_dir.as_slice()];
+        paths.extend(
+            self.manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Only)
+                .map(|entry| entry.path.as_slice()),
+        );
+        paths
     }
 
     /// Whether some entry of `personal_paths()` covers `path`.

@@ -46,7 +46,9 @@ pub enum Problem {
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Problem::UnknownKind => f.write_str(""),
+            Problem::UnknownKind => {
+                f.write_str(r#"expected a comment or an "only <path>" or "modified <path>" line"#)
+            }
         }
     }
 }
@@ -64,20 +66,54 @@ pub struct ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.problem)
+        write!(
+            f,
+            "line {}: {}: {}",
+            self.line,
+            self.problem,
+            String::from_utf8_lossy(&self.text)
+        )
     }
 }
 
-/// Parses a manifest blob.
-pub fn parse(_bytes: &[u8]) -> Result<Manifest, ParseError> {
-    Ok(Manifest {
-        entries: Vec::new(),
-    })
+/// Parses a manifest blob: lines split on `\n` and numbered from 1, an empty
+/// line or one starting with `#` skipped (D-11), an `only ` or `modified `
+/// line kept with one trailing `/` stripped from its path (D-14). Any other
+/// line refuses the whole manifest, naming the line.
+pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
+    let mut entries = Vec::new();
+    for (index, text) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        let line = index + 1;
+        if text.is_empty() || text.starts_with(b"#") {
+            continue;
+        }
+        let (kind, rest) = if let Some(rest) = text.strip_prefix(b"only ") {
+            (EntryKind::Only, rest)
+        } else if let Some(rest) = text.strip_prefix(b"modified ") {
+            (EntryKind::Modified, rest)
+        } else {
+            return Err(ParseError {
+                line,
+                text: text.to_vec(),
+                problem: Problem::UnknownKind,
+            });
+        };
+        let path = rest.strip_suffix(b"/").unwrap_or(rest);
+        entries.push(Entry {
+            kind,
+            path: path.to_vec(),
+            line,
+            text: text.to_vec(),
+        });
+    }
+    Ok(Manifest { entries })
 }
 
-/// Whether the manifest path `entry` covers the tree path `path`.
-pub fn covers(_entry: &[u8], _path: &[u8]) -> bool {
-    false
+/// Whether the manifest path `entry` covers the tree path `path`: `path` is
+/// `entry` itself or lies below it. Literal bytes, no glob.
+pub fn covers(entry: &[u8], path: &[u8]) -> bool {
+    path.strip_prefix(entry)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
 }
 
 #[cfg(test)]
