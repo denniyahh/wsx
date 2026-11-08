@@ -341,6 +341,21 @@ fn default_remote(repo: &Repo) -> Option<Vec<u8>> {
         .then(|| DEFAULT_REMOTE.to_vec())
 }
 
+/// The remote `key` (`wsx.baseRemote` or `wsx.pushRemote`) names, read on
+/// its own (D-02). A named remote this repository does not define is
+/// `Error::NoSuchRemote`, with no fallback to `origin` (D-03); an unset key
+/// is `default_remote`. Nothing else is consulted: not git's
+/// `remote.pushDefault`, which says where any `git push` goes, and not an
+/// `upstream` remote (D-05), since pushing personal history to a remote the
+/// owner did not name cannot be undone.
+fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
+    match single(repo, key)? {
+        Some(name) if repo.remote_configured(&name) => Ok(Some(name)),
+        Some(remote) => Err(Error::NoSuchRemote { key, remote }),
+        None => Ok(default_remote(repo)),
+    }
+}
+
 /// The model with `branch` as the workspace branch. The manifest comes from
 /// the root tree of the commit `refs/heads/<branch>` holds, read from the
 /// object database, so neither an uncommitted edit nor the checked-out
@@ -350,8 +365,8 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     if repo.find_ref(&full)?.is_none() {
         return Err(Error::WorkspaceBranchMissing { branch });
     }
-    let base_remote = default_remote(repo);
-    let push_remote = default_remote(repo);
+    let base_remote = remote(repo, BASE_REMOTE)?;
+    let push_remote = remote(repo, PUSH_REMOTE)?;
     let integration = integration(repo, base_remote.as_deref())?;
     let worktree_dir = DEFAULT_WORKTREE_DIR.to_vec();
     let workspace_tip = repo.ref_commit(&full)?;
