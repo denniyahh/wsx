@@ -214,7 +214,7 @@ No REFACTOR commits.
 - `tree.find_entry(name)` with the raw `&[u8]`: RESEARCH Pattern 6's `.as_bstr()` argument does not compile on gix 0.90.0 (`&BStr` has no `PartialEq<BStr>`). Recorded as the plan asked.
 - `ref_commit_follows_symbolic_refs_as_far_as_git_does` builds on the existing `tagged_repo` fixture plus `git branch workspace/dev`; the plan named no fixture for it.
 - `worktree_dir_invalid_message_names_the_value` uses `Problem::UnknownKind`, the only `Problem` variant before 04-03 and 04-04 add the path problems.
-- `no_source_branch...` and the other tests in `src/git/refs.rs` use a small `cloned_repo` fixture local to that test module; the model's `repo_with_remote` lives in `model::tests` as the plan specifies.
+- The new tests in `src/git/refs.rs` use a small `cloned_repo` fixture local to that test module; the model's `repo_with_remote` lives in `model::tests` as the plan specifies.
 
 ## Deviations from Plan
 

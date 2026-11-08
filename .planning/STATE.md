@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Phase 03.1 complete, ready to execute Phase 04
-last_updated: "2026-11-08T15:09:27.157Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-11-08T15:30:05.374Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: fb1bad13fec8a46d72c6d038bd76d59f5f99fb88
+state_head: 7d0a3ca1a3f38a550afd69910db46ef5d5cf5ce6
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 36
+  completed_plans: 37
 ---
 
 # Project State
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 1 of 11
-Status: Executing Phase 04
+Plan: 2 of 11
+Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
 Progress: [███░░░░░░░] 25%
@@ -94,6 +94,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 | Phase 03.1 P03 | 5 min | 2 tasks | 2 files |
 | Phase 03.1 P04 | 7 min | 3 tasks | 4 files |
+| Phase 04 P01 | 17 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -171,6 +172,10 @@ Recent decisions affecting current work:
 - [Phase 03.1]: 03.1-03: ahead_behind, range_walk and tree_diff take git::ObjectId; commit reads peel through commit_id/peel_commit, tree_diff peels to a tree-ish via tree_of(&ObjectId); no read in reads.rs calls Repo::resolve or resolve_commit; read errors name hex ids only
 - [Phase 03.1]: 03.1-03: deleted tree_diff_keeps_the_reftable_refusal and files_repo_diffs_head_through_the_same_path (operator decision 2026-11-03: a read on ids reaches no ref); open_unchecked and three backstop tests stay until 03.1-04
 - [Phase 03.1]: Reftable backstop retired by the operator on 2026-11-03 (03.1-RESEARCH Open Question 1): Phase 3's backstop, gix's unsupported-storage error mapped to the reftable refusal inside `Repo::resolve`, is removed with `resolve`, amending Phase 3 CONTEXT's backstop clause; `refuse_ref_storage` at discover is the only reftable guard; on reftable, gix's exact ref read returns `None` and its ref listing is empty, never an unsupported error (04-RESEARCH Pitfall 10), so no backstop is reachable and Phase 4 carries no obligation for one.
+- [Phase 04]: 04-01: find_ref treats a ref gix returns under another name as absent (gix 0.90.0 falls back to .git/heads/<full>, .git/tags/, .git/remotes/, which git never reads)
+- [Phase 04]: 04-01: ref_commit follows symbolic refs only through find_ref, at most 5 reads (git 2.56.0: 4 hops resolve, 5 refused), and peels the id each read returned
+- [Phase 04]: 04-01: printed fix commands take byte arguments through shell_word, or a placeholder (<remote>, <ref>) when no shell quoting can carry the bytes; prose uses c_quote
+- [Phase 04]: 04-01: tree.find_entry takes the raw &[u8] name; RESEARCH Pattern 6's .as_bstr() argument does not compile on gix 0.90.0
 
 ### Pending Todos
 
@@ -203,6 +208,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-04T12:50:00Z
-Stopped at: Phase 03.1 complete (verified, secured, validated); Phase 04 plans need the 03.1 revision listed under Blockers before execution
+Last session: 2026-11-08T15:30:05.049Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
