@@ -35,6 +35,7 @@ impl Repo {
         refuse_object_store_env()?;
         refuse_untrusted(&repo)?;
         refuse_ref_storage(&repo)?;
+        refuse_refs_namespace(&repo)?;
         refuse_relative_repo_env(&repo)?;
         apply_implicit_worktree(&mut repo)?;
         Repo::from_gix(repo)
@@ -549,6 +550,31 @@ fn refuse_ref_storage(repo: &gix::Repository) -> Result<(), Error> {
         Some(value) => Err(Error::Reftable {
             path: refusal_path(repo)?,
             format: String::from_utf8_lossy(&value).into_owned(),
+        }),
+    }
+}
+
+/// Refuses a repository gix opened with a ref namespace, as
+/// `Error::RefsNamespace` naming it. gix maps `GIT_NAMESPACE` and
+/// `gitoxide.core.refsNamespace` onto one value, so this reads gix's
+/// resolved namespace and covers every source gix takes it from.
+///
+/// Measured with gix 0.90.0 and git 2.56.0, with `refs/heads/workspace/dev`
+/// at X and `refs/namespaces/foo/refs/heads/workspace/dev` at Y: the key in
+/// local config, in global config or through `GIT_CONFIG_COUNT`, and
+/// `GIT_NAMESPACE=foo`, each made `namespace()` `refs/namespaces/foo/` and
+/// gix read Y under the plain name `refs/heads/workspace/dev`, while
+/// `git show-ref --verify` and `git rev-parse --verify` printed X, under
+/// `GIT_NAMESPACE=foo` too. `GIT_NAMESPACE` set empty gave no namespace and
+/// X. gix also lists replace refs through the namespace when it opens, so a
+/// `refs/namespaces/foo/refs/replace/<A>` to B made gix read B's bytes for A
+/// where git read A's, and clearing the namespace after open fixed the ref
+/// reads but still read B. So the namespace is refused, not cleared.
+fn refuse_refs_namespace(repo: &gix::Repository) -> Result<(), Error> {
+    match repo.namespace() {
+        None => Ok(()),
+        Some(namespace) => Err(Error::RefsNamespace {
+            namespace: namespace.as_bstr().to_vec(),
         }),
     }
 }
