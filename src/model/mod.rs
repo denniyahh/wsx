@@ -920,4 +920,237 @@ mod tests {
              \tgit config --local wsx.baseRef <branch>"
         );
     }
+
+    /// The variable a parent hands `state_child`: the directory it discovers
+    /// from.
+    const START_VAR: &str = "WSX_TEST_START";
+
+    /// The full libtest path of a child half in this module.
+    fn child_path(name: &str) -> String {
+        format!("model::tests::{name}")
+    }
+
+    /// Appends `text` to `<work>/.git/config`. Run it before
+    /// `Repo::discover`.
+    fn append_config(work: &Path, text: &[u8]) {
+        let path = work.join(".git/config");
+        let mut config =
+            std::fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        config.extend_from_slice(text);
+        ok(write(&path, &config));
+    }
+
+    /// What `resolve` answers for `work`, discovered in this process.
+    fn resolved(work: &Path) -> Result<RepoModel, Error> {
+        let repo = Repo::discover(work).expect("discover the fixture");
+        resolve(&repo, &BTreeSet::new())
+    }
+
+    /// `git config <args>` in `work`: its exit code and stdout.
+    fn git_config(scratch: &Scratch, work: &Path, args: &[&str]) -> (Option<i32>, Vec<u8>) {
+        let mut argv = vec!["config"];
+        argv.extend_from_slice(args);
+        let output = ok(testing::git(scratch, work, &argv));
+        (output.status.code(), output.stdout)
+    }
+
+    /// Runs `state_child` on `work` with the scratch environment and returns
+    /// its `state` marker, with its `error` marker when it printed one.
+    fn child_state(scratch: &Scratch, work: &Path) -> String {
+        let mut env = scratch.env.clone();
+        env.push((START_VAR.into(), work.into()));
+        let child = ok(testing::reexec(
+            &child_path("state_child"),
+            &env,
+            &scratch.root,
+            b"",
+        ));
+        let state = ok(testing::marker(&child, "state"));
+        match testing::marker(&child, "error") {
+            Ok(error) => format!("{state}: {error}"),
+            Err(_) => state,
+        }
+    }
+
+    /// A repeated `wsx.sourceBranch` is refused, naming every value in order,
+    /// rather than resolved by git's last-one-wins (D-18): the key is set, so
+    /// the repository is configured (D-15) and the refusal is an `Err`.
+    #[test]
+    fn repeated_source_branch_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-key-repeated").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        for value in ["workspace/other", "workspace/dev"] {
+            ok(git_ok(
+                &scratch,
+                &work,
+                ["config", "--local", "--add", "wsx.sourceBranch", value],
+            ));
+        }
+        match resolved(&work) {
+            Err(Error::KeyRepeated { key, values }) => {
+                assert_eq!(key, "wsx.sourceBranch");
+                assert_eq!(
+                    values,
+                    [b"workspace/other".to_vec(), b"workspace/dev".to_vec()]
+                );
+            }
+            other => panic!("resolve: expected Err(KeyRepeated), got {other:?}"),
+        }
+    }
+
+    /// `wsx.sourceBranch=` is refused as empty (D-18), not read as unset.
+    #[test]
+    fn empty_source_branch_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-key-empty").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "");
+        match resolved(&work) {
+            Err(Error::KeyEmpty { key }) => assert_eq!(key, "wsx.sourceBranch"),
+            other => panic!("resolve: expected Err(KeyEmpty), got {other:?}"),
+        }
+    }
+
+    /// A `sourceBranch` line with no `=` under `[wsx]` is the same empty
+    /// value, as `git config --local --get` prints it, and is refused alike.
+    #[test]
+    fn source_branch_without_a_value_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-key-no-value").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        append_config(&work, b"[wsx]\n\tsourceBranch\n");
+        assert_eq!(
+            git_config(&scratch, &work, &["--local", "--get", "wsx.sourceBranch"]),
+            (Some(0), b"\n".to_vec())
+        );
+        match resolved(&work) {
+            Err(Error::KeyEmpty { key }) => assert_eq!(key, "wsx.sourceBranch"),
+            other => panic!("resolve: expected Err(KeyEmpty), got {other:?}"),
+        }
+    }
+
+    /// D-18 applies to each key this phase reads, not to the `wsx` section:
+    /// an empty `wsx.protectedBranches` (GUARD-05's way to turn that guard
+    /// off) and a repeated `wsx.other`, both present as git reads them,
+    /// leave a configured repository configured.
+    #[test]
+    fn keys_this_phase_does_not_read_are_not_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-other-keys").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, "wsx.protectedBranches", "");
+        for value in ["a", "b"] {
+            ok(git_ok(
+                &scratch,
+                &work,
+                ["config", "--local", "--add", "wsx.other", value],
+            ));
+        }
+        assert_eq!(
+            git_config(
+                &scratch,
+                &work,
+                &["--local", "--get-all", "wsx.protectedBranches"]
+            ),
+            (Some(0), b"\n".to_vec())
+        );
+        assert_eq!(
+            git_config(&scratch, &work, &["--local", "--get-all", "wsx.other"]),
+            (Some(0), b"a\nb\n".to_vec())
+        );
+        configured(&work);
+    }
+
+    /// `wsx.sourceBranch` in global config leaves the repository not
+    /// configured (D-01): plain `git config --get` returns it and
+    /// `--local --get` does not, and `resolve` in a child with the scratch
+    /// environment reports `NotConfigured`.
+    #[test]
+    fn global_source_branch_does_not_configure() {
+        let scratch = Scratch::new("model-global-key").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(b"[wsx]\n\tsourceBranch = workspace/dev\n");
+        ok(write(&global, &config));
+
+        assert_eq!(
+            git_config(&scratch, &work, &["--get", "wsx.sourceBranch"]),
+            (Some(0), b"workspace/dev\n".to_vec())
+        );
+        assert_eq!(
+            git_config(&scratch, &work, &["--local", "--get", "wsx.sourceBranch"]),
+            (Some(1), Vec::new())
+        );
+        assert_eq!(child_state(&scratch, &work), "not-configured");
+    }
+
+    /// The control for the child: the same child reports `configured` for
+    /// the value set in the repository's own config.
+    #[test]
+    fn local_source_branch_configures_the_same_child() {
+        let scratch = Scratch::new("model-local-key-child").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        assert_eq!(child_state(&scratch, &work), "configured");
+    }
+
+    /// `wsx.sourceBranch` in an `include.path` file leaves the repository
+    /// not configured (D-01, A1), while `git config --local --includes`
+    /// returns it.
+    #[test]
+    fn included_source_branch_does_not_configure() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-included-key").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(write(
+            &work.join(".git/extra.conf"),
+            b"[wsx]\n\tsourceBranch = workspace/dev\n",
+        ));
+        append_config(&work, b"[include]\n\tpath = extra.conf\n");
+        assert_eq!(
+            git_config(
+                &scratch,
+                &work,
+                &["--local", "--includes", "--get", "wsx.sourceBranch"]
+            ),
+            (Some(0), b"workspace/dev\n".to_vec())
+        );
+        match resolved(&work) {
+            Ok(RepoModel::NotConfigured { .. }) => {}
+            other => panic!("resolve: expected RepoModel::NotConfigured, got {other:?}"),
+        }
+    }
+
+    /// Prints what `resolve` makes of the repository at `START_VAR`:
+    /// `state=configured`, `state=not-configured`, or `state=failed` with
+    /// `error`; a discovery failure is `state=failed` too.
+    #[test]
+    #[ignore = "child half of the model config-source tests; runs only when re-executed"]
+    fn state_child() {
+        let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
+        let answer = Repo::discover(Path::new(&start))
+            .map_err(Error::Git)
+            .and_then(|repo| resolve(&repo, &BTreeSet::new()));
+        match answer {
+            Ok(RepoModel::Configured(_)) => testing::child_print("state", "configured"),
+            Ok(RepoModel::NotConfigured { .. }) => testing::child_print("state", "not-configured"),
+            Err(err) => {
+                testing::child_print("state", "failed");
+                testing::child_print("error", err.to_string().replace('\n', "\\n"));
+            }
+        }
+    }
 }
