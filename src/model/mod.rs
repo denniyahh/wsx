@@ -454,6 +454,7 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
         .map_err(unreadable)?
     {
         RootEntry::Absent => return Err(Error::ManifestMissing { branch }),
+        RootEntry::NotABlob { kind } => return Err(Error::ManifestNotABlob { branch, kind }),
         RootEntry::Blob(bytes) => match manifest::parse(&bytes) {
             Ok(manifest) => manifest,
             Err(source) => return Err(Error::ManifestInvalid { branch, source }),
@@ -3502,6 +3503,380 @@ mod tests {
                 no_integration(&err);
             }
             Ok(model) => panic!("require: expected Err(NoIntegrationBranch), got {model:?}"),
+        }
+    }
+
+    /// The line `git ls-tree refs/heads/workspace/dev -- .wsx.conf` prints
+    /// in `work`, newline trimmed.
+    fn workspace_manifest_line(scratch: &Scratch, work: &Path) -> String {
+        let stdout = run(
+            scratch,
+            work,
+            &["ls-tree", "refs/heads/workspace/dev", "--", ".wsx.conf"],
+        );
+        String::from_utf8_lossy(&stdout).trim_end().to_owned()
+    }
+
+    /// Fails the test unless `workspace_manifest_line` starts with
+    /// `mode_and_type`, such as `120000 blob `.
+    fn assert_workspace_mode(scratch: &Scratch, work: &Path, mode_and_type: &str) {
+        let line = workspace_manifest_line(scratch, work);
+        assert!(
+            line.starts_with(mode_and_type),
+            "git ls-tree refs/heads/workspace/dev -- .wsx.conf printed {line:?}, \
+             not {mode_and_type:?}"
+        );
+    }
+
+    /// On `workspace/dev` in `work`: `git rm -q .wsx.conf`, then `change` in
+    /// the working tree, then `commit_all`; `main` is checked out again with
+    /// `git switch -q -f`.
+    fn replace_manifest(scratch: &Scratch, work: &Path, change: impl FnOnce(&Path)) {
+        run(scratch, work, &["switch", "-q", "workspace/dev"]);
+        run(scratch, work, &["rm", "-q", ".wsx.conf"]);
+        change(work);
+        ok(commit_all(scratch, work, "manifest shape", T0 + 4 * TICK));
+        run(scratch, work, &["switch", "-q", "-f", "main"]);
+    }
+
+    /// `workspace/dev`'s `.wsx.conf` in `work` becomes a symlink to `a.txt`,
+    /// which `git ls-tree` shows as `120000 blob`.
+    fn symlink_manifest(scratch: &Scratch, work: &Path) {
+        replace_manifest(scratch, work, |work| {
+            std::os::unix::fs::symlink("a.txt", work.join(".wsx.conf"))
+                .unwrap_or_else(|err| panic!("symlink .wsx.conf: {err}"));
+        });
+        assert_workspace_mode(scratch, work, "120000 blob ");
+    }
+
+    /// The branch and kind of `err`; fails the test unless it is
+    /// `Error::ManifestNotABlob`.
+    fn not_a_blob(err: &Error) -> (String, &'static str) {
+        match err {
+            Error::ManifestNotABlob { branch, kind } => {
+                (String::from_utf8_lossy(branch).into_owned(), kind)
+            }
+            other => panic!("expected Err(ManifestNotABlob), got {other:?}"),
+        }
+    }
+
+    /// The branch `err` names; fails the test unless it is
+    /// `Error::ManifestUnreadable`.
+    fn unreadable_branch(err: &Error) -> String {
+        match err {
+            Error::ManifestUnreadable { branch, .. } => {
+                String::from_utf8_lossy(branch).into_owned()
+            }
+            other => panic!("expected Err(ManifestUnreadable), got {other:?}"),
+        }
+    }
+
+    /// Success Criterion 5: no `.wsx.conf` at the tip of a configured
+    /// workspace branch fails closed, naming the branch.
+    #[test]
+    fn missing_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-missing-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        commit_manifest(&scratch, &work, None);
+        assert_eq!(
+            workspace_manifest_line(&scratch, &work),
+            "",
+            "git ls-tree refs/heads/workspace/dev -- .wsx.conf"
+        );
+
+        let err = refusal(&work);
+        let rendered = err.to_string();
+        match err {
+            Error::ManifestMissing { branch } => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+            }
+            other => panic!("resolve: expected Err(ManifestMissing), got {other:?}"),
+        }
+        assert!(
+            rendered.starts_with("workspace/dev has no .wsx.conf at its tip"),
+            "{rendered:?} does not name the branch"
+        );
+    }
+
+    /// D-19, RESEARCH Pitfall 8: a symlink's link text is never parsed as a
+    /// manifest.
+    #[test]
+    fn symlink_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-symlink-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        symlink_manifest(&scratch, &work);
+
+        assert_eq!(
+            not_a_blob(&refusal(&work)),
+            ("workspace/dev".to_owned(), "symlink"),
+            "resolve's refusal"
+        );
+    }
+
+    #[test]
+    fn directory_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-directory-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        replace_manifest(&scratch, &work, |work| {
+            ok(write(&work.join(".wsx.conf/x"), b"x\n"));
+        });
+        assert_workspace_mode(&scratch, &work, "040000 tree ");
+
+        assert_eq!(
+            not_a_blob(&refusal(&work)),
+            ("workspace/dev".to_owned(), "directory"),
+            "resolve's refusal"
+        );
+    }
+
+    /// A real gitlink, added to the index with mode 160000 and committed
+    /// without `git add --all`, which would stage its removal.
+    #[test]
+    fn submodule_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-submodule-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["switch", "-q", "workspace/dev"]);
+        run(&scratch, &work, &["rm", "-q", ".wsx.conf"]);
+        let head = tip(&scratch, &work, "refs/heads/workspace/dev");
+        let cacheinfo = format!("160000,{head},.wsx.conf");
+        run(
+            &scratch,
+            &work,
+            &["update-index", "--add", "--cacheinfo", &cacheinfo],
+        );
+        run(&scratch, &work, &["commit", "-q", "-m", "gitlink"]);
+        run(&scratch, &work, &["switch", "-q", "-f", "main"]);
+        assert_workspace_mode(&scratch, &work, "160000 commit ");
+        let kind = run(
+            &scratch,
+            &work,
+            &["cat-file", "-t", "refs/heads/workspace/dev:.wsx.conf"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&kind).trim_end(),
+            "commit",
+            "git cat-file -t refs/heads/workspace/dev:.wsx.conf"
+        );
+
+        assert_eq!(
+            not_a_blob(&refusal(&work)),
+            ("workspace/dev".to_owned(), "submodule"),
+            "resolve's refusal"
+        );
+    }
+
+    /// The tree entry present and its object gone fails closed as
+    /// `ManifestUnreadable`, never as a missing manifest.
+    #[test]
+    fn missing_blob_object_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-missing-blob").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_manifest_object(&scratch, &work);
+
+        assert_eq!(
+            unreadable_branch(&refusal(&work)),
+            "workspace/dev",
+            "resolve's refusal"
+        );
+    }
+
+    /// The tip commit's loose object gone: the ref still holds its id, and
+    /// the read of the commit fails closed as `ManifestUnreadable`.
+    #[test]
+    fn missing_tip_commit_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-missing-tip").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let id = tip(&scratch, &work, "refs/heads/workspace/dev");
+        let (dir, file) = id.split_at(2);
+        let path = work.join(".git/objects").join(dir).join(file);
+        assert!(
+            path.is_file(),
+            "the tip commit {id} is not the loose object {}",
+            path.display()
+        );
+        std::fs::remove_file(&path)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", path.display()));
+        assert_ne!(
+            exit_code(&scratch, &work, &["cat-file", "-e", &id]),
+            Some(0),
+            "git cat-file -e {id} after its object was deleted"
+        );
+
+        assert_eq!(
+            unreadable_branch(&refusal(&work)),
+            "workspace/dev",
+            "resolve's refusal"
+        );
+    }
+
+    #[test]
+    fn invalid_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-invalid-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        commit_manifest(&scratch, &work, Some(b"only a\nsync a\n"));
+
+        let err = refusal(&work);
+        let rendered = err.to_string();
+        match err {
+            Error::ManifestInvalid { branch, source } => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+                assert_eq!(source.line, 2, "the refused line");
+            }
+            other => panic!("resolve: expected Err(ManifestInvalid), got {other:?}"),
+        }
+        assert!(
+            rendered.starts_with(".wsx.conf at the tip of workspace/dev: line 2: ")
+                && rendered.ends_with(": sync a"),
+            "{rendered:?} does not name line 2 and its text"
+        );
+    }
+
+    /// The control for the non-blob refusals: an executable file is a
+    /// regular file, and resolves.
+    #[test]
+    fn executable_manifest_resolves() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-executable-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["switch", "-q", "workspace/dev"]);
+        run(
+            &scratch,
+            &work,
+            &["update-index", "--chmod=+x", ".wsx.conf"],
+        );
+        run(&scratch, &work, &["commit", "-q", "-m", "executable"]);
+        run(&scratch, &work, &["switch", "-q", "-f", "main"]);
+        assert_workspace_mode(&scratch, &work, "100755 blob ");
+
+        let model = configured(&work);
+        assert_eq!(
+            model.personal_paths(),
+            vec![&b".wsx.conf"[..], &b".worktrees"[..], &b".planning"[..]],
+            "personal paths"
+        );
+    }
+
+    /// Third review, finding 2: a tip whose root tree is out of git's order
+    /// fails closed, so a `.wsx.conf` git cannot resolve there reads neither
+    /// as present nor as missing.
+    #[test]
+    fn unsorted_tree_manifest_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-unsorted-tree").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let (commit, tree) = ok(testing::raw_tree_commit(
+            &scratch,
+            &work,
+            &[("z.txt", b"z\n"), (".wsx.conf", b"only .planning\n")],
+        ));
+        run(
+            &scratch,
+            &work,
+            &[
+                "update-ref",
+                "refs/heads/workspace/dev",
+                &commit.to_string(),
+            ],
+        );
+        assert_ne!(
+            exit_code(
+                &scratch,
+                &work,
+                &["cat-file", "blob", "refs/heads/workspace/dev:.wsx.conf"]
+            ),
+            Some(0),
+            "git cat-file blob refs/heads/workspace/dev:.wsx.conf found it"
+        );
+
+        match refusal(&work) {
+            Error::ManifestUnreadable {
+                branch,
+                source:
+                    git::Error::TreeNotSorted {
+                        commit: named_commit,
+                        tree: named_tree,
+                    },
+            } => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+                assert_eq!(named_commit, commit, "the commit TreeNotSorted names");
+                assert_eq!(named_tree, tree, "the tree TreeNotSorted names");
+            }
+            other => {
+                panic!("resolve: expected Err(ManifestUnreadable(TreeNotSorted)), got {other:?}")
+            }
+        }
+    }
+
+    /// D-16: with no `wsx.sourceBranch`, a symlink manifest on the inferred
+    /// branch is `NotConfigured`, and `require` says run `wsx init`. The
+    /// variant is asserted, not only the wrapping: link text parsed as a
+    /// manifest would be `ManifestInvalid`, which `require` wraps too. The
+    /// control, still with no key: a regular `.wsx.conf` committed in its
+    /// place, and `require` returns the model.
+    #[test]
+    fn require_wraps_a_non_blob_manifest_as_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-not-a-blob").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        symlink_manifest(&scratch, &work);
+
+        match inferred(&work) {
+            Err(err) => assert_eq!(
+                not_a_blob(&err),
+                ("workspace/dev".to_owned(), "symlink"),
+                "inferred"
+            ),
+            Ok(model) => panic!("inferred: expected Err(ManifestNotABlob), got {model:?}"),
+        }
+        let (reason, rendered) = wrapped_reason(&work);
+        assert_eq!(
+            not_a_blob(&reason),
+            ("workspace/dev".to_owned(), "symlink"),
+            "require's reason"
+        );
+        assert!(
+            rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not say run wsx init"
+        );
+
+        replace_manifest(&scratch, &work, |work| {
+            ok(write(&work.join(".wsx.conf"), b"only .planning\n"));
+        });
+        assert_workspace_mode(&scratch, &work, "100644 blob ");
+        match required(&work) {
+            Ok(model) => assert_eq!(
+                String::from_utf8_lossy(&model.workspace_branch),
+                "workspace/dev",
+                "workspace branch once the manifest is a regular file"
+            ),
+            Err(err) => panic!("require with a regular manifest: got {err:?}"),
         }
     }
 

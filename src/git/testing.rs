@@ -313,6 +313,81 @@ pub fn object_id(scratch: &Scratch, dir: &Path, rev: &str) -> Result<ObjectId, S
     rev_parse(scratch, dir, rev).map(ObjectId)
 }
 
+/// `hex` decoded to bytes; an error naming it when it is not even-length hex.
+fn hex_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err(format!("{hex:?} has an odd number of hex digits"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|at| {
+            hex.get(at..at + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                .ok_or_else(|| format!("{hex:?} is not hex"))
+        })
+        .collect()
+}
+
+/// The id a `git hash-object` run in `dir` printed.
+fn hashed(scratch: &Scratch, dir: &Path, args: &[&OsStr]) -> Result<String, String> {
+    let stdout = git_ok(scratch, dir, args)?;
+    String::from_utf8(stdout)
+        .map(|id| id.trim_end().to_owned())
+        .map_err(|err| format!("git hash-object printed non-UTF-8: {err}"))
+}
+
+/// A commit in `dir` whose root tree holds `entries` byte for byte in the
+/// order given, each a `100644` file `(name, content)`, so a test can build
+/// a tree out of git's order. Each blob is written with `git hash-object
+/// -w`; the tree's bytes, `100644 <name>` NUL and the blob's raw id per
+/// entry, with `git hash-object --literally -t tree -w`, which neither sorts
+/// nor checks them; the commit with `git commit-tree` at `T0`. The bytes go
+/// through files under `<scratch root>/raw-tree`. No ref moves. Returns the
+/// commit's and the tree's ids.
+pub fn raw_tree_commit(
+    scratch: &Scratch,
+    dir: &Path,
+    entries: &[(&str, &[u8])],
+) -> Result<(ObjectId, ObjectId), String> {
+    let files = scratch.root.join("raw-tree");
+    let blob_file = files.join("blob");
+    let mut tree = Vec::new();
+    for (name, content) in entries {
+        write(&blob_file, content)?;
+        let blob = hashed(
+            scratch,
+            dir,
+            &["hash-object".as_ref(), "-w".as_ref(), blob_file.as_os_str()],
+        )?;
+        tree.extend_from_slice(format!("100644 {name}\0").as_bytes());
+        tree.extend_from_slice(&hex_bytes(&blob)?);
+    }
+    let tree_file = files.join("tree");
+    write(&tree_file, &tree)?;
+    let tree = hashed(
+        scratch,
+        dir,
+        &[
+            "hash-object".as_ref(),
+            "--literally".as_ref(),
+            "-t".as_ref(),
+            "tree".as_ref(),
+            "-w".as_ref(),
+            tree_file.as_os_str(),
+        ],
+    )?;
+    let commit = git_ok_at(
+        scratch,
+        dir,
+        T0,
+        ["commit-tree", tree.as_str(), "-m", "tree"],
+    )?;
+    let commit = String::from_utf8(commit)
+        .map(|id| id.trim_end().to_owned())
+        .map_err(|err| format!("git commit-tree printed non-UTF-8: {err}"))?;
+    Ok((ObjectId(commit), ObjectId(tree)))
+}
+
 /// Builds the criss-cross fixture in `<scratch root>/repo` and returns that
 /// path, with `main` checked out.
 ///

@@ -140,6 +140,10 @@ pub enum Error {
     },
     /// A gix operation failed; `what` names the operation, `message` is gix's.
     Gix { what: String, message: String },
+    /// The root tree `tree` of `commit` lists its entries out of git's tree
+    /// order, so git's lookup by name can miss an entry a scan finds; git
+    /// fsck reports such a tree as `treeNotSorted`.
+    TreeNotSorted { commit: ObjectId, tree: ObjectId },
 }
 
 impl fmt::Display for Error {
@@ -240,6 +244,15 @@ impl fmt::Display for Error {
             ),
             Error::Io { what, source } => write!(f, "{what}: {source}"),
             Error::Gix { what, message } => write!(f, "{what}: {message}"),
+            // Both ids are hex, so the command line is safe to paste.
+            Error::TreeNotSorted { commit, tree } => write!(
+                f,
+                "the root tree {tree} of commit {commit} lists its entries out of git's order, \
+                 so git cannot find some of them by name and wsx could read an entry git does not; \
+                 git fsck reports it as treeNotSorted.\n\
+                 Write the tree again with git, which sorts it, and commit that tree:\n\
+                 \tgit ls-tree -z {commit} | git mktree -z"
+            ),
         }
     }
 }
@@ -260,7 +273,7 @@ mod tests {
     use std::io;
     use std::path::PathBuf;
 
-    use super::Error;
+    use super::{Error, ObjectId};
 
     fn argv(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
@@ -401,6 +414,22 @@ mod tests {
              Run wsx without GIT_NAMESPACE, and remove gitoxide.core.refsNamespace from the config \
              file that sets it; this shows where it is set:\n\
              \tgit config --show-origin --get-all gitoxide.core.refsNamespace"
+        );
+    }
+
+    #[test]
+    fn tree_not_sorted_message_names_the_tree_and_the_fix() {
+        let unsorted = Error::TreeNotSorted {
+            commit: ObjectId("c0ffee".to_owned()),
+            tree: ObjectId("7ee".to_owned()),
+        };
+        assert_eq!(
+            unsorted.to_string(),
+            "the root tree 7ee of commit c0ffee lists its entries out of git's order, \
+             so git cannot find some of them by name and wsx could read an entry git does not; \
+             git fsck reports it as treeNotSorted.\n\
+             Write the tree again with git, which sorts it, and commit that tree:\n\
+             \tgit ls-tree -z c0ffee | git mktree -z"
         );
     }
 
