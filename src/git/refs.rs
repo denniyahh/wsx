@@ -189,16 +189,24 @@ impl Repo {
             .map_err(|err| failed(err.to_string()))?;
         Ok(RootEntry::Blob(blob.data.clone()))
     }
+
+    /// The full names of the refs exactly one level under `prefix`, in byte
+    /// order. Not implemented yet.
+    pub fn refs_directly_under(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+        let _ = prefix;
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
-    use gix::bstr::BStr;
+    use gix::bstr::{BStr, BString};
 
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, ObjectId};
@@ -1099,6 +1107,313 @@ mod tests {
         assert!(
             commit.is_err(),
             "ref_commit(refs/heads/s1), where git refuses, gave {commit:?}"
+        );
+    }
+
+    /// The prefixes workspace-branch candidates are listed under (D-21),
+    /// each with its trailing slash.
+    const CANDIDATE_PREFIXES: [&str; 2] = ["refs/heads/workspace/", "refs/heads/personal/"];
+
+    /// The branches `listing_repo` adds: one level under each prefix, one
+    /// nested two levels down, and names that only extend a prefix's text.
+    const LISTING_BRANCHES: [&str; 8] = [
+        "workspace/a",
+        "workspace/nested/deep",
+        "workspace-x",
+        "workspaceY",
+        "personal/workspace",
+        "personal/workspace-backup",
+        "personal-z",
+        "notworkspace/q",
+    ];
+
+    /// `tagged_repo` with each of `LISTING_BRANCHES` made at `HEAD`.
+    fn listing_repo(scratch: &Scratch) -> PathBuf {
+        let repo_dir = tagged_repo(scratch);
+        for branch in LISTING_BRANCHES {
+            git_ok(scratch, &repo_dir, ["branch", branch]).unwrap_or_else(|err| panic!("{err}"));
+        }
+        repo_dir
+    }
+
+    /// `names` as a set of `BString`, so a failed comparison prints names.
+    fn name_set<I: IntoIterator<Item = Vec<u8>>>(names: I) -> BTreeSet<BString> {
+        names.into_iter().map(BString::from).collect()
+    }
+
+    /// `refs_directly_under(prefix)`'s answer; fails the test on an error.
+    fn under(repo: &Repo, prefix: &str) -> Vec<Vec<u8>> {
+        repo.refs_directly_under(prefix.as_bytes())
+            .unwrap_or_else(|err| panic!("refs_directly_under({prefix}): {err}"))
+    }
+
+    /// The union of `refs_directly_under` over `CANDIDATE_PREFIXES`.
+    fn listed(repo: &Repo) -> BTreeSet<BString> {
+        name_set(
+            CANDIDATE_PREFIXES
+                .into_iter()
+                .flat_map(|prefix| under(repo, prefix)),
+        )
+    }
+
+    /// The full names `git for-each-ref 'refs/heads/workspace/*'
+    /// 'refs/heads/personal/*'` lists in `dir`, as raw bytes. for-each-ref
+    /// has no `-z`, so each name is formatted with a NUL after it; a ref name
+    /// holds neither NUL nor LF, so every line must be one name and its NUL.
+    fn git_listed(scratch: &Scratch, dir: &Path) -> BTreeSet<BString> {
+        let mut args = vec![
+            "for-each-ref".to_owned(),
+            "--format=%(refname)%00".to_owned(),
+        ];
+        args.extend(CANDIDATE_PREFIXES.map(|prefix| format!("{prefix}*")));
+        let stdout = git_ok(scratch, dir, &args).unwrap_or_else(|err| panic!("{err}"));
+        name_set(testing::records(&stdout, b'\n').into_iter().map(
+            |record| match record.split_last() {
+                Some((0, name)) => name.to_vec(),
+                _ => panic!(
+                    "git for-each-ref printed a line not ending in NUL: {:?}",
+                    BStr::new(&record)
+                ),
+            },
+        ))
+    }
+
+    /// A3: the listing is git's one-level glob. Of the fixture's branches
+    /// only `workspace/a`, `personal/workspace` and
+    /// `personal/workspace-backup` are directly under a prefix; the nested
+    /// `workspace/nested/deep` and the names that only extend a prefix's
+    /// text are not, for git as for `refs_directly_under`.
+    #[test]
+    fn refs_directly_under_matches_for_each_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-for-each-ref").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        let from_git = git_listed(&scratch, &repo_dir);
+        assert_eq!(
+            from_git,
+            name_set([
+                b"refs/heads/personal/workspace".to_vec(),
+                b"refs/heads/personal/workspace-backup".to_vec(),
+                b"refs/heads/workspace/a".to_vec(),
+            ]),
+            "git for-each-ref's one-level globs over the fixture"
+        );
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        assert_eq!(
+            listed(&repo),
+            from_git,
+            "refs_directly_under against git for-each-ref"
+        );
+    }
+
+    /// The control for the differential: a new branch under a prefix changes
+    /// git's answer and `refs_directly_under`'s alike, so the two do not
+    /// agree only because the answer is constant.
+    #[test]
+    fn listing_changes_with_a_new_branch() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-new-branch").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        let git_before = git_listed(&scratch, &repo_dir);
+        let before = listed(&Repo::discover(&repo_dir).expect("discover the fixture"));
+
+        git_ok(&scratch, &repo_dir, ["branch", "workspace/b"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        let git_after = git_listed(&scratch, &repo_dir);
+        let after = listed(&Repo::discover(&repo_dir).expect("discover the fixture"));
+
+        assert_ne!(git_after, git_before, "git for-each-ref before and after");
+        assert_ne!(after, before, "refs_directly_under before and after");
+        assert_eq!(after, git_after, "refs_directly_under against git, after");
+        assert!(
+            after.contains(&BString::from("refs/heads/workspace/b")),
+            "refs_directly_under after the branch was made: {after:?}"
+        );
+    }
+
+    /// Packed and loose refs are listed together: after `git pack-refs
+    /// --all`, which leaves `workspace/a` only in `packed-refs`, and one new
+    /// loose branch, the listing still equals git's and holds both.
+    #[test]
+    fn listing_survives_packing() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-packed").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["pack-refs", "--all"]);
+        let git_dir = repo_dir.join(".git");
+        assert!(
+            !git_dir.join("refs/heads/workspace/a").exists(),
+            "git pack-refs --all left refs/heads/workspace/a loose"
+        );
+        ok(&["branch", "workspace/loose"]);
+        assert!(
+            git_dir.join("refs/heads/workspace/loose").is_file(),
+            "git branch did not write refs/heads/workspace/loose loose"
+        );
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        let names = listed(&repo);
+        assert_eq!(
+            names,
+            git_listed(&scratch, &repo_dir),
+            "refs_directly_under against git for-each-ref, packed and loose"
+        );
+        for full in ["refs/heads/workspace/a", "refs/heads/workspace/loose"] {
+            assert!(
+                names.contains(&BString::from(full)),
+                "{full} is missing from {names:?}"
+            );
+        }
+    }
+
+    /// The names come back in byte order, whatever order they were made in:
+    /// `C` sorts before `a`, as uppercase ASCII does.
+    #[test]
+    fn listing_is_sorted() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-sorted").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        for branch in ["workspace/b", "workspace/C"] {
+            git_ok(&scratch, &repo_dir, ["branch", branch]).unwrap_or_else(|err| panic!("{err}"));
+        }
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        let names = under(&repo, "refs/heads/workspace/");
+        assert_eq!(
+            names.iter().cloned().map(BString::from).collect::<Vec<_>>(),
+            vec![
+                BString::from("refs/heads/workspace/C"),
+                BString::from("refs/heads/workspace/a"),
+                BString::from("refs/heads/workspace/b"),
+            ],
+            "refs_directly_under(refs/heads/workspace/)"
+        );
+        assert!(
+            names.windows(2).all(|pair| pair[0] < pair[1]),
+            "not in byte order: {names:?}"
+        );
+    }
+
+    /// A branch whose name holds the byte E9, not UTF-8, is listed with
+    /// that byte, as git lists it.
+    #[test]
+    fn non_utf8_branch_is_listed_by_its_bytes() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-non-utf8").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        let branch: &[u8] = b"workspace/raw\xE9";
+        git_ok(
+            &scratch,
+            &repo_dir,
+            [OsStr::new("branch"), OsStr::from_bytes(branch)],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let full = BString::from([b"refs/heads/".as_slice(), branch].concat());
+        let from_git = git_listed(&scratch, &repo_dir);
+        assert!(
+            from_git.contains(&full),
+            "git for-each-ref does not list {full:?}: {from_git:?}"
+        );
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        assert_eq!(
+            listed(&repo),
+            from_git,
+            "refs_directly_under against git for-each-ref"
+        );
+    }
+
+    /// A loose ref file holding garbage under the prefix fails the listing
+    /// of that prefix, naming it, where git warns and lists the rest: a
+    /// shorter list could leave one candidate where there are two. The
+    /// other prefix, which holds no such file, still lists.
+    #[test]
+    fn corrupt_ref_under_the_prefix_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-corrupt").expect("create scratch");
+        let repo_dir = listing_repo(&scratch);
+        let before = git_listed(&scratch, &repo_dir);
+        write(
+            &repo_dir.join(".git/refs/heads/workspace/bad"),
+            b"garbage\n",
+        )
+        .expect("write .git/refs/heads/workspace/bad");
+        assert_eq!(
+            git_listed(&scratch, &repo_dir),
+            before,
+            "git for-each-ref skips the corrupt ref and lists the rest"
+        );
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        let prefix = "refs/heads/workspace/";
+        match repo.refs_directly_under(prefix.as_bytes()) {
+            Err(err @ Error::Gix { .. }) => {
+                let rendered = err.to_string();
+                let message =
+                    rendered.strip_prefix("list the refs directly under refs/heads/workspace/: ");
+                assert!(
+                    message.is_some_and(|message| !message.is_empty()),
+                    "refs_directly_under({prefix}) rendered {rendered:?}, not the prefix and gix's message"
+                );
+            }
+            other => panic!("refs_directly_under({prefix}): expected Error::Gix, got {other:?}"),
+        }
+        assert_eq!(
+            name_set(under(&repo, "refs/heads/personal/")),
+            name_set([
+                b"refs/heads/personal/workspace".to_vec(),
+                b"refs/heads/personal/workspace-backup".to_vec(),
+            ]),
+            "refs_directly_under(refs/heads/personal/) beside the corrupt workspace ref"
+        );
+    }
+
+    /// From a linked worktree the listing is the main worktree's, and git's
+    /// from that worktree: branches are shared, not per worktree.
+    #[test]
+    fn linked_worktree_lists_the_same_branches() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-under-worktree").expect("create scratch");
+        let trees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        for branch in ["workspace/a", "personal/b", "workspace/n/deep"] {
+            git_ok(&scratch, &trees.main, ["branch", branch]).unwrap_or_else(|err| panic!("{err}"));
+        }
+        let main = listed(&Repo::discover(&trees.main).expect("discover the main worktree"));
+        assert_eq!(
+            main,
+            name_set([
+                b"refs/heads/personal/b".to_vec(),
+                b"refs/heads/workspace/a".to_vec(),
+            ]),
+            "refs_directly_under from the main worktree"
+        );
+
+        let linked = listed(&Repo::discover(&trees.wt1).expect("discover the linked worktree"));
+        assert_eq!(
+            linked, main,
+            "from the linked worktree against the main one"
+        );
+        assert_eq!(
+            linked,
+            git_listed(&scratch, &trees.wt1),
+            "from the linked worktree against git for-each-ref there"
         );
     }
 }
