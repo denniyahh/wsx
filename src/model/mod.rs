@@ -447,7 +447,7 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let base_remote = remote(repo, BASE_REMOTE)?;
     let push_remote = remote(repo, PUSH_REMOTE)?;
     let integration = integration(repo, base_remote.as_deref())?;
-    let worktree_dir = DEFAULT_WORKTREE_DIR.to_vec();
+    let worktree_dir = worktree_dir(repo)?;
     let unreadable = |source: git::Error| Error::ManifestUnreadable {
         branch: branch.clone(),
         source,
@@ -473,6 +473,19 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
         worktree_dir,
         manifest,
     })
+}
+
+/// The worktree directory: `wsx.worktreeDir`, read once (D-18) and put
+/// through the path rules of a manifest line (`manifest::normalize_path`,
+/// D-14), so one trailing `/` is stripped and an absolute path, an empty
+/// component or a `.` or `..` component is `Error::WorktreeDirInvalid`
+/// (D-20); `DEFAULT_WORKTREE_DIR` when the key is unset.
+fn worktree_dir(repo: &Repo) -> Result<Vec<u8>, Error> {
+    match single(repo, WORKTREE_DIR)? {
+        Some(value) => manifest::normalize_path(&value)
+            .map_err(|problem| Error::WorktreeDirInvalid { value, problem }),
+        None => Ok(DEFAULT_WORKTREE_DIR.to_vec()),
+    }
 }
 
 /// The integration branches the chain tries, in order, before the base
