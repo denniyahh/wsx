@@ -129,12 +129,21 @@ impl From<git::Error> for Error {
     }
 }
 
-/// `bytes` for a message.
+/// `bytes` for prose in a message: git's C-style quoting, so a control byte
+/// from a blob or a config value never reaches the terminal raw.
 fn shown(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    String::from_utf8_lossy(&git::c_quote(bytes)).into_owned()
 }
 
-/// `items` for a message, `, `-separated.
+/// `bytes` as an argument in a command line a message prints for the user to
+/// paste: `shell_word`'s form, or `placeholder` when no shell quoting can
+/// carry the bytes. Display quoting would leave a command substitution held
+/// in a ref name live.
+fn command_word(bytes: &[u8], placeholder: &str) -> String {
+    git::shell_word(bytes).unwrap_or_else(|| placeholder.to_owned())
+}
+
+/// `items` for a message, each `shown`, `, `-separated.
 fn listed(items: &[Vec<u8>]) -> String {
     items
         .iter()
@@ -147,9 +156,41 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Git(err) => write!(f, "{err}"),
+            Error::KeyRepeated { key, values } => write!(
+                f,
+                "{key} is set {} times in this repository's config ({}); it must be set once.\n\
+                 To keep one value, run:\n\
+                 \tgit config --local --replace-all {key} <value>",
+                values.len(),
+                listed(values)
+            ),
+            Error::KeyEmpty { key } => write!(
+                f,
+                "{key} is set but empty in this repository's config.\n\
+                 Set it or remove it:\n\
+                 \tgit config --local {key} <value>\n\
+                 \tgit config --local --unset {key}"
+            ),
             Error::NotABranchName { key, value } => {
                 write!(f, "{key} = {} is not a valid branch name", shown(value))
             }
+            Error::NoSuchRemote { key, remote } => write!(
+                f,
+                "{key} names the remote {}, which this repository does not define.\n\
+                 Add it, or change the key:\n\
+                 \tgit remote add {} <url>\n\
+                 \tgit config --local {key} <remote>",
+                shown(remote),
+                command_word(remote, "<remote>")
+            ),
+            Error::BaseRefMissing { value, tried } => write!(
+                f,
+                "wsx.baseRef = {}, but {} does not exist, and wsx does not fall back to another branch.\n\
+                 wsx.baseRef is a bare branch name resolved on the base remote \
+                 (wsx.baseRemote, default origin), so origin/develop means a branch literally named that.",
+                shown(value),
+                shown(tried)
+            ),
             Error::NoIntegrationBranch { remote, tried } => {
                 writeln!(
                     f,
@@ -162,7 +203,7 @@ impl fmt::Display for Error {
                         "Fix it with one of:\n\
                          \tgit remote set-head {} --auto\n\
                          \tgit config --local wsx.baseRef <branch>",
-                        shown(remote)
+                        command_word(remote, "<remote>")
                     ),
                     None => f.write_str(
                         "Name it with:\n\
@@ -170,6 +211,17 @@ impl fmt::Display for Error {
                     ),
                 }
             }
+            Error::IntegrationRefSymbolic { full_ref, target } => write!(
+                f,
+                "{} is a symbolic ref to {}, so it could move the base away from where the \
+                 integration branch lives; wsx reads the base only from a ref that holds a commit.\n\
+                 Remove it, or name the branch to use:\n\
+                 \tgit update-ref --no-deref -d {}\n\
+                 \tgit config --local wsx.baseRef <branch>",
+                shown(full_ref),
+                shown(target),
+                command_word(full_ref, "<ref>")
+            ),
             Error::WorkspaceBranchMissing { branch } => write!(
                 f,
                 "wsx.sourceBranch = {branch}, but refs/heads/{branch} does not exist in this repository.\n\
@@ -193,21 +245,35 @@ impl fmt::Display for Error {
                  Commit one on {branch}, or run wsx init.",
                 branch = shown(branch)
             ),
+            Error::ManifestNotABlob { branch, kind } => write!(
+                f,
+                ".wsx.conf at the tip of {} is a {kind}, not a regular file, \
+                 so wsx cannot read it as a manifest.",
+                shown(branch)
+            ),
+            Error::ManifestUnreadable { branch, source } => write!(
+                f,
+                ".wsx.conf at the tip of {} cannot be read: {source}",
+                shown(branch)
+            ),
             Error::ManifestInvalid { branch, source } => {
                 write!(f, ".wsx.conf at the tip of {}: {source}", shown(branch))
             }
-            Error::KeyRepeated { .. }
-            | Error::KeyEmpty { .. }
-            | Error::NoSuchRemote { .. }
-            | Error::BaseRefMissing { .. }
-            | Error::IntegrationRefSymbolic { .. }
-            | Error::ManifestNotABlob { .. }
-            | Error::ManifestUnreadable { .. }
-            | Error::WorktreeDirInvalid { .. }
-            | Error::NotConfigured { .. } => f.write_str(""),
+            Error::WorktreeDirInvalid { value, problem } => write!(
+                f,
+                "wsx.worktreeDir = {} cannot name a directory in a git tree: {problem}",
+                shown(value)
+            ),
+            Error::NotConfigured { reason } => write!(
+                f,
+                "this repository is not configured for wsx: {reason}\n\
+                 Run wsx init."
+            ),
         }
     }
 }
+
+impl std::error::Error for Error {}
 
 /// Resolves the model of `repo`. `recorded` is the set of branches `wsx new`
 /// recorded, which never count as workspace-branch candidates (D-17).

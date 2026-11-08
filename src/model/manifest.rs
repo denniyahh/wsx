@@ -71,7 +71,7 @@ impl fmt::Display for ParseError {
             "line {}: {}: {}",
             self.line,
             self.problem,
-            String::from_utf8_lossy(&self.text)
+            String::from_utf8_lossy(&crate::git::c_quote(&self.text))
         )
     }
 }

@@ -1051,10 +1051,11 @@ fn one_commit_repo(scratch: &Scratch, name: &str) -> PathBuf {
 
 /// The libtest filters for the modules whose tests discover a repository in
 /// the test process itself.
-const DISCOVERING_SUITES: [&str; 3] = [
+const DISCOVERING_SUITES: [&str; 4] = [
     "git::reads::tests::",
     "git::refs::tests::",
     "git::repo::tests::",
+    "model::tests::",
 ];
 
 /// The `test result:` line and every failed test name in a libtest run's
@@ -1117,37 +1118,44 @@ fn discovering_tests_pass_with_a_runner_git_dir() {
     }
 }
 
-/// The modules under `src/git` whose tests call `rerun_scrubbed()` are
-/// exactly the ones `DISCOVERING_SUITES` lists, so a new discovering module
-/// gets its hook-environment run and a removed one leaves no stale entry.
-/// This module is left out: its callers are children re-executed on purpose.
+/// The modules under `src/git` and `src/model` whose tests call
+/// `rerun_scrubbed()` are exactly the ones `DISCOVERING_SUITES` lists, so a
+/// new discovering module gets its hook-environment run and a removed one
+/// leaves no stale entry. `src/<dir>/mod.rs` maps to `<dir>::tests::` and
+/// `src/<dir>/<stem>.rs` to `<dir>::<stem>::tests::`. This module is left
+/// out: its callers are children re-executed on purpose.
 #[test]
 fn discovering_suites_are_the_modules_that_rerun_scrubbed() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git");
-    let entries = fs::read_dir(&dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
     let mut callers = std::collections::BTreeSet::new();
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|err| panic!("read an entry of {}: {err}", dir.display()))
-            .path();
-        if path.extension() != Some(OsStr::new("rs")) {
-            continue;
-        }
-        let stem = path
-            .file_stem()
-            .and_then(OsStr::to_str)
-            .unwrap_or_else(|| panic!("{} has no UTF-8 stem", path.display()));
-        if stem == "testing" {
-            continue;
-        }
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        if source.contains("rerun_scrubbed() {") {
-            callers.insert(if stem == "mod" {
-                "git::tests::".to_owned()
-            } else {
-                format!("git::{stem}::tests::")
-            });
+    for module in ["git", "model"] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(module);
+        let entries =
+            fs::read_dir(&dir).unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|err| panic!("read an entry of {}: {err}", dir.display()))
+                .path();
+            if path.extension() != Some(OsStr::new("rs")) {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(OsStr::to_str)
+                .unwrap_or_else(|| panic!("{} has no UTF-8 stem", path.display()));
+            if module == "git" && stem == "testing" {
+                continue;
+            }
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+            if source.contains("rerun_scrubbed() {") {
+                callers.insert(if stem == "mod" {
+                    format!("{module}::tests::")
+                } else {
+                    format!("{module}::{stem}::tests::")
+                });
+            }
         }
     }
     let listed: std::collections::BTreeSet<String> = DISCOVERING_SUITES
@@ -1156,8 +1164,7 @@ fn discovering_suites_are_the_modules_that_rerun_scrubbed() {
         .collect();
     assert!(
         !callers.is_empty(),
-        "no module under {} calls rerun_scrubbed()",
-        dir.display()
+        "no module under src/git or src/model calls rerun_scrubbed()"
     );
     assert_eq!(
         callers, listed,

@@ -12,9 +12,38 @@ pub fn c_quote(raw: &[u8]) -> Vec<u8> {
     gix::quote::ansi_c::quote(raw.as_bstr()).to_vec()
 }
 
-/// `raw` as one word a shell reads back as exactly `raw`.
+/// `raw` as one word that `sh`, `bash` and `fish` each read back as exactly
+/// `raw`, for an argument in a command wsx prints for the user to paste, or
+/// `None` when no such quoting exists here: for an empty value, and for any
+/// byte outside printable ASCII (0x21 to 0x7e) or equal to `\`. A caller
+/// prints a placeholder instead, so that command must be edited before it
+/// runs. Otherwise the bytes come back bare when each is an ASCII letter, a
+/// digit, `/`, `.`, `_` or `-`, and single-quoted, each `'` written `'\''`,
+/// when any is not.
+///
+/// `c_quote` is display quoting and leaves `$`, `(` and backquote alone, so a
+/// command line built from it runs a command substitution held in a ref
+/// name: `git check-ref-format` accepts `refs/replace/$(touch${IFS}m)`.
+/// Measured on git 2.56.0: with that name single-quoted, `sh -c`, `bash -c`
+/// and `fish -c` each removed the ref with exit 0 and ran nothing, and
+/// `'\''` removed `refs/replace/it's` in all three; with the name bare, `sh`
+/// and `bash` ran the substitution and `git update-ref` exited 1 with the
+/// ref still present. dash, the pinned image's `/bin/sh`, gave the same two
+/// results. Backslash is excluded because fish reads `\\` and `\'` inside
+/// single quotes and sh does not.
 pub fn shell_word(raw: &[u8]) -> Option<String> {
-    Some(String::from_utf8_lossy(raw).into_owned())
+    let printable = |byte: &u8| (0x21..=0x7e).contains(byte) && *byte != b'\\';
+    if raw.is_empty() || !raw.iter().all(printable) {
+        return None;
+    }
+    // Printable ASCII is valid UTF-8, so the lossy conversion loses nothing.
+    let text = String::from_utf8_lossy(raw);
+    let bare = |byte: &u8| byte.is_ascii_alphanumeric() || b"/._-".contains(byte);
+    if raw.iter().all(bare) {
+        Some(text.into_owned())
+    } else {
+        Some(format!("'{}'", text.replace('\'', r"'\''")))
+    }
 }
 
 #[cfg(test)]
