@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::git::{c_quote, c_unquote};
+
 /// What a manifest line declares about its path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryKind {
@@ -86,15 +88,15 @@ impl fmt::Display for ParseError {
             "line {}: {}: {}",
             self.line,
             self.problem,
-            String::from_utf8_lossy(&crate::git::c_quote(&self.text))
+            String::from_utf8_lossy(&c_quote(&self.text))
         )
     }
 }
 
 /// Parses a manifest blob: lines split on `\n` and numbered from 1, an empty
 /// line or one starting with `#` skipped (D-11), an `only ` or `modified `
-/// line kept with one trailing `/` stripped from its path (D-14). Any other
-/// line refuses the whole manifest, naming the line.
+/// line kept with its path read by `path_value`. Any other line refuses the
+/// whole manifest, naming the line.
 pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
     let mut entries = Vec::new();
     for (index, text) in bytes.split(|byte| *byte == b'\n').enumerate() {
@@ -113,10 +115,14 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
                 problem: Problem::UnknownKind,
             });
         };
-        let path = rest.strip_suffix(b"/").unwrap_or(rest);
+        let path = path_value(rest).map_err(|problem| ParseError {
+            line,
+            text: text.to_vec(),
+            problem,
+        })?;
         entries.push(Entry {
             kind,
-            path: path.to_vec(),
+            path,
             line,
             text: text.to_vec(),
         });
@@ -124,10 +130,52 @@ pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
     Ok(Manifest { entries })
 }
 
+/// The path a manifest line's value names, everything after the keyword and
+/// its one space (D-19). A value starting with a double quote must be exactly
+/// one C-quoted string, read by `c_unquote`; any other value is its bytes as
+/// written, refused when it starts or ends with edge whitespace once one
+/// trailing `/` is set aside. Either way one trailing `/` is then stripped
+/// (D-14).
+fn path_value(value: &[u8]) -> Result<Vec<u8>, Problem> {
+    let mut path = if value.starts_with(b"\"") {
+        c_unquote(value).map_err(|reason| Problem::BadQuoting { reason })?
+    } else {
+        if has_edge_whitespace(value.strip_suffix(b"/").unwrap_or(value)) {
+            return Err(Problem::EdgeWhitespace);
+        }
+        value.to_vec()
+    };
+    if path.last() == Some(&b'/') {
+        path.pop();
+    }
+    Ok(path)
+}
+
 /// `path` as a manifest line writes it, so that `parse` reads back exactly
-/// `path`. Not yet implemented: returns `path` unchanged.
+/// `path`, with or without one trailing `/`: git's C quoting (`c_quote`),
+/// plus double quotes around a path git leaves bare whose edge, one trailing
+/// `/` set aside, is whitespace. Git prints a leading or trailing space bare,
+/// and D-19 refuses that bare. The `/` is set aside because `parse` strips it
+/// before its own edge check, so `a /` must be written quoted too.
 pub fn encode_path(path: &[u8]) -> Vec<u8> {
-    path.to_vec()
+    let quoted = c_quote(path);
+    if quoted == path && has_edge_whitespace(path.strip_suffix(b"/").unwrap_or(path)) {
+        return [&b"\""[..], path, b"\""].concat();
+    }
+    quoted
+}
+
+/// Whether `path` starts or ends with a byte `is_edge_whitespace` accepts.
+fn has_edge_whitespace(path: &[u8]) -> bool {
+    path.first().copied().is_some_and(is_edge_whitespace)
+        || path.last().copied().is_some_and(is_edge_whitespace)
+}
+
+/// The whitespace D-19 refuses bare on a path's edge: space, tab, CR, VT and
+/// FF (assumption A6). Not `u8::is_ascii_whitespace`, which leaves out VT
+/// and takes in LF.
+fn is_edge_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | 0x0b | 0x0c)
 }
 
 /// Whether the manifest path `entry` covers the tree path `path`: `path` is

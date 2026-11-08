@@ -31,8 +31,8 @@ mod spawn;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use quote::c_quote;
 pub use quote::shell_word;
+pub use quote::{c_quote, c_unquote};
 pub use refs::{RootEntry, is_branch_name};
 pub use repo::Repo;
 
