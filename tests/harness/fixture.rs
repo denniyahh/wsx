@@ -667,7 +667,9 @@ fn devflow_layout_matches_the_preset() {
     assert_eq!(pushed_tip, local_tip, "workspace/dev on the push remote");
     for (key, value) in [
         ("wsx.sourceBranch", "workspace/dev\n"),
-        ("wsx.baseRef", "origin/develop\n"),
+        ("wsx.baseRef", "develop\n"),
+        ("wsx.baseRemote", "origin\n"),
+        ("wsx.pushRemote", "origin\n"),
     ] {
         assert_eq!(
             text(
@@ -825,7 +827,9 @@ fn fork_layout_has_no_integration_branch_on_the_push_remote() {
         "refs/heads/workspace/dev"
     ));
     for (key, value) in [
-        ("wsx.baseRef", "upstream/develop\n"),
+        ("wsx.baseRef", "develop\n"),
+        ("wsx.baseRemote", "upstream\n"),
+        ("wsx.pushRemote", "origin\n"),
         ("fixture.layout", "fork\n"),
     ] {
         assert_eq!(
