@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
-status: executing
-stopped_at: Completed 04-11-PLAN.md
-last_updated: "2026-11-08T18:19:41.638Z"
+status: verifying
+stopped_at: Completed 04-10-PLAN.md
+last_updated: "2026-11-08T18:45:40.552Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 09eca8c4e3928f633d2952a1f6a36a9fb64ba9e5
+state_head: c19618bffabf1f8b1a3b9bd78066316bda00979f
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 46
+  completed_plans: 47
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 
 Phase: 04 (Repo model) — EXECUTING
 Plan: 11 of 11
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-08 — Phase 04 execution started
 
 Progress: [███░░░░░░░] 25%
@@ -104,6 +104,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P08 | 14 min | 2 tasks | 2 files |
 | Phase 04 P09 | 13 min | 3 tasks | 4 files |
 | Phase 04 P11 | 12 min | 1 tasks | 3 files |
+| Phase 04 P10 | 64min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -209,6 +210,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-09: the CONF-07 hook test runs a real pre-commit hook in a linked worktree instead of a simulated environment
 - [Phase 04]: 04-11: the replacement refusal reads only the first ref per base from gix's prefixed listing when git's and gix's replace bases differ; one ref is enough to refuse
 - [Phase 04]: 04-11: gix's replace base is read with config_snapshot().string, which takes reduced-trust values gix's own open filters out; that difference over-refuses, the safe side
+- [Phase 04]: 04-10: the model's test modules render bytes through crate::git::c_quote, not gix::bstr, so rg -qF 'gix::' src/model exits 1 and every gix use stays in src/git
+- [Phase 04]: 04-10: final cargo-mutants 27.1.0 fresh pass over the six core files: 177 mutants, 154 caught, 0 missed, 23 unviable, 0 timeout; no equivalent mutants; the local integration-rung order has its own test (local_develop_beats_local_next)
 
 ### Pending Todos
 
@@ -249,6 +252,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T17:36:13.304Z
-Stopped at: Completed 04-11-PLAN.md
+Last session: 2026-11-08T18:45:40.185Z
+Stopped at: Completed 04-10-PLAN.md
 Resume file: None
