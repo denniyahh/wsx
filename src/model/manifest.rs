@@ -130,7 +130,8 @@ impl fmt::Display for Problem {
 pub struct ParseError {
     /// The line's number, from 1.
     pub line: usize,
-    /// The line's raw bytes, without its newline.
+    /// The line's raw bytes, without its newline; empty for
+    /// `Problem::TooLarge`, whose line can be arbitrarily long.
     pub text: Vec<u8>,
     /// What is wrong with it.
     pub problem: Problem,
@@ -138,38 +139,69 @@ pub struct ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "line {}: {}: {}",
-            self.line,
-            self.problem,
-            String::from_utf8_lossy(&c_quote(&self.text))
-        )
+        write!(f, "line {}: {}", self.line, self.problem)?;
+        if self.text.is_empty() {
+            return Ok(());
+        }
+        write!(f, ": {}", String::from_utf8_lossy(&c_quote(&self.text)))
     }
 }
 
-/// Parses a manifest blob: lines split on `\n` and numbered from 1, each
-/// read by `read_line`. The first line it refuses refuses the whole
-/// manifest, naming that line.
+/// Parses a manifest blob. A manifest longer than `MAX_MANIFEST_BYTES` is
+/// refused first, before any line is read. Otherwise lines are split on
+/// `\n` and numbered from 1, each read by `read_line` and then checked
+/// against the earlier entries by `overlap`. The first line refused refuses
+/// the whole manifest, naming that line. Nothing is filtered or deduped
+/// (D-13).
 pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
+    if bytes.len() > MAX_MANIFEST_BYTES {
+        return Err(ParseError {
+            line: line_holding(bytes, MAX_MANIFEST_BYTES),
+            text: Vec::new(),
+            problem: Problem::TooLarge { size: bytes.len() },
+        });
+    }
     let mut entries = Vec::new();
     for (index, text) in bytes.split(|byte| *byte == b'\n').enumerate() {
         let line = index + 1;
-        let read = read_line(text).map_err(|problem| ParseError {
+        let refuse = |problem| ParseError {
             line,
             text: text.to_vec(),
             problem,
-        })?;
-        if let Some((kind, path)) = read {
-            entries.push(Entry {
-                kind,
-                path,
-                line,
-                text: text.to_vec(),
-            });
+        };
+        let Some((kind, path)) = read_line(text).map_err(refuse)? else {
+            continue;
+        };
+        if let Some(other) = overlap(&entries, &kind, &path) {
+            return Err(refuse(Problem::Overlap {
+                other_line: other.line,
+                other_text: other.text.clone(),
+            }));
         }
+        entries.push(Entry {
+            kind,
+            path,
+            line,
+            text: text.to_vec(),
+        });
     }
     Ok(Manifest { entries })
+}
+
+/// The 1-based number of the line holding `bytes[index]`, counting lines as
+/// `parse` does: a newline belongs to the line it ends.
+fn line_holding(bytes: &[u8], index: usize) -> usize {
+    1 + bytes[..index].iter().filter(|byte| **byte == b'\n').count()
+}
+
+/// The first earlier entry of the other kind that `path` overlaps: either
+/// path covers the other (D-12). Entries of the same kind never overlap, so
+/// duplicates and nesting pass. Quadratic over a manifest, which
+/// `MAX_MANIFEST_BYTES` bounds (T-04-10).
+fn overlap<'a>(entries: &'a [Entry], kind: &EntryKind, path: &[u8]) -> Option<&'a Entry> {
+    entries.iter().find(|entry| {
+        entry.kind != *kind && (covers(&entry.path, path) || covers(path, &entry.path))
+    })
 }
 
 /// The entry one manifest line declares, or `None` for a comment or an empty
