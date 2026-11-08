@@ -2067,6 +2067,27 @@ mod tests {
         );
     }
 
+    /// D-07: with no remote, a local `develop` beats a local `next`.
+    #[test]
+    fn local_develop_beats_local_next() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-local-both").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["branch", "develop", ORIGIN_DEVELOP]);
+        run(&scratch, &work, &["branch", "next", ORIGIN_NEXT]);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "develop",
+            "refs/heads/develop",
+            &["refs/heads/next", "refs/heads/main"],
+        );
+    }
+
     /// D-07: with no remote and no local `develop`, the local `next`.
     #[test]
     fn local_next_follows_local_develop() {
@@ -3573,6 +3594,31 @@ mod tests {
                 no_integration(&err);
             }
             Ok(model) => panic!("require: expected Err(NoIntegrationBranch), got {model:?}"),
+        }
+    }
+
+    /// `require` passes a git failure that is not a replacement refusal
+    /// through unwrapped: a corrupt loose ref under a candidate prefix fails
+    /// the listing, and `require` returns that `Error::Git`, not
+    /// `NotConfigured` saying run `wsx init`.
+    #[test]
+    fn require_passes_a_git_failure_through() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-git").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(write(
+            &work.join(".git/refs/heads/workspace/bad"),
+            b"garbage\n",
+        ));
+
+        match required(&work) {
+            Err(Error::Git(git::Error::Gix { what, .. })) => assert_eq!(
+                what, "list the refs directly under refs/heads/workspace/",
+                "the failed read"
+            ),
+            other => panic!("require: expected Err(Git(Gix)) from the listing, got {other:?}"),
         }
     }
 
