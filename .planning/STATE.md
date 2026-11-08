@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-03-PLAN.md
-last_updated: "2026-11-08T16:06:45.909Z"
+stopped_at: Completed 04-06-PLAN.md
+last_updated: "2026-11-08T16:17:33.171Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: a2971dd969233618fd4e291a3590bdfbc30ce90b
+state_head: c5b3536008488376f0a1218884e3e6ff923be39e
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 40
+  completed_plans: 41
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 5 of 11
+Plan: 6 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -98,6 +98,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P02 | 3 min | 1 tasks | 1 files |
 | Phase 04 P05 | 11min | 3 tasks | 5 files |
 | Phase 04 P03 | 11 min | 2 tasks | 6 files |
+| Phase 04 P06 | 7 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -186,6 +187,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-03: manifest quoting is c_unquote (gix undo plus a refusal of text after the closing quote) and encode_path (c_quote plus quotes around a bare path whose edge, one trailing / set aside, is A6 whitespace); both equal git 2.56.0 on every byte value
 - [Phase 04]: 04-03: Problem::BadQuoting gets its own test (only "a"b refused), not in the plan's sixteen; 04-04 adds none
 - [Phase 04]: 04-03: every proptest! block in model::manifest takes property_config(); property_runs_its_configured_cases fails below 2048 cases, so PROPTEST_CASES=0 is a named failure
+- [Phase 04]: 04-06: remote_configured counts a remote section with a key from Source::Local or Source::Worktree at any include level, matching git remote add (an included section counts, unlike local_config_values)
+- [Phase 04]: 04-06: build resolves wsx.baseRemote before wsx.pushRemote, after the workspace-branch check; remote.pushDefault and upstream are never read
 
 ### Pending Todos
 
@@ -218,6 +221,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T16:06:45.599Z
-Stopped at: Completed 04-03-PLAN.md
+Last session: 2026-11-08T16:17:32.850Z
+Stopped at: Completed 04-06-PLAN.md
 Resume file: None
