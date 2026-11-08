@@ -19,7 +19,7 @@ pub mod manifest;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::git::{self, ObjectId, Repo, RootEntry};
+use crate::git::{self, ObjectId, RefTarget, Repo, RootEntry};
 
 use manifest::{EntryKind, Manifest, ParseError, Problem, covers};
 
@@ -388,29 +388,66 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     })
 }
 
-/// The integration branch: `develop` on the base remote's tracking refs, or
-/// the local `develop` when there is no base remote (D-06, D-07).
+/// The integration branches the chain tries, in order, before the base
+/// remote's default (D-06, D-07).
+const CHAIN: [&[u8]; 2] = [b"develop", b"next"];
+
+/// The integration branch: `develop`, then `next`, then the branch the base
+/// remote's `HEAD` names, each read from the base remote's tracking refs;
+/// with no base remote, the local `develop`, then the local `next` (D-06,
+/// D-07). Nothing else is tried: no `main` or `master`, no network call
+/// (D-09), and a stale `<remote>/HEAD` is used as it is (D-10).
+///
+/// Every rung is one exact read of a full ref through `find_ref`. A
+/// symbolic ref on a rung is `Error::IntegrationRefSymbolic`, never followed
+/// and never skipped, since following it can land on a local commit
+/// (D-06). A rung's tip is the id that same read returned, peeled, so the
+/// ref checked is the ref whose commit is used; a ref that exists and does
+/// not peel to a commit is an error, with no fall-through to the next rung.
 fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
     let prefix = match base {
         Some(remote) => [b"refs/remotes/".as_slice(), remote, b"/".as_slice()].concat(),
         None => b"refs/heads/".to_vec(),
     };
-    let branch = b"develop".to_vec();
-    let full_ref = [prefix.as_slice(), branch.as_slice()].concat();
-    match repo.find_ref(&full_ref)? {
-        Some(_) => {
-            let tip = repo.ref_commit(&full_ref)?;
-            Ok(Integration {
-                branch,
+    let full = |branch: &[u8]| [prefix.as_slice(), branch].concat();
+    let found = |branch: &[u8]| -> Result<Option<Integration>, Error> {
+        let full_ref = full(branch);
+        match repo.find_ref(&full_ref)? {
+            None => Ok(None),
+            Some(RefTarget::Symbolic(target)) => {
+                Err(Error::IntegrationRefSymbolic { full_ref, target })
+            }
+            Some(RefTarget::Object(id)) => Ok(Some(Integration {
+                branch: branch.to_vec(),
+                tip: repo.peel_commit(&id)?,
                 full_ref,
-                tip,
-            })
+            })),
         }
-        None => Err(Error::NoIntegrationBranch {
-            remote: base.map(<[u8]>::to_vec),
-            tried: vec![full_ref],
-        }),
+    };
+    let mut tried = Vec::new();
+    for branch in CHAIN {
+        if let Some(integration) = found(branch)? {
+            return Ok(integration);
+        }
+        tried.push(full(branch));
     }
+    if base.is_some() {
+        // The remote default counts only as a symbolic ref naming a branch
+        // under the base remote; an object id, a target elsewhere and a
+        // dangling target each leave it in `tried`.
+        let head = full(b"HEAD");
+        if let Some(RefTarget::Symbolic(target)) = repo.find_ref(&head)?
+            && let Some(branch) = target.strip_prefix(prefix.as_slice())
+            && let Some(integration) = found(branch)?
+        {
+            return Ok(integration);
+        }
+        tried.push(head);
+    }
+    Err(Error::NoIntegrationBranch {
+        remote: base.map(<[u8]>::to_vec),
+        tried,
+    })
 }
 
 impl Model {

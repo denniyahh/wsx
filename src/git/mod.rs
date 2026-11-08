@@ -33,7 +33,7 @@ pub(crate) mod testing;
 
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
-pub use refs::{RootEntry, is_branch_name};
+pub use refs::{RefTarget, RootEntry, is_branch_name};
 pub use repo::Repo;
 
 use std::ffi::OsString;
