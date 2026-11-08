@@ -40,6 +40,10 @@ pub const BASE_REF: &str = "wsx.baseRef";
 /// The remote a base or push remote defaults to when its key is unset (D-02).
 pub const DEFAULT_REMOTE: &[u8] = b"origin";
 
+/// The local config key naming the directory feature worktrees live in,
+/// relative to the worktree root (D-20).
+pub const WORKTREE_DIR: &str = "wsx.worktreeDir";
+
 /// The worktree directory when `wsx.worktreeDir` is unset (D-20).
 pub const DEFAULT_WORKTREE_DIR: &[u8] = b".worktrees";
 
@@ -591,9 +595,10 @@ mod tests {
 
     use crate::git;
 
-    use super::manifest::{ParseError, Problem};
+    use super::manifest::{EntryKind, ParseError, Problem};
     use super::{
-        BASE_REF, BASE_REMOTE, Error, Integration, Model, PUSH_REMOTE, RepoModel, resolve,
+        BASE_REF, BASE_REMOTE, Error, Integration, Model, PUSH_REMOTE, RepoModel, WORKTREE_DIR,
+        resolve,
     };
 
     /// Fails the test with `err` when a fixture step fails.
@@ -3878,6 +3883,366 @@ mod tests {
             ),
             Err(err) => panic!("require with a regular manifest: got {err:?}"),
         }
+    }
+
+    /// `workspace/dev`'s tip in `work` commits `.wsx.conf` holding `bytes`;
+    /// `main` stays checked out.
+    fn manifest_on_workspace(scratch: &Scratch, work: &Path, bytes: &[u8]) {
+        commit_manifest(scratch, work, Some(bytes));
+    }
+
+    /// `chain_repo` with `bytes` as `workspace/dev`'s manifest, resolved.
+    fn model_with_manifest(scratch: &Scratch, bytes: &[u8]) -> (PathBuf, Model) {
+        let work = chain_repo(scratch);
+        manifest_on_workspace(scratch, &work, bytes);
+        let model = configured(&work);
+        (work, model)
+    }
+
+    /// `paths` as text, for comparing personal-path lists.
+    fn path_texts(paths: &[&[u8]]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect()
+    }
+
+    /// The model `work` resolves to with `wsx.worktreeDir` set to `value`.
+    fn worktree_dir_resolved(scratch: &Scratch, work: &Path, value: &str) -> Result<Model, Error> {
+        set_config(scratch, work, WORKTREE_DIR, value);
+        match resolved(work) {
+            Ok(RepoModel::Configured(model)) => Ok(*model),
+            Ok(other) => panic!("resolve: expected Configured or an error, got {other:?}"),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The `value` and `problem` of `err`; fails the test unless it is
+    /// `Error::WorktreeDirInvalid`.
+    fn worktree_dir_problem(err: Error) -> (String, Problem) {
+        match err {
+            Error::WorktreeDirInvalid { value, problem } => {
+                (String::from_utf8_lossy(&value).into_owned(), problem)
+            }
+            other => panic!("expected Err(WorktreeDirInvalid), got {other:?}"),
+        }
+    }
+
+    /// CONF-02: no agent's directory is personal unless declared.
+    #[test]
+    fn undeclared_path_is_not_personal() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-undeclared").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"");
+        assert!(model.manifest.entries.is_empty(), "the manifest's entries");
+
+        assert!(
+            !model.is_personal(b".planning/x"),
+            "is_personal(.planning/x)"
+        );
+        assert!(!model.is_personal(b"CLAUDE.md"), "is_personal(CLAUDE.md)");
+    }
+
+    /// CONF-02: the same paths are personal once the manifest declares them
+    /// `only`, in the same repository, on a fresh resolve.
+    #[test]
+    fn declared_path_is_personal() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-declared").expect("create scratch");
+        let (work, before) = model_with_manifest(&scratch, b"");
+        assert!(
+            !before.is_personal(b".planning/x") && !before.is_personal(b"CLAUDE.md"),
+            "the paths are personal before the manifest declares them"
+        );
+
+        manifest_on_workspace(&scratch, &work, b"only .planning\nonly CLAUDE.md\n");
+        let after = configured(&work);
+        assert!(
+            after.is_personal(b".planning/x"),
+            "is_personal(.planning/x)"
+        );
+        assert!(after.is_personal(b"CLAUDE.md"), "is_personal(CLAUDE.md)");
+    }
+
+    /// A `modified` line names a shared path, so it is read and not listed.
+    #[test]
+    fn modified_path_is_not_personal() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-modified").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"modified README.md\n");
+        let entries: Vec<_> = model
+            .manifest
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.kind.clone(),
+                    String::from_utf8_lossy(&entry.path).into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            [(EntryKind::Modified, "README.md".to_owned())],
+            "the manifest's entries"
+        );
+
+        assert!(!model.is_personal(b"README.md"), "is_personal(README.md)");
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".worktrees"],
+            "personal paths"
+        );
+    }
+
+    #[test]
+    fn built_ins_are_personal_with_an_empty_manifest() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-built-ins").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"");
+
+        assert!(model.is_personal(b".wsx.conf"), "is_personal(.wsx.conf)");
+        assert!(
+            model.is_personal(b".worktrees/x"),
+            "is_personal(.worktrees/x)"
+        );
+        assert!(!model.is_personal(b".wsx.confX"), "is_personal(.wsx.confX)");
+        assert!(
+            !model.is_personal(b".worktreesX"),
+            "is_personal(.worktreesX)"
+        );
+    }
+
+    /// D-20: `wsx.worktreeDir` replaces `.worktrees` in the built-ins.
+    #[test]
+    fn custom_worktree_dir_replaces_the_default() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir").expect("create scratch");
+        let work = chain_repo(&scratch);
+        manifest_on_workspace(&scratch, &work, b"only a\n");
+        let model = worktree_dir_resolved(&scratch, &work, ".wt")
+            .unwrap_or_else(|err| panic!("resolve with wsx.worktreeDir=.wt: {err:?}"));
+
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".wt", "a"],
+            "personal paths"
+        );
+        assert!(model.is_personal(b".wt/x"), "is_personal(.wt/x)");
+        assert!(
+            !model.is_personal(b".worktrees/x"),
+            "is_personal(.worktrees/x)"
+        );
+    }
+
+    /// D-20, D-14: one trailing `/` is stripped, as from a manifest path.
+    #[test]
+    fn worktree_dir_trailing_slash_is_stripped() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir-slash").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let model = worktree_dir_resolved(&scratch, &work, ".wt/")
+            .unwrap_or_else(|err| panic!("resolve with wsx.worktreeDir=.wt/: {err:?}"));
+
+        assert_eq!(model.worktree_dir, b".wt".to_vec(), "worktree dir");
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".wt", ".planning"],
+            "personal paths"
+        );
+    }
+
+    /// D-20, D-14: a `..` component is refused, as in a manifest path.
+    #[test]
+    fn worktree_dir_with_a_dot_component_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir-dot").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let err = match worktree_dir_resolved(&scratch, &work, "../x") {
+            Err(err) => err,
+            Ok(model) => panic!("resolve with wsx.worktreeDir=../x: got {model:?}"),
+        };
+
+        assert_eq!(
+            worktree_dir_problem(err),
+            ("../x".to_owned(), Problem::DotComponent),
+            "resolve's refusal"
+        );
+    }
+
+    #[test]
+    fn absolute_worktree_dir_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir-absolute").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let err = match worktree_dir_resolved(&scratch, &work, "/x") {
+            Err(err) => err,
+            Ok(model) => panic!("resolve with wsx.worktreeDir=/x: got {model:?}"),
+        };
+
+        assert_eq!(
+            worktree_dir_problem(err),
+            ("/x".to_owned(), Problem::AbsolutePath),
+            "resolve's refusal"
+        );
+    }
+
+    /// D-18: a repeated `wsx.worktreeDir` is refused with both values.
+    #[test]
+    fn repeated_worktree_dir_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir-repeated").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(
+            &scratch,
+            &work,
+            &["config", "--local", "--add", WORKTREE_DIR, "a"],
+        );
+        run(
+            &scratch,
+            &work,
+            &["config", "--local", "--add", WORKTREE_DIR, "b"],
+        );
+
+        match refusal(&work) {
+            Error::KeyRepeated { key, values } => {
+                assert_eq!(key, WORKTREE_DIR, "key");
+                assert_eq!(texts(&values), ["a", "b"], "values");
+            }
+            other => panic!("resolve: expected Err(KeyRepeated), got {other:?}"),
+        }
+    }
+
+    /// D-18: an empty `wsx.worktreeDir` is refused, not read as unset.
+    #[test]
+    fn empty_worktree_dir_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-worktree-dir-empty").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, WORKTREE_DIR, "");
+
+        match refusal(&work) {
+            Error::KeyEmpty { key } => assert_eq!(key, WORKTREE_DIR, "key"),
+            other => panic!("resolve: expected Err(KeyEmpty), got {other:?}"),
+        }
+    }
+
+    /// D-19's empty edge: a manifest of comments declares nothing, and the
+    /// list is exactly the built-ins.
+    #[test]
+    fn comments_only_manifest_leaves_the_built_ins() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-comments-only").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"# personal paths\n#only x\n");
+
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".worktrees"],
+            "personal paths"
+        );
+    }
+
+    #[test]
+    fn one_line_manifest_adds_one_path() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-one-line").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"only a\n");
+
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".worktrees", "a"],
+            "personal paths"
+        );
+    }
+
+    /// The list is the built-ins, then each `only` line in file order, and
+    /// the same on a repeated call and on a fresh resolve.
+    #[test]
+    fn personal_list_is_built_ins_then_declarations_in_file_order() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-list-order").expect("create scratch");
+        let (work, model) = model_with_manifest(&scratch, b"only z\nmodified m\nonly a\n");
+        let first = path_texts(&model.personal_paths());
+        assert_eq!(
+            first,
+            [".wsx.conf", ".worktrees", "z", "a"],
+            "personal paths"
+        );
+
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            first,
+            "personal paths on a second call"
+        );
+        assert_eq!(
+            path_texts(&configured(&work).personal_paths()),
+            first,
+            "personal paths on a fresh resolve"
+        );
+    }
+
+    /// D-13: duplicate declarations are kept, with no collision.
+    #[test]
+    fn duplicate_declarations_stay_in_the_list() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-duplicates").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"only a\nonly a\n");
+
+        assert_eq!(
+            path_texts(&model.personal_paths()),
+            [".wsx.conf", ".worktrees", "a", "a"],
+            "personal paths"
+        );
+        assert!(model.is_personal(b"a/x"), "is_personal(a/x)");
+    }
+
+    /// D-13: declaring a built-in is accepted and kept in the manifest with
+    /// its line number, and `.wsx.conf` stays personal.
+    #[test]
+    fn built_in_declaration_stays_in_the_manifest() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-built-in-declared").expect("create scratch");
+        let (_, model) = model_with_manifest(&scratch, b"only .wsx.conf\n");
+        let entry = model
+            .manifest
+            .entries
+            .first()
+            .unwrap_or_else(|| panic!("the manifest has no entries: {:?}", model.manifest));
+
+        assert_eq!(entry.line, 1, "the entry's line");
+        assert_eq!(entry.kind, EntryKind::Only, "the entry's kind");
+        assert_eq!(entry.path, b".wsx.conf".to_vec(), "the entry's path");
+        assert!(model.is_personal(b".wsx.conf"), "is_personal(.wsx.conf)");
     }
 
     #[test]
