@@ -3,6 +3,33 @@
 use super::repo::Repo;
 use super::{Error, ObjectId};
 
+/// What a ref holds, read without following it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RefTarget {
+    /// The ref holds this object id.
+    Object(ObjectId),
+    /// The ref is symbolic: it names this other full ref.
+    Symbolic(Vec<u8>),
+}
+
+/// What a commit's root tree holds under one name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootEntry {
+    /// The root tree has no entry of that name.
+    Absent,
+    /// The entry is a blob with these bytes.
+    Blob(Vec<u8>),
+}
+
+/// The most refs `Repo::ref_commit` reads for one name, the first included:
+/// git 2.56.0's limit.
+const SYMREF_MAX_DEPTH: usize = 5;
+
+/// Whether `name` is a valid branch name.
+pub fn is_branch_name(_name: &[u8]) -> bool {
+    false
+}
+
 impl Repo {
     /// The commit `id` names, peeling annotated tags as git's
     /// `<id>^{commit}` does. No ref is read and no revspec is parsed: `id`
@@ -26,6 +53,27 @@ impl Repo {
                 message,
             })
     }
+
+    /// The ref named exactly `full`, read without following it.
+    pub fn find_ref(&self, _full: &[u8]) -> Result<Option<RefTarget>, Error> {
+        Ok(None)
+    }
+
+    /// The commit the ref named exactly `full` holds.
+    pub fn ref_commit(&self, full: &[u8]) -> Result<ObjectId, Error> {
+        Err(Error::Gix {
+            what: format!("read {}", String::from_utf8_lossy(full)),
+            message: format!("not implemented (at most {SYMREF_MAX_DEPTH} refs)"),
+        })
+    }
+
+    /// The entry `name` in the root tree of `commit`.
+    pub fn root_entry(&self, commit: &ObjectId, _name: &[u8]) -> Result<RootEntry, Error> {
+        Err(Error::Gix {
+            what: format!("read the root tree of {commit}"),
+            message: "not implemented".to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -33,9 +81,11 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
+    use gix::bstr::BStr;
+
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, ObjectId};
-    use super::Repo;
+    use super::{RefTarget, Repo};
 
     /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
     /// annotated tag `v1` of that commit, `v1nest` of `v1` and `vtree` of
@@ -456,6 +506,291 @@ mod tests {
                 fixture.name,
                 fixture.name.len()
             )
+        );
+    }
+
+    /// `<root>/work`, a `git clone` of `<root>/source`, which holds `a.txt`
+    /// committed on `main` at `T0`. The clone has `refs/remotes/origin/main`
+    /// and `refs/remotes/origin/HEAD` symbolic to it. Canonical.
+    fn cloned_repo(scratch: &Scratch) -> PathBuf {
+        let source = scratch.root.join("source");
+        std::fs::create_dir_all(&source)
+            .unwrap_or_else(|err| panic!("create {}: {err}", source.display()));
+        git_ok(scratch, &source, ["init", "-q", "-b", "main"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        write(&source.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &source, "first", T0).expect("commit");
+        git_ok(scratch, &scratch.root, ["clone", "-q", "source", "work"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        let work = scratch.root.join("work");
+        work.canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", work.display()))
+    }
+
+    /// The id `git show-ref --verify <full>` prints in `dir`, or `None` when
+    /// git finds no ref of exactly that name. Not `git rev-parse`, whose DWIM
+    /// rules would find a ref under another name.
+    fn show_ref(scratch: &Scratch, dir: &Path, full: &str) -> Option<String> {
+        let output = testing::git(scratch, dir, ["show-ref", "--verify", full])
+            .unwrap_or_else(|err| panic!("{err}"));
+        if output.status.code() != Some(0) {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let id = stdout
+            .split_whitespace()
+            .next()
+            .unwrap_or_else(|| panic!("git show-ref --verify {full} exited 0 and printed no id"));
+        Some(id.to_owned())
+    }
+
+    /// `find_ref(full)`'s answer; fails the test on an error.
+    fn read(repo: &Repo, full: &str) -> Option<RefTarget> {
+        repo.find_ref(full.as_bytes())
+            .unwrap_or_else(|err| panic!("find_ref({full}): {err}"))
+    }
+
+    /// `ref_commit(full)`'s answer as hex; fails the test on an error.
+    fn commit_of(repo: &Repo, full: &str) -> String {
+        repo.ref_commit(full.as_bytes())
+            .unwrap_or_else(|err| panic!("ref_commit({full}): {err}"))
+            .to_string()
+    }
+
+    #[test]
+    fn find_ref_tells_direct_from_symbolic() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("find-ref-kinds").expect("create scratch");
+        let work = cloned_repo(&scratch);
+        let head_target = git_ok(
+            &scratch,
+            &work,
+            ["symbolic-ref", "refs/remotes/origin/HEAD"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let head_target = String::from_utf8_lossy(&head_target).trim_end().to_owned();
+        assert_eq!(
+            head_target, "refs/remotes/origin/main",
+            "git symbolic-ref refs/remotes/origin/HEAD in the clone"
+        );
+        let main = show_ref(&scratch, &work, "refs/remotes/origin/main")
+            .expect("git show-ref finds refs/remotes/origin/main");
+        assert_eq!(
+            show_ref(&scratch, &work, "refs/remotes/origin/ghost"),
+            None,
+            "git show-ref finds refs/remotes/origin/ghost"
+        );
+        let repo = Repo::discover(&work).expect("discover the clone");
+
+        assert_eq!(
+            read(&repo, "refs/remotes/origin/HEAD"),
+            Some(RefTarget::Symbolic(head_target.into_bytes())),
+            "find_ref(refs/remotes/origin/HEAD) against git symbolic-ref"
+        );
+        assert_eq!(
+            read(&repo, "refs/remotes/origin/main"),
+            Some(RefTarget::Object(ObjectId(main.clone()))),
+            "find_ref(refs/remotes/origin/main) against git show-ref's {main}"
+        );
+        assert_eq!(
+            read(&repo, "refs/remotes/origin/ghost"),
+            None,
+            "find_ref(refs/remotes/origin/ghost), which git does not find"
+        );
+    }
+
+    #[test]
+    fn find_ref_refuses_a_ref_read_under_another_name() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("find-ref-exact").expect("create scratch");
+        let work = cloned_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["switch", "-q", "-c", "other"]);
+        write(&work.join("b.txt"), b"b\n").expect("write b.txt");
+        commit_all(&scratch, &work, "other", T0 + TICK).expect("commit");
+        ok(&["switch", "-q", "main"]);
+        let main = show_ref(&scratch, &work, "refs/remotes/origin/main")
+            .expect("git show-ref finds refs/remotes/origin/main");
+        let other = show_ref(&scratch, &work, "refs/heads/other")
+            .expect("git show-ref finds refs/heads/other");
+        assert_ne!(main, other, "the fixture's two commits");
+
+        let git_dir = work.join(".git");
+        let ghost = "refs/remotes/origin/ghost";
+        write(
+            &git_dir.join("heads").join(ghost),
+            format!("{main}\n").as_bytes(),
+        )
+        .expect("write .git/heads/refs/remotes/origin/ghost");
+        assert_eq!(
+            show_ref(&scratch, &work, ghost),
+            None,
+            "git show-ref reads {ghost} from .git/heads/"
+        );
+        let repo = Repo::discover(&work).expect("discover the clone");
+        let raw = repo
+            .repo
+            .try_find_reference(ghost)
+            .unwrap_or_else(|err| panic!("try_find_reference({ghost}): {err}"))
+            .map(|found| found.name().as_bstr().to_string());
+        assert_eq!(
+            raw.as_deref(),
+            Some("heads/refs/remotes/origin/ghost"),
+            "gix's raw lookup of {ghost} reads the file under .git/heads/"
+        );
+        assert_eq!(read(&repo, ghost), None, "find_ref({ghost})");
+        let commit = repo.ref_commit(ghost.as_bytes());
+        assert!(commit.is_err(), "ref_commit({ghost}) gave {commit:?}");
+
+        let exact = "refs/remotes/origin/main";
+        write(
+            &git_dir.join("heads").join(exact),
+            format!("{other}\n").as_bytes(),
+        )
+        .expect("write .git/heads/refs/remotes/origin/main");
+        for packing in ["loose", "packed"] {
+            if packing == "packed" {
+                ok(&["pack-refs", "--all"]);
+                assert!(
+                    !git_dir.join(exact).exists(),
+                    "git pack-refs --all left {exact} loose"
+                );
+            }
+            assert_eq!(
+                show_ref(&scratch, &work, exact).as_deref(),
+                Some(main.as_str()),
+                "git show-ref --verify {exact}, {packing}"
+            );
+            let repo = Repo::discover(&work).expect("discover the clone");
+            assert_eq!(
+                read(&repo, exact),
+                Some(RefTarget::Object(ObjectId(main.clone()))),
+                "find_ref({exact}), {packing}, beside .git/heads/{exact} holding {other}"
+            );
+            assert_eq!(
+                commit_of(&repo, exact),
+                main,
+                "ref_commit({exact}), {packing}"
+            );
+        }
+    }
+
+    #[test]
+    fn ref_commit_reads_the_commit_a_describe_shaped_ref_holds() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("ref-commit-describe-shaped").expect("create scratch");
+        let fixture = testing::describe_shaped_ref(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let prefix = fixture
+            .other
+            .get(..7)
+            .expect("a hex id of at least 7 characters");
+        let alias = format!("refs/heads/alias-1-g{prefix}");
+        git_ok(
+            &scratch,
+            &fixture.repo,
+            ["symbolic-ref", alias.as_str(), fixture.name.as_str()],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            show_ref(&scratch, &fixture.repo, &fixture.name).as_deref(),
+            Some(fixture.one.as_str()),
+            "git show-ref --verify {} prints ONE",
+            fixture.name
+        );
+        assert_eq!(
+            id(&scratch, &fixture.repo, &alias).to_string(),
+            fixture.one,
+            "git rev-parse --verify {alias} prints ONE"
+        );
+        let repo = Repo::discover(&fixture.repo).expect("discover the fixture");
+
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the control that this fixture reaches gix's describe-output parsing, which reads the name as the object its hex prefixes"
+        )]
+        let parsed = repo
+            .repo
+            .rev_parse_single(BStr::new(fixture.name.as_bytes()))
+            .map(|found| found.to_string());
+        match parsed {
+            Ok(parsed) => assert_eq!(
+                parsed, fixture.other,
+                "gix's rev_parse_single({}) against Y",
+                fixture.name
+            ),
+            Err(err) => panic!("gix's rev_parse_single({}): {err}", fixture.name),
+        }
+
+        assert_eq!(
+            commit_of(&repo, &fixture.name),
+            fixture.one,
+            "ref_commit({}) against ONE, which the ref holds",
+            fixture.name
+        );
+        assert_eq!(
+            commit_of(&repo, &alias),
+            fixture.one,
+            "ref_commit({alias}), symbolic to {}, against ONE",
+            fixture.name
+        );
+    }
+
+    #[test]
+    fn ref_commit_follows_symbolic_refs_as_far_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("ref-commit-depth").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["branch", "workspace/dev"]);
+        for (name, target) in [
+            ("refs/heads/s5", "refs/heads/workspace/dev"),
+            ("refs/heads/s4", "refs/heads/s5"),
+            ("refs/heads/s3", "refs/heads/s4"),
+            ("refs/heads/s2", "refs/heads/s3"),
+            ("refs/heads/s1", "refs/heads/s2"),
+        ] {
+            ok(&["symbolic-ref", name, target]);
+        }
+        let tip = show_ref(&scratch, &repo_dir, "refs/heads/workspace/dev")
+            .expect("git show-ref finds refs/heads/workspace/dev");
+        assert_eq!(
+            id(&scratch, &repo_dir, "refs/heads/s2").to_string(),
+            tip,
+            "git rev-parse --verify refs/heads/s2, four symbolic hops from the tip"
+        );
+        let deeper = testing::git(
+            &scratch,
+            &repo_dir,
+            ["rev-parse", "--verify", "refs/heads/s1"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(
+            deeper.status.code(),
+            Some(0),
+            "git rev-parse --verify refs/heads/s1, five symbolic hops, printed {:?}",
+            String::from_utf8_lossy(&deeper.stdout).trim_end()
+        );
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        assert_eq!(
+            commit_of(&repo, "refs/heads/s2"),
+            tip,
+            "ref_commit(refs/heads/s2) against git"
+        );
+        let commit = repo.ref_commit(b"refs/heads/s1");
+        assert!(
+            commit.is_err(),
+            "ref_commit(refs/heads/s1), where git refuses, gave {commit:?}"
         );
     }
 }

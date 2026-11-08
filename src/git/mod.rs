@@ -22,12 +22,16 @@
 // reason is short so rustfmt keeps the attribute on one line.
 #![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 
+mod config;
 mod reads;
 mod refs;
 mod repo;
 mod spawn;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
+
+pub use refs::{RootEntry, is_branch_name};
+pub use repo::Repo;
 
 use std::ffi::OsString;
 use std::fmt;
