@@ -260,10 +260,11 @@ impl Fixture {
                 ],
             )?;
         }
-        let base_ref = format!("{}/{}", config.base_remote, config.integration);
         let mut local = vec![
             ("wsx.sourceBranch".to_owned(), config.workspace.clone()),
-            ("wsx.baseRef".to_owned(), base_ref),
+            ("wsx.baseRef".to_owned(), config.integration.clone()),
+            ("wsx.baseRemote".to_owned(), config.base_remote.clone()),
+            ("wsx.pushRemote".to_owned(), config.push_remote.clone()),
             ("commit.gpgsign".to_owned(), "false".to_owned()),
         ];
         local.extend(config.extra_config.iter().cloned());
