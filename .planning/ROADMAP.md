@@ -186,7 +186,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: 7/11 plans executed
+**Plans**: 8/11 plans executed
 **Wave 1**
 - [x] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [x] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
@@ -203,7 +203,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 04-07-PLAN.md — Integration chain and `wsx.baseRef` (D-06 to D-10), `is_branch_name` agreeing with git
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 04-08-PLAN.md — Workspace-branch fallback, recorded-set input, configured state, `RepoModel::require` (D-15 to D-17, D-21)
+- [x] 04-08-PLAN.md — Workspace-branch fallback, recorded-set input, configured state, `RepoModel::require` (D-15 to D-17, D-21)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 04-09-PLAN.md — Only a regular file at the tip is a manifest; a tree out of git's order is refused; built-ins and `wsx.worktreeDir` (D-20); same list from any checkout
@@ -373,7 +373,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
-| 4. Repo model | 7/11 | In Progress | - |
+| 4. Repo model | 8/11 | In Progress | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |

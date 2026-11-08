@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-07-PLAN.md
-last_updated: "2026-11-08T16:41:22.260Z"
+stopped_at: Completed 04-08-PLAN.md
+last_updated: "2026-11-08T16:59:51.456Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 323fff4ade03d74a384c48d3e7cac608a8492f53
+state_head: 37f8a9a1295bb15ffed11f5db5eab899c9e2a9cc
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 43
+  completed_plans: 44
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 8 of 11
+Plan: 9 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -101,6 +101,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P06 | 7 min | 2 tasks | 2 files |
 | Phase 04 P04 | 8min | 2 tasks | 1 files |
 | Phase 04 P07 | 8min | 2 tasks | 3 files |
+| Phase 04 P08 | 14 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -197,6 +198,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-07: a symbolic ref on any integration rung (develop, next, the HEAD target, wsx.baseRef, local rungs) is refused with IntegrationRefSymbolic, never followed or skipped; wsx.baseRef is the way out
 - [Phase 04]: 04-07: wsx.baseRef is checked with branch_name before any rung and answered by found or BaseRefMissing, never the chain (D-08)
 - [Phase 04]: 04-07: is_branch_name refuses HEAD and a leading -, matching git check-ref-format --branch on the 13-name table (A5)
+- [Phase 04]: 04-08: A3 adopted: a workspace-branch candidate is exactly one level under refs/heads/workspace/ or refs/heads/personal/, as git for-each-ref's glob reads it
+- [Phase 04]: 04-08: build maps a failed tip-commit or root-tree read to ManifestUnreadable on both the configured and the inferred path; a configured repo still fails closed, now with that error
+- [Phase 04]: 04-08: a corrupt candidate ref stays in NotConfigured { inferred: Err(Git) } and require passes it through unwrapped; only manifest failures become NotConfigured
 
 ### Pending Todos
 
@@ -229,6 +233,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T16:41:21.926Z
-Stopped at: Completed 04-07-PLAN.md
+Last session: 2026-11-08T16:59:51.115Z
+Stopped at: Completed 04-08-PLAN.md
 Resume file: None
