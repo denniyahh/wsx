@@ -92,11 +92,30 @@ pub enum RepoModel {
 }
 
 impl RepoModel {
-    /// The model, configured or inferred, or why there is none.
+    /// The model for a command that needs a workspace branch: the
+    /// configured one, or the inferred one in a repository that is not
+    /// configured (D-15, D-16).
+    ///
+    /// A manifest that is missing, not a blob, unreadable or invalid on the
+    /// inferred branch is `Error::NotConfigured` with that failure as its
+    /// reason, which renders the failure and says run `wsx init` (D-16).
+    /// Every other error passes through unchanged, so zero or several
+    /// candidates stay the list `Error::WorkspaceCandidates` renders
+    /// (D-21). Whether a repository is configured is read from the variant,
+    /// not from this: a caller that must tell the states apart, such as the
+    /// push guard, matches on `RepoModel`.
     pub fn require(self) -> Result<Box<Model>, Error> {
         match self {
             RepoModel::Configured(model) => Ok(model),
-            RepoModel::NotConfigured { inferred } => inferred,
+            RepoModel::NotConfigured { inferred } => inferred.map_err(|err| match err {
+                err @ (Error::ManifestMissing { .. }
+                | Error::ManifestNotABlob { .. }
+                | Error::ManifestUnreadable { .. }
+                | Error::ManifestInvalid { .. }) => Error::NotConfigured {
+                    reason: Box::new(err),
+                },
+                other => other,
+            }),
         }
     }
 }
@@ -297,11 +316,15 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Resolves the model of `repo`. `recorded` is the set of branches `wsx new`
-/// recorded, which never count as workspace-branch candidates (D-17).
+/// recorded, as short names, which never count as workspace-branch
+/// candidates (D-17); production passes an empty set until phase 8.
 ///
 /// `Err` means exactly that the repository is configured and the model
-/// fails closed; a repository that is not configured is a value.
-pub fn resolve(repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
+/// fails closed; a repository that is not configured is a value. With
+/// `wsx.sourceBranch` unset, the only candidate is inferred, and every
+/// failure on the way, zero or several candidates included, stays in
+/// `inferred` (D-15, D-16, D-21).
+pub fn resolve(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
     match single(repo, SOURCE_BRANCH)? {
         Some(branch) => {
             // 03.1 D-04: after this check the branch is read only as the one
@@ -314,12 +337,42 @@ pub fn resolve(repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, 
             }
             Ok(RepoModel::Configured(Box::new(build(repo, branch)?)))
         }
-        None => Ok(RepoModel::NotConfigured {
-            inferred: Err(Error::WorkspaceCandidates {
-                candidates: Vec::new(),
-            }),
-        }),
+        None => {
+            let inferred = candidates(repo, recorded).and_then(|mut names| {
+                if names.len() != 1 {
+                    return Err(Error::WorkspaceCandidates { candidates: names });
+                }
+                build(repo, names.remove(0))
+            });
+            Ok(RepoModel::NotConfigured {
+                inferred: inferred.map(Box::new),
+            })
+        }
     }
+}
+
+/// The prefixes a workspace-branch candidate is listed under, each with its
+/// trailing slash, since a prefix without one also matches `workspace-x`.
+const CANDIDATE_PREFIXES: [&[u8]; 2] = [b"refs/heads/workspace/", b"refs/heads/personal/"];
+
+/// The local branches directly under `workspace/` or `personal/`, as short
+/// names in byte order across both prefixes, less those in `recorded`
+/// (D-17, D-21). Remote-tracking branches and nested names are not listed,
+/// and the checked-out branch gets no preference. A ref that fails to read
+/// fails the whole listing rather than shortening it.
+fn candidates(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<Vec<Vec<u8>>, Error> {
+    let mut names = Vec::new();
+    for prefix in CANDIDATE_PREFIXES {
+        for full in repo.refs_directly_under(prefix)? {
+            if let Some(short) = full.strip_prefix(BRANCH_PREFIX)
+                && !recorded.contains(short)
+            {
+                names.push(short.to_vec());
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 /// The one value of `key` in this repository's own config, or `None` when
@@ -343,9 +396,12 @@ fn single(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
     }
 }
 
+/// The prefix of a local branch's full ref.
+const BRANCH_PREFIX: &[u8] = b"refs/heads/";
+
 /// `refs/heads/<branch>`.
 fn branch_ref(branch: &[u8]) -> Vec<u8> {
-    [b"refs/heads/".as_slice(), branch].concat()
+    [BRANCH_PREFIX, branch].concat()
 }
 
 /// The remote a base or push remote resolves to: `origin` when this
@@ -374,6 +430,11 @@ fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
 /// the root tree of the commit `refs/heads/<branch>` holds, read from the
 /// object database, so neither an uncommitted edit nor the checked-out
 /// branch changes which paths are personal.
+///
+/// A failure reading the tip's commit or its root tree is
+/// `Error::ManifestUnreadable`, since both are reads of the manifest; a
+/// failure of the `find_ref` that checks the branch exists is the ref store
+/// and stays `Error::Git`.
 fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let full = branch_ref(&branch);
     if repo.find_ref(&full)?.is_none() {
@@ -383,8 +444,15 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let push_remote = remote(repo, PUSH_REMOTE)?;
     let integration = integration(repo, base_remote.as_deref())?;
     let worktree_dir = DEFAULT_WORKTREE_DIR.to_vec();
-    let workspace_tip = repo.ref_commit(&full)?;
-    let manifest = match repo.root_entry(&workspace_tip, MANIFEST_NAME)? {
+    let unreadable = |source: git::Error| Error::ManifestUnreadable {
+        branch: branch.clone(),
+        source,
+    };
+    let workspace_tip = repo.ref_commit(&full).map_err(unreadable)?;
+    let manifest = match repo
+        .root_entry(&workspace_tip, MANIFEST_NAME)
+        .map_err(unreadable)?
+    {
         RootEntry::Absent => return Err(Error::ManifestMissing { branch }),
         RootEntry::Blob(bytes) => match manifest::parse(&bytes) {
             Ok(manifest) => manifest,
