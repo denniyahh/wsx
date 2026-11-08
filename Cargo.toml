@@ -35,3 +35,10 @@ rustix = { version = "1.1.5", default-features = false, features = ["std", "proc
 # ships in the binary; MIT OR Apache-2.0, and every crate in its graph offers
 # MIT. Legitimacy checked in phase 2 research (Package Legitimacy Audit: OK).
 tempfile = "3.27.0"
+# Success Criterion 1 and .planning/PROJECT.md require a property test for the
+# manifest: any git path round-trips through `.wsx.conf`. `default-features =
+# false` drops `fork`, `timeout` and `bit-set` (rusty-fork, tempfile, bit-vec),
+# which nothing here uses. Dev-only, so nothing ships in the binary; MIT OR
+# Apache-2.0. Legitimacy checked in phase 4 research (Package Legitimacy
+# Audit: OK).
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
