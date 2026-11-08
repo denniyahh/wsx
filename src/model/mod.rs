@@ -91,6 +91,16 @@ pub enum RepoModel {
     },
 }
 
+impl RepoModel {
+    /// The model, configured or inferred, or why there is none.
+    pub fn require(self) -> Result<Box<Model>, Error> {
+        match self {
+            RepoModel::Configured(model) => Ok(model),
+            RepoModel::NotConfigured { inferred } => inferred,
+        }
+    }
+}
+
 /// Why the model could not be resolved.
 #[derive(Debug)]
 pub enum Error {
@@ -2546,6 +2556,885 @@ mod tests {
             ORIGIN_NEXT,
             &[WORKSPACE, ORIGIN_MAIN],
         );
+    }
+
+    /// `inferred` from `resolve(repo of work, recorded)`; fails the test
+    /// unless the repository resolves as not configured.
+    fn inferred_with(work: &Path, recorded: &BTreeSet<Vec<u8>>) -> Result<Box<Model>, Error> {
+        let repo = Repo::discover(work).expect("discover the fixture");
+        not_configured_in(&repo, recorded)
+    }
+
+    /// `inferred` from `resolve(repo, recorded)`; fails the test unless the
+    /// repository resolves as not configured.
+    fn not_configured_in(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<Box<Model>, Error> {
+        match resolve(repo, recorded) {
+            Ok(RepoModel::NotConfigured { inferred }) => inferred,
+            other => panic!("resolve: expected RepoModel::NotConfigured, got {other:?}"),
+        }
+    }
+
+    /// `inferred` for `work` with nothing recorded.
+    fn inferred(work: &Path) -> Result<Box<Model>, Error> {
+        inferred_with(work, &BTreeSet::new())
+    }
+
+    /// The model inferred for `work`; fails the test on an error.
+    fn inferred_model(work: &Path) -> Model {
+        match inferred(work) {
+            Ok(model) => *model,
+            Err(err) => panic!("inferred: expected a model, got {err:?}: {err}"),
+        }
+    }
+
+    /// `names` as text, for comparing lists of branch names.
+    fn texts(names: &[Vec<u8>]) -> Vec<String> {
+        names
+            .iter()
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect()
+    }
+
+    /// The candidates `err` lists; fails the test unless it is
+    /// `Error::WorkspaceCandidates`.
+    fn listed_candidates(err: &Error) -> Vec<String> {
+        match err {
+            Error::WorkspaceCandidates { candidates } => texts(candidates),
+            other => panic!("expected Err(WorkspaceCandidates), got {other:?}"),
+        }
+    }
+
+    /// The candidates `inferred` lists for `work`.
+    fn candidates_of(work: &Path) -> Vec<String> {
+        match inferred(work) {
+            Err(err) => listed_candidates(&err),
+            Ok(model) => panic!("inferred: expected Err(WorkspaceCandidates), got {model:?}"),
+        }
+    }
+
+    /// `require` on what `resolve` gives for `work`; fails the test when
+    /// `resolve` itself errs.
+    fn required(work: &Path) -> Result<Box<Model>, Error> {
+        match resolved(work) {
+            Ok(answer) => answer.require(),
+            Err(err) => panic!("resolve: expected a RepoModel, got {err:?}"),
+        }
+    }
+
+    /// The reason `require` wraps in `Error::NotConfigured` for `work`, and
+    /// the wrapped error's rendering; fails the test on any other answer.
+    fn wrapped_reason(work: &Path) -> (Error, String) {
+        match required(work) {
+            Err(err) => {
+                let rendered = err.to_string();
+                match err {
+                    Error::NotConfigured { reason } => (*reason, rendered),
+                    other => panic!("require: expected Err(NotConfigured), got {other:?}"),
+                }
+            }
+            Ok(model) => panic!("require: expected Err(NotConfigured), got {model:?}"),
+        }
+    }
+
+    /// `workspace/dev`'s tip in `work` commits `.wsx.conf` holding
+    /// `content`, or no `.wsx.conf` for `None`; `main` stays checked out.
+    fn commit_manifest(scratch: &Scratch, work: &Path, content: Option<&[u8]>) {
+        run(scratch, work, &["switch", "-q", "workspace/dev"]);
+        let path = work.join(".wsx.conf");
+        match content {
+            Some(bytes) => ok(write(&path, bytes)),
+            None => std::fs::remove_file(&path)
+                .unwrap_or_else(|err| panic!("remove {}: {err}", path.display())),
+        }
+        ok(commit_all(scratch, work, "manifest edit", T0 + 4 * TICK));
+        run(scratch, work, &["switch", "-q", "main"]);
+    }
+
+    /// Deletes the loose object `.wsx.conf` at `workspace/dev`'s tip names
+    /// in `work` and returns its id, which `git cat-file -e` then refuses.
+    /// The tree entry stays, so only the object read fails.
+    fn delete_manifest_object(scratch: &Scratch, work: &Path) -> String {
+        let id = run(
+            scratch,
+            work,
+            &["rev-parse", "refs/heads/workspace/dev:.wsx.conf"],
+        );
+        let id = String::from_utf8_lossy(&id).trim_end().to_owned();
+        let (dir, file) = id.split_at(2);
+        let path = work.join(".git/objects").join(dir).join(file);
+        assert!(
+            path.is_file(),
+            "the manifest blob {id} is not the loose object {}",
+            path.display()
+        );
+        std::fs::remove_file(&path)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", path.display()));
+        assert_ne!(
+            exit_code(scratch, work, &["cat-file", "-e", &id]),
+            Some(0),
+            "git cat-file -e {id} after its object was deleted"
+        );
+        id
+    }
+
+    /// `workspace/dev` renamed to `personal/workspace`, and
+    /// `personal/workspace-backup` made from it: two candidates, neither
+    /// under `workspace/`.
+    fn two_personal_candidates(scratch: &Scratch, work: &Path) {
+        run(
+            scratch,
+            work,
+            &["branch", "-m", "workspace/dev", "personal/workspace"],
+        );
+        run(
+            scratch,
+            work,
+            &["branch", "personal/workspace-backup", "personal/workspace"],
+        );
+    }
+
+    /// The `git for-each-ref` names in `work` matching `glob`, one per line.
+    fn for_each_ref(scratch: &Scratch, work: &Path, glob: &str) -> Vec<Vec<u8>> {
+        testing::records(
+            &run(
+                scratch,
+                work,
+                &["for-each-ref", "--format=%(refname)", glob],
+            ),
+            b'\n',
+        )
+    }
+
+    /// Success Criterion 3: `wsx.sourceBranch` names the workspace branch
+    /// with another candidate present. Without the key the same repository
+    /// has two candidates, so the key, not inference, picked it.
+    #[test]
+    fn source_branch_names_the_workspace() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-source-names").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "workspace/other"]);
+        assert_eq!(
+            candidates_of(&work),
+            ["workspace/dev", "workspace/other"],
+            "candidates without wsx.sourceBranch"
+        );
+
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        let model = configured(&work);
+        assert_eq!(
+            String::from_utf8_lossy(&model.workspace_branch),
+            "workspace/dev",
+            "workspace branch"
+        );
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &work, WORKSPACE),
+            "workspace tip against git show-ref"
+        );
+    }
+
+    /// D-21: the key is a short branch name, and need not be under a
+    /// candidate prefix: `main`, carrying its own `.wsx.conf`, is used.
+    #[test]
+    fn source_branch_may_be_outside_the_candidate_prefixes() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-source-main").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(write(&work.join(".wsx.conf"), b"only notes\n"));
+        ok(commit_all(&scratch, &work, "main manifest", T0 + 4 * TICK));
+        set_config(&scratch, &work, "wsx.sourceBranch", "main");
+
+        let model = configured(&work);
+        assert_eq!(
+            String::from_utf8_lossy(&model.workspace_branch),
+            "main",
+            "workspace branch"
+        );
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &work, "refs/heads/main"),
+            "workspace tip against git show-ref"
+        );
+        assert!(model.is_personal(b"notes/x"), "is_personal(notes/x)");
+        assert!(
+            !model.is_personal(b".planning/x"),
+            "is_personal(.planning/x), which only workspace/dev's manifest lists"
+        );
+    }
+
+    /// Success Criterion 3: with no key, the only local `workspace/*`
+    /// branch is inferred, read from this repository's own tip.
+    #[test]
+    fn only_candidate_is_inferred() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-only-candidate").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+
+        let model = inferred_model(&work);
+        assert_eq!(
+            String::from_utf8_lossy(&model.workspace_branch),
+            "workspace/dev",
+            "inferred workspace branch"
+        );
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &work, WORKSPACE),
+            "inferred tip against git show-ref"
+        );
+        assert!(
+            model.is_personal(b".planning/x"),
+            "is_personal(.planning/x) from the inferred manifest"
+        );
+    }
+
+    /// D-21: a local `personal/*` branch is a candidate too.
+    #[test]
+    fn personal_branch_is_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-personal-candidate").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(
+            &scratch,
+            &work,
+            &["branch", "-m", "workspace/dev", "personal/dev"],
+        );
+
+        let model = inferred_model(&work);
+        assert_eq!(
+            String::from_utf8_lossy(&model.workspace_branch),
+            "personal/dev",
+            "inferred workspace branch"
+        );
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &work, "refs/heads/personal/dev"),
+            "inferred tip against git show-ref"
+        );
+    }
+
+    /// D-15: a fallback match names the branch and the repository stays not
+    /// configured; only the key makes it configured, as the control shows.
+    #[test]
+    fn no_source_branch_is_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-fallback-not-configured").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        match resolved(&work) {
+            Ok(RepoModel::NotConfigured {
+                inferred: Ok(model),
+            }) => assert_eq!(
+                String::from_utf8_lossy(&model.workspace_branch),
+                "workspace/dev",
+                "inferred workspace branch"
+            ),
+            other => {
+                panic!("resolve: expected NotConfigured with an inferred model, got {other:?}")
+            }
+        }
+
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        configured(&work);
+    }
+
+    /// Success Criterion 3: two candidates are refused, listing both in
+    /// order; `personal/workspace` and `personal/workspace-backup` are two
+    /// names, not one.
+    #[test]
+    fn several_candidates_are_listed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-several").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        two_personal_candidates(&scratch, &work);
+
+        let err = match inferred(&work) {
+            Err(err) => err,
+            Ok(model) => panic!("inferred: expected Err(WorkspaceCandidates), got {model:?}"),
+        };
+        assert_eq!(
+            listed_candidates(&err),
+            ["personal/workspace", "personal/workspace-backup"],
+            "candidates"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("personal/workspace, personal/workspace-backup."),
+            "{rendered:?} does not name both candidates"
+        );
+    }
+
+    /// CONF-05: candidates are in byte order across both prefixes, so
+    /// `personal/dev` comes before `workspace/dev`, the same on a repeat.
+    #[test]
+    fn candidates_sort_across_both_prefixes() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-candidate-order").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(
+            &scratch,
+            &work,
+            &["branch", "personal/dev", "workspace/dev"],
+        );
+
+        let first = candidates_of(&work);
+        assert_eq!(first, ["personal/dev", "workspace/dev"], "candidates");
+        assert_eq!(candidates_of(&work), first, "candidates on a repeat");
+    }
+
+    /// Success Criterion 3: with no candidate the error says none exist and
+    /// to run `wsx init`. The control: before `workspace/dev` was deleted,
+    /// the same repository inferred it.
+    #[test]
+    fn zero_candidates_are_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-zero").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        assert_eq!(
+            String::from_utf8_lossy(&inferred_model(&work).workspace_branch),
+            "workspace/dev",
+            "inferred before the deletion"
+        );
+        run(&scratch, &work, &["branch", "-q", "-D", "workspace/dev"]);
+
+        let err = match inferred(&work) {
+            Err(err) => err,
+            Ok(model) => panic!("inferred: expected Err(WorkspaceCandidates), got {model:?}"),
+        };
+        assert_eq!(listed_candidates(&err), Vec::<String>::new(), "candidates");
+        let rendered = err.to_string();
+        assert!(
+            rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not say run wsx init"
+        );
+    }
+
+    /// D-21: several or zero candidates are not a refusal from `resolve`,
+    /// which stays `Ok(NotConfigured)` so the guard can read it.
+    #[test]
+    fn several_candidates_do_not_fail_resolve() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-several-ok").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        two_personal_candidates(&scratch, &work);
+        match resolved(&work) {
+            Ok(RepoModel::NotConfigured { inferred: Err(err) }) => {
+                assert_eq!(listed_candidates(&err).len(), 2, "candidates");
+            }
+            other => panic!("resolve with two candidates: got {other:?}"),
+        }
+
+        for branch in ["personal/workspace", "personal/workspace-backup"] {
+            run(&scratch, &work, &["branch", "-q", "-D", branch]);
+        }
+        match resolved(&work) {
+            Ok(RepoModel::NotConfigured { inferred: Err(err) }) => {
+                assert!(listed_candidates(&err).is_empty(), "candidates");
+            }
+            other => panic!("resolve with no candidate: got {other:?}"),
+        }
+    }
+
+    /// T-04-20: a corrupt loose ref under a candidate prefix fails the
+    /// listing, and that failure stays in `inferred`: the repository is not
+    /// configured, and the one readable candidate is not inferred.
+    #[test]
+    fn corrupt_candidate_ref_stays_in_inferred() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-corrupt-candidate").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(write(
+            &work.join(".git/refs/heads/workspace/bad"),
+            b"garbage\n",
+        ));
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/dev"],
+            "git for-each-ref skips the corrupt ref"
+        );
+
+        match inferred(&work) {
+            Err(Error::Git(git::Error::Gix { what, .. })) => assert_eq!(
+                what, "list the refs directly under refs/heads/workspace/",
+                "the failed read"
+            ),
+            other => panic!("inferred: expected Err(Git(Gix)) from the listing, got {other:?}"),
+        }
+    }
+
+    /// D-17: the recorded set is an input. One repository resolved twice:
+    /// with nothing recorded `workspace/dev` and `workspace/feature` are two
+    /// candidates; with `workspace/feature` recorded, `workspace/dev` is
+    /// inferred. Production passes an empty set until phase 8.
+    #[test]
+    fn recorded_branches_are_not_candidates() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-recorded").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "workspace/feature"]);
+        let repo = Repo::discover(&work).expect("discover the fixture");
+
+        match not_configured_in(&repo, &BTreeSet::new()) {
+            Err(err) => assert_eq!(
+                listed_candidates(&err),
+                ["workspace/dev", "workspace/feature"],
+                "candidates with nothing recorded"
+            ),
+            Ok(model) => panic!("inferred with nothing recorded: got {model:?}"),
+        }
+        let recorded = BTreeSet::from([b"workspace/feature".to_vec()]);
+        match not_configured_in(&repo, &recorded) {
+            Ok(model) => assert_eq!(
+                String::from_utf8_lossy(&model.workspace_branch),
+                "workspace/dev",
+                "inferred with workspace/feature recorded"
+            ),
+            Err(err) => panic!("inferred with workspace/feature recorded: got {err:?}"),
+        }
+    }
+
+    /// A3: `workspace/a/b` is two levels under `workspace/`, so it is no
+    /// candidate, as `git for-each-ref 'refs/heads/workspace/*'` agrees,
+    /// though the branch exists.
+    #[test]
+    fn nested_branch_is_not_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-nested").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "-q", "-D", "workspace/dev"]);
+        run(&scratch, &work, &["branch", "workspace/a/b"]);
+        tip(&scratch, &work, "refs/heads/workspace/a/b");
+        assert!(
+            for_each_ref(&scratch, &work, "refs/heads/workspace/*").is_empty(),
+            "git for-each-ref 'refs/heads/workspace/*' lists the nested branch"
+        );
+
+        assert_eq!(candidates_of(&work), Vec::<String>::new(), "candidates");
+    }
+
+    /// D-21: a remote-tracking `workspace/*` is no candidate.
+    #[test]
+    fn remote_only_branch_is_not_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-remote-only").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "-q", "-D", "workspace/dev"]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "refs/remotes/origin/workspace/x", "HEAD"],
+        );
+        tip(&scratch, &work, "refs/remotes/origin/workspace/x");
+
+        assert_eq!(candidates_of(&work), Vec::<String>::new(), "candidates");
+    }
+
+    /// CONF-05: `workspace-x` only extends the prefix's text; it is no
+    /// candidate.
+    #[test]
+    fn name_extension_is_not_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-name-extension").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "-q", "-D", "workspace/dev"]);
+        run(&scratch, &work, &["branch", "workspace-x"]);
+        tip(&scratch, &work, "refs/heads/workspace-x");
+
+        assert_eq!(candidates_of(&work), Vec::<String>::new(), "candidates");
+    }
+
+    /// D-21: checking out one of two candidates does not choose it.
+    #[test]
+    fn checked_out_branch_gets_no_preference() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-checked-out").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "workspace/other"]);
+        run(&scratch, &work, &["switch", "-q", "workspace/dev"]);
+        assert_eq!(
+            String::from_utf8_lossy(&run(&scratch, &work, &["symbolic-ref", "HEAD"])).trim_end(),
+            WORKSPACE,
+            "git symbolic-ref HEAD"
+        );
+
+        assert_eq!(
+            candidates_of(&work),
+            ["workspace/dev", "workspace/other"],
+            "candidates with workspace/dev checked out"
+        );
+    }
+
+    /// D-21: a `wsx.sourceBranch` with no local branch fails closed, with no
+    /// fallback to the candidate `workspace/dev` that exists.
+    #[test]
+    fn missing_source_branch_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-source-missing").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "ghost");
+        assert_ne!(
+            exit_code(
+                &scratch,
+                &work,
+                &["show-ref", "--verify", "refs/heads/ghost"]
+            ),
+            Some(0),
+            "git show-ref --verify refs/heads/ghost"
+        );
+        tip(&scratch, &work, WORKSPACE);
+
+        match refusal(&work) {
+            Error::WorkspaceBranchMissing { branch } => {
+                assert_eq!(String::from_utf8_lossy(&branch), "ghost", "branch");
+            }
+            other => panic!("resolve: expected Err(WorkspaceBranchMissing), got {other:?}"),
+        }
+    }
+
+    /// 03.1 D-04: the key is a short name, so `refs/heads/workspace/dev` is
+    /// read as `refs/heads/refs/heads/workspace/dev`, which does not exist.
+    #[test]
+    fn full_ref_as_source_branch_is_not_found() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-source-full-ref").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", WORKSPACE);
+        tip(&scratch, &work, WORKSPACE);
+        assert_ne!(
+            exit_code(
+                &scratch,
+                &work,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "refs/heads/refs/heads/workspace/dev"
+                ]
+            ),
+            Some(0),
+            "git show-ref --verify refs/heads/refs/heads/workspace/dev"
+        );
+
+        match refusal(&work) {
+            Error::WorkspaceBranchMissing { branch } => {
+                assert_eq!(String::from_utf8_lossy(&branch), WORKSPACE, "branch");
+            }
+            other => panic!("resolve: expected Err(WorkspaceBranchMissing), got {other:?}"),
+        }
+    }
+
+    /// A value `git check-ref-format --branch` refuses is not a branch name.
+    #[test]
+    fn invalid_source_branch_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-source-invalid").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "-x");
+
+        match refusal(&work) {
+            Error::NotABranchName { key, value } => {
+                assert_eq!(key, "wsx.sourceBranch", "key");
+                assert_eq!(value, b"-x".to_vec(), "value");
+            }
+            other => panic!("resolve: expected Err(NotABranchName), got {other:?}"),
+        }
+    }
+
+    /// D-16: an invalid manifest on the inferred branch leaves the
+    /// repository not configured; the failure stays in `inferred`.
+    #[test]
+    fn invalid_inferred_manifest_is_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-inferred-invalid").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        commit_manifest(&scratch, &work, Some(b"sync a\n"));
+
+        match inferred(&work) {
+            Err(Error::ManifestInvalid { branch, .. }) => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+            }
+            other => panic!("inferred: expected Err(ManifestInvalid), got {other:?}"),
+        }
+    }
+
+    /// D-16: no manifest on the inferred branch leaves the repository not
+    /// configured.
+    #[test]
+    fn missing_inferred_manifest_is_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-inferred-missing").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        commit_manifest(&scratch, &work, None);
+
+        match inferred(&work) {
+            Err(Error::ManifestMissing { branch }) => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+            }
+            other => panic!("inferred: expected Err(ManifestMissing), got {other:?}"),
+        }
+    }
+
+    /// D-16: the manifest's tree entry present and its object gone leaves
+    /// the repository not configured, as `ManifestUnreadable` naming the
+    /// branch.
+    #[test]
+    fn unreadable_inferred_manifest_is_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-inferred-unreadable").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        delete_manifest_object(&scratch, &work);
+
+        match inferred(&work) {
+            Err(Error::ManifestUnreadable { branch, .. }) => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+            }
+            other => panic!("inferred: expected Err(ManifestUnreadable), got {other:?}"),
+        }
+    }
+
+    /// The control for the D-16 tests: the same invalid manifest with
+    /// `wsx.sourceBranch` set fails closed, as `Err` from `resolve`.
+    #[test]
+    fn invalid_manifest_with_the_key_set_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-key-invalid-manifest").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        commit_manifest(&scratch, &work, Some(b"sync a\n"));
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+
+        match refusal(&work) {
+            Error::ManifestInvalid { branch, .. } => {
+                assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
+            }
+            other => panic!("resolve: expected Err(ManifestInvalid), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require_returns_the_configured_model() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-configured").expect("create scratch");
+        let work = chain_repo(&scratch);
+
+        match required(&work) {
+            Ok(model) => assert_eq!(
+                model.workspace_tip.to_string(),
+                tip(&scratch, &work, WORKSPACE),
+                "workspace tip against git show-ref"
+            ),
+            Err(err) => panic!("require: expected a model, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn require_returns_the_inferred_model() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-inferred").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+
+        match required(&work) {
+            Ok(model) => {
+                assert_eq!(
+                    String::from_utf8_lossy(&model.workspace_branch),
+                    "workspace/dev",
+                    "workspace branch"
+                );
+                assert_eq!(
+                    model.workspace_tip.to_string(),
+                    tip(&scratch, &work, WORKSPACE),
+                    "workspace tip against git show-ref"
+                );
+            }
+            Err(err) => panic!("require: expected the inferred model, got {err:?}"),
+        }
+    }
+
+    /// D-16: `require` reads an invalid inferred manifest as "not
+    /// configured, run `wsx init`", keeping the parse error as the reason.
+    #[test]
+    fn require_wraps_a_manifest_failure_as_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-invalid").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        commit_manifest(&scratch, &work, Some(b"sync a\n"));
+
+        let (reason, rendered) = wrapped_reason(&work);
+        assert!(
+            matches!(reason, Error::ManifestInvalid { .. }),
+            "reason: expected ManifestInvalid, got {reason:?}"
+        );
+        assert!(
+            rendered.contains(": sync a\n") && rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not carry the parse error and say run wsx init"
+        );
+    }
+
+    /// D-16: `require` reads a missing inferred manifest as not configured.
+    /// The control, still with no key: once `workspace/dev` commits a
+    /// manifest again, `require` returns the model.
+    #[test]
+    fn require_wraps_a_missing_manifest_as_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-missing").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        commit_manifest(&scratch, &work, None);
+
+        let (reason, rendered) = wrapped_reason(&work);
+        assert!(
+            matches!(reason, Error::ManifestMissing { .. }),
+            "reason: expected ManifestMissing, got {reason:?}"
+        );
+        assert!(
+            rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not say run wsx init"
+        );
+
+        commit_manifest(&scratch, &work, Some(b"only .planning\n"));
+        match required(&work) {
+            Ok(model) => assert_eq!(
+                String::from_utf8_lossy(&model.workspace_branch),
+                "workspace/dev",
+                "workspace branch once the manifest is back"
+            ),
+            Err(err) => panic!("require once the manifest is back: got {err:?}"),
+        }
+    }
+
+    /// D-16: `require` reads an unreadable inferred manifest as not
+    /// configured, and the rendering keeps the object store's error, which
+    /// names the missing object. The control, still with no key: writing
+    /// the same bytes back restores the object under the same id, and
+    /// `require` returns the model.
+    #[test]
+    fn require_wraps_an_unreadable_manifest_as_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-unreadable").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let id = delete_manifest_object(&scratch, &work);
+
+        let (reason, rendered) = wrapped_reason(&work);
+        assert!(
+            matches!(reason, Error::ManifestUnreadable { .. }),
+            "reason: expected ManifestUnreadable, got {reason:?}"
+        );
+        assert!(
+            rendered.contains(&id) && rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not name the object {id} and say run wsx init"
+        );
+
+        let copy = scratch.root.join("manifest-copy");
+        ok(write(&copy, b"only .planning\n"));
+        let copy_arg = copy.to_str().expect("UTF-8 scratch path");
+        let restored = run(&scratch, &work, &["hash-object", "-w", copy_arg]);
+        assert_eq!(
+            String::from_utf8_lossy(&restored).trim_end(),
+            id,
+            "git hash-object -w of the same bytes"
+        );
+        match required(&work) {
+            Ok(model) => assert_eq!(
+                String::from_utf8_lossy(&model.workspace_branch),
+                "workspace/dev",
+                "workspace branch once the object is back"
+            ),
+            Err(err) => panic!("require once the object is back: got {err:?}"),
+        }
+    }
+
+    /// D-21: `require` passes the candidate list through, not wrapped.
+    #[test]
+    fn require_lists_the_candidates() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-candidates").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        two_personal_candidates(&scratch, &work);
+
+        match required(&work) {
+            Err(err) => assert_eq!(
+                listed_candidates(&err),
+                ["personal/workspace", "personal/workspace-backup"],
+                "candidates"
+            ),
+            Ok(model) => panic!("require: expected Err(WorkspaceCandidates), got {model:?}"),
+        }
+    }
+
+    /// `require` passes a failure that is not a manifest read through: an
+    /// inferred branch with no integration branch is `NoIntegrationBranch`.
+    #[test]
+    fn require_passes_other_failures_through() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-require-other").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "--no-deref", "-d", ORIGIN_HEAD],
+        );
+
+        match required(&work) {
+            Err(err) => {
+                no_integration(&err);
+            }
+            Ok(model) => panic!("require: expected Err(NoIntegrationBranch), got {model:?}"),
+        }
     }
 
     #[test]
