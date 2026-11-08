@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-04-PLAN.md
-last_updated: "2026-11-08T16:29:07.633Z"
+stopped_at: Completed 04-07-PLAN.md
+last_updated: "2026-11-08T16:41:22.260Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: d1429b1a89bf2fc03c7595b17262c69551b1bf02
+state_head: 323fff4ade03d74a384c48d3e7cac608a8492f53
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 42
+  completed_plans: 43
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 7 of 11
+Plan: 8 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -100,6 +100,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P03 | 11 min | 2 tasks | 6 files |
 | Phase 04 P06 | 7 min | 2 tasks | 2 files |
 | Phase 04 P04 | 8min | 2 tasks | 1 files |
+| Phase 04 P07 | 8min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -193,6 +194,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-04: normalize_path strips exactly one trailing slash; path_value passes the value whole, so only a// is EmptyComponent
 - [Phase 04]: 04-04: the overlap check compares each entry with every earlier entry of the other kind, covers in both directions, and names the earlier line
 - [Phase 04]: 04-04: a manifest over 65,536 bytes is TooLarge at the line holding byte index 65536, checked before any line, with empty text
+- [Phase 04]: 04-07: a symbolic ref on any integration rung (develop, next, the HEAD target, wsx.baseRef, local rungs) is refused with IntegrationRefSymbolic, never followed or skipped; wsx.baseRef is the way out
+- [Phase 04]: 04-07: wsx.baseRef is checked with branch_name before any rung and answered by found or BaseRefMissing, never the chain (D-08)
+- [Phase 04]: 04-07: is_branch_name refuses HEAD and a leading -, matching git check-ref-format --branch on the 13-name table (A5)
 
 ### Pending Todos
 
@@ -225,6 +229,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T16:29:07.280Z
-Stopped at: Completed 04-04-PLAN.md
+Last session: 2026-11-08T16:41:21.926Z
+Stopped at: Completed 04-07-PLAN.md
 Resume file: None
