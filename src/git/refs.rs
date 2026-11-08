@@ -1858,4 +1858,60 @@ mod tests {
             "root_entry against git cat-file blob"
         );
     }
+
+    /// T-04-31: the manifest is read from the commit `root_entry` is given,
+    /// not from the branch, so a branch moved between the tip read and the
+    /// manifest read, on one `Repo`, cannot pair the tip with another
+    /// commit's manifest. The second `ref_commit` is the control that the
+    /// handle sees the update (RESEARCH Pitfall 9).
+    #[test]
+    fn manifest_read_stays_on_the_commit_it_was_given() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("root-entry-moved-branch").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        write(&repo_dir.join(".wsx.conf"), b"only first\n").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "first", T0 + TICK).expect("commit");
+        ok(&["branch", "workspace/dev"]);
+        write(&repo_dir.join(".wsx.conf"), b"only second\n").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "second", T0 + 2 * TICK).expect("commit");
+        let second = id(&scratch, &repo_dir, "HEAD");
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+
+        let first = repo
+            .ref_commit(b"refs/heads/workspace/dev")
+            .unwrap_or_else(|err| panic!("ref_commit: {err}"));
+        assert_eq!(
+            Some(first.to_string()),
+            show_ref(&scratch, &repo_dir, "refs/heads/workspace/dev"),
+            "the first tip against git show-ref"
+        );
+        assert_ne!(first, second, "the fixture's two commits");
+        ok(&[
+            "update-ref",
+            "refs/heads/workspace/dev",
+            &second.to_string(),
+        ]);
+        assert_eq!(
+            repo.ref_commit(b"refs/heads/workspace/dev")
+                .unwrap_or_else(|err| panic!("ref_commit after the move: {err}")),
+            second,
+            "the same handle reads the moved branch"
+        );
+
+        let bytes = git_manifest(&scratch, &repo_dir, &first.to_string());
+        assert_eq!(
+            bytes, b"only first\n",
+            "git cat-file blob <first>:.wsx.conf"
+        );
+        assert_eq!(
+            repo.root_entry(&first, b".wsx.conf")
+                .unwrap_or_else(|err| panic!("root_entry({first}): {err}")),
+            RootEntry::Blob(bytes),
+            "the manifest of the first tip, read after the branch moved"
+        );
+    }
 }

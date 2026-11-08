@@ -328,6 +328,26 @@ impl std::error::Error for Error {}
 /// `wsx.sourceBranch` unset, the only candidate is inferred, and every
 /// failure on the way, zero or several candidates included, stays in
 /// `inferred` (D-15, D-16, D-21).
+///
+/// What a resolve reads, and when. It writes nothing to the repository.
+/// Every tip comes from the same read of its ref that any check on that ref
+/// used, never from a second lookup of the name: an integration rung's tip
+/// is peeled from the id returned by the read that found the rung not
+/// symbolic (04-07), and `ref_commit` reads each ref it follows once
+/// (04-01). The workspace branch is read once to see that it exists and
+/// once by `ref_commit` for its tip, and the first read checks nothing the
+/// second could undo. `workspace_tip` and the manifest always come from one
+/// commit, because `root_entry` takes that commit's id, not the branch name
+/// (`manifest_read_stays_on_the_commit_it_was_given` moves the branch
+/// between the two reads). Each tip is a value its ref held at some moment
+/// during the call, and the two tips need not be from one instant: git has
+/// no snapshot across refs. Every object read applies the replacement map
+/// gix loaded when the `Repo` was opened, so a replace ref added or removed
+/// after that, during one run, is not seen by these reads, and a later check
+/// that lists replace refs can disagree with that map in that window
+/// (accepted by the owner on 2026-11-03). Later reads in a command use the
+/// ids recorded here. Only the one-commit half has a test; nothing pins the
+/// rest.
 pub fn resolve(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
     match single(repo, SOURCE_BRANCH)? {
         Some(branch) => {
@@ -4258,6 +4278,429 @@ mod tests {
         assert!(model.is_personal(b".wsx.conf"), "is_personal(.wsx.conf)");
     }
 
+    /// `personal_paths()` as `state_child` prints it: each path C-quoted,
+    /// joined with commas.
+    fn personal_marker(model: &Model) -> String {
+        model
+            .personal_paths()
+            .iter()
+            .map(|path| String::from_utf8_lossy(&git::c_quote(path)).into_owned())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// `personal_paths()` of `model` as owned text.
+    fn personal_list(model: &Model) -> Vec<String> {
+        path_texts(&model.personal_paths())
+    }
+
+    /// `path` as a git argument; the scratch root is UTF-8.
+    fn arg(path: &Path) -> &str {
+        path.to_str().expect("UTF-8 scratch path")
+    }
+
+    /// `<work>`'s linked worktree `<root>/linked`, detached at `main`'s
+    /// commit, canonical.
+    fn linked_worktree(scratch: &Scratch, work: &Path) -> PathBuf {
+        let linked = scratch.root.join("linked");
+        run(
+            scratch,
+            work,
+            &["worktree", "add", "-q", "--detach", arg(&linked), "main"],
+        );
+        linked
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", linked.display()))
+    }
+
+    /// Success Criterion 4, T-04-23: an uncommitted edit to `.wsx.conf`,
+    /// which `git status` sees, changes nothing.
+    #[test]
+    fn working_tree_edit_changes_nothing() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-dirty-manifest").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let before = personal_list(&configured(&work));
+        run(&scratch, &work, &["switch", "-q", "workspace/dev"]);
+        ok(write(&work.join(".wsx.conf"), b"only other\n"));
+        let status = run(&scratch, &work, &["status", "--porcelain"]);
+        assert_eq!(
+            String::from_utf8_lossy(&status),
+            " M .wsx.conf\n",
+            "git status --porcelain after the edit"
+        );
+
+        let after = configured(&work);
+        assert_eq!(
+            personal_list(&after),
+            before,
+            "personal paths after the edit"
+        );
+        assert!(!after.is_personal(b"other/x"), "is_personal(other/x)");
+    }
+
+    /// Success Criterion 4: a checkout without the file resolves the list
+    /// the workspace branch's checkout does.
+    #[test]
+    fn clean_checkout_resolves_the_same_list() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-clean-checkout").expect("create scratch");
+        let work = chain_repo(&scratch);
+        assert!(
+            !work.join(".wsx.conf").exists(),
+            "main's checkout holds .wsx.conf"
+        );
+        let from_main = personal_list(&configured(&work));
+        run(&scratch, &work, &["switch", "-q", "workspace/dev"]);
+        assert!(
+            work.join(".wsx.conf").is_file(),
+            "workspace/dev's checkout has no .wsx.conf"
+        );
+
+        let from_workspace = personal_list(&configured(&work));
+        assert_eq!(
+            from_main, from_workspace,
+            "the list from main against workspace/dev's"
+        );
+        assert_eq!(
+            from_main,
+            [".wsx.conf", ".worktrees", ".planning"],
+            "personal paths"
+        );
+    }
+
+    /// CONF-07: a linked worktree resolves the main worktree's model.
+    #[test]
+    fn linked_worktree_resolves_the_same_list() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-linked-worktree").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let main = configured(&work);
+        let linked = linked_worktree(&scratch, &work);
+        assert!(
+            !linked.join(".wsx.conf").exists(),
+            "the linked worktree holds .wsx.conf"
+        );
+
+        let from_linked = configured(&linked);
+        assert_eq!(
+            personal_list(&from_linked),
+            personal_list(&main),
+            "the list from the linked worktree against the main one"
+        );
+        assert_eq!(
+            from_linked.workspace_tip, main.workspace_tip,
+            "workspace tip"
+        );
+    }
+
+    /// CONF-07: a bare clone with no remote, configured there, resolves the
+    /// same list, its integration branch the local `develop`.
+    #[test]
+    fn bare_repo_resolves_the_same_model() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-bare").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let main = configured(&work);
+        run(
+            &scratch,
+            &work,
+            &["branch", "develop", "refs/remotes/origin/develop"],
+        );
+        let bare = scratch.root.join("bare.git");
+        run(
+            &scratch,
+            &scratch.root,
+            &["clone", "-q", "--bare", arg(&work), arg(&bare)],
+        );
+        let bare = bare
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", bare.display()));
+        run(&scratch, &bare, &["remote", "remove", "origin"]);
+        set_config(&scratch, &bare, "wsx.sourceBranch", "workspace/dev");
+        let develop = tip(&scratch, &bare, "refs/heads/develop");
+
+        let model = configured(&bare);
+        assert_eq!(
+            model.integration.full_ref,
+            b"refs/heads/develop".to_vec(),
+            "integration ref"
+        );
+        assert_eq!(
+            model.integration.tip.to_string(),
+            develop,
+            "integration tip"
+        );
+        assert_eq!(model.base_remote, None, "base remote");
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &bare, "refs/heads/workspace/dev"),
+            "workspace tip against git show-ref in the bare repository"
+        );
+        assert_eq!(
+            personal_list(&model),
+            personal_list(&main),
+            "the list from the bare repository against the clone's"
+        );
+    }
+
+    /// CONF-07: a SHA-256 repository resolves the same list, its tip a
+    /// 64-digit id.
+    #[test]
+    fn sha256_repo_resolves_the_same_model() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-sha256").expect("create scratch");
+        let main = configured(&chain_repo(&scratch));
+        let repo_dir = scratch.root.join("sha256");
+        run(
+            &scratch,
+            &scratch.root,
+            &[
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--object-format=sha256",
+                arg(&repo_dir),
+            ],
+        );
+        ok(write(&repo_dir.join("a.txt"), b"a\n"));
+        ok(commit_all(&scratch, &repo_dir, "main", T0));
+        run(&scratch, &repo_dir, &["branch", "develop"]);
+        run(
+            &scratch,
+            &repo_dir,
+            &["switch", "-q", "-c", "workspace/dev"],
+        );
+        ok(write(&repo_dir.join(".wsx.conf"), b"only .planning\n"));
+        ok(commit_all(&scratch, &repo_dir, "manifest", T0 + TICK));
+        run(&scratch, &repo_dir, &["switch", "-q", "main"]);
+        set_config(&scratch, &repo_dir, "wsx.sourceBranch", "workspace/dev");
+        let repo_dir = repo_dir
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", repo_dir.display()));
+        let workspace = tip(&scratch, &repo_dir, "refs/heads/workspace/dev");
+
+        let model = configured(&repo_dir);
+        let tip_hex = model.workspace_tip.to_string();
+        assert_eq!(
+            tip_hex.len(),
+            64,
+            "workspace tip {tip_hex} is not SHA-256 length"
+        );
+        assert_eq!(tip_hex, workspace, "workspace tip against git show-ref");
+        assert_eq!(
+            personal_list(&model),
+            personal_list(&main),
+            "the list from the SHA-256 repository against the SHA-1 one"
+        );
+    }
+
+    /// CONF-07 from a hook: a real pre-commit hook of a partial commit in a
+    /// linked worktree runs `state_child`, with the `GIT_DIR` and
+    /// `GIT_INDEX_FILE` git exports to it, and the child resolves the main
+    /// worktree's list. The child prints both variables, so the test fails
+    /// if git did not export them.
+    #[test]
+    fn hook_environment_resolves_the_same_list() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-hook").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let expected = personal_marker(&configured(&work));
+        let linked = linked_worktree(&scratch, &work);
+        ok(testing::install_hook(
+            &work.join(".git/hooks"),
+            "pre-commit",
+            &child_path("state_child"),
+        ));
+        ok(write(&linked.join("a.txt"), b"a in linked\n"));
+        let mut env = scratch.env.clone();
+        env.push((START_VAR.into(), linked.clone().into()));
+        let output = ok(testing::git_in_env(
+            &env,
+            &linked,
+            ["commit", "-q", "-m", "x", "a.txt"],
+        ));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("the partial commit in the linked worktree", &output)
+        );
+        let git_dir = work.join(".git/worktrees/linked");
+        assert_eq!(
+            ok(testing::marker(&output, "env_GIT_DIR")),
+            git_dir.display().to_string(),
+            "the hook's GIT_DIR"
+        );
+        let index = PathBuf::from(ok(testing::marker(&output, "env_GIT_INDEX_FILE")));
+        let index = ok(testing::canonical_parent(&linked, &index));
+        assert_eq!(index.parent(), Some(git_dir.as_path()), "the hook's index");
+
+        assert_eq!(
+            ok(testing::marker(&output, "state")),
+            "configured",
+            "child state; error: {:?}",
+            testing::marker(&output, "error")
+        );
+        assert_eq!(
+            ok(testing::marker(&output, "personal")),
+            expected,
+            "the list in the hook against the main worktree's"
+        );
+    }
+
+    /// A model is a value: a commit after resolving changes neither its tip
+    /// nor its list, and a fresh resolve sees the new ones.
+    #[test]
+    fn model_is_a_snapshot_of_the_tip_it_read() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-snapshot").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let first = configured(&work);
+        let first_tip = tip(&scratch, &work, "refs/heads/workspace/dev");
+        assert_eq!(first.workspace_tip.to_string(), first_tip, "first tip");
+
+        manifest_on_workspace(&scratch, &work, b"only notes\n");
+        let new_tip = tip(&scratch, &work, "refs/heads/workspace/dev");
+        assert_ne!(new_tip, first_tip, "the commit moved workspace/dev");
+        assert_eq!(
+            first.workspace_tip.to_string(),
+            first_tip,
+            "the first model's tip after the commit"
+        );
+        assert_eq!(
+            personal_list(&first),
+            [".wsx.conf", ".worktrees", ".planning"],
+            "the first model's list after the commit"
+        );
+
+        let fresh = configured(&work);
+        assert_eq!(fresh.workspace_tip.to_string(), new_tip, "a fresh tip");
+        assert_eq!(
+            personal_list(&fresh),
+            [".wsx.conf", ".worktrees", "notes"],
+            "a fresh list"
+        );
+    }
+
+    /// Every file under `<work>/.git`, as its path relative to `.git` and its
+    /// bytes (a symlink's target), sorted by path; no timestamps or modes.
+    fn repository_snapshot(work: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let root = work.join(".git");
+        let mut files = Vec::new();
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            let entries = std::fs::read_dir(&dir)
+                .unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|err| panic!("read {}: {err}", dir.display()));
+                let path = entry.path();
+                let kind = entry
+                    .file_type()
+                    .unwrap_or_else(|err| panic!("stat {}: {err}", path.display()));
+                let bytes = if kind.is_dir() {
+                    pending.push(path);
+                    continue;
+                } else if kind.is_symlink() {
+                    std::fs::read_link(&path)
+                        .unwrap_or_else(|err| panic!("read link {}: {err}", path.display()))
+                        .as_os_str()
+                        .as_bytes()
+                        .to_vec()
+                } else {
+                    std::fs::read(&path)
+                        .unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+                };
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap_or_else(|err| {
+                        panic!("{} under {}: {err}", path.display(), root.display())
+                    })
+                    .to_path_buf();
+                files.push((relative, bytes));
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// The paths at which `before` and `after` differ.
+    fn changed_paths(
+        before: &[(PathBuf, Vec<u8>)],
+        after: &[(PathBuf, Vec<u8>)],
+    ) -> BTreeSet<PathBuf> {
+        let before: BTreeSet<_> = before.iter().collect();
+        let after: BTreeSet<_> = after.iter().collect();
+        before
+            .symmetric_difference(&after)
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    /// D-09, CONF-02's concurrency edge: resolving leaves every file under
+    /// `.git` byte-identical, so an interrupted or parallel resolve has
+    /// nothing to corrupt.
+    #[test]
+    fn resolve_changes_nothing_in_the_repository() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-read-only").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let before = repository_snapshot(&work);
+        assert!(
+            before
+                .iter()
+                .any(|(path, _)| path == Path::new("refs/heads/workspace/dev")),
+            "the snapshot does not hold refs/heads/workspace/dev"
+        );
+
+        configured(&work);
+        let after = repository_snapshot(&work);
+        assert_eq!(
+            changed_paths(&before, &after),
+            BTreeSet::new(),
+            "files under .git that resolving changed"
+        );
+    }
+
+    /// The control for the snapshot: a ref update between two snapshots
+    /// shows up, so the snapshot is not blind.
+    #[test]
+    fn repository_snapshot_sees_a_ref_change() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-snapshot-control").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let before = repository_snapshot(&work);
+        run(&scratch, &work, &["update-ref", "refs/heads/x", "HEAD"]);
+        let after = repository_snapshot(&work);
+
+        assert!(
+            changed_paths(&before, &after).contains(Path::new("refs/heads/x")),
+            "the snapshot missed the new ref refs/heads/x: {:?}",
+            changed_paths(&before, &after)
+        );
+    }
+
     #[test]
     #[ignore = "child half of the model config-source tests; runs only when re-executed"]
     fn state_child() {
@@ -4265,11 +4708,17 @@ mod tests {
         let answer = Repo::discover(Path::new(&start))
             .map_err(Error::Git)
             .and_then(|repo| resolve(&repo, &BTreeSet::new()));
+        testing::child_print("env_GIT_DIR", testing::env_or_unset("GIT_DIR"));
+        testing::child_print(
+            "env_GIT_INDEX_FILE",
+            testing::env_or_unset("GIT_INDEX_FILE"),
+        );
         match answer {
             Ok(RepoModel::Configured(model)) => {
                 testing::child_print("state", "configured");
                 testing::child_print("base_remote", remote_marker(model.base_remote.as_deref()));
                 testing::child_print("push_remote", remote_marker(model.push_remote.as_deref()));
+                testing::child_print("personal", personal_marker(&model));
             }
             Ok(RepoModel::NotConfigured { .. }) => testing::child_print("state", "not-configured"),
             Err(err) => {
