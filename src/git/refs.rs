@@ -190,11 +190,43 @@ impl Repo {
         Ok(RootEntry::Blob(blob.data.clone()))
     }
 
-    /// The full names of the refs exactly one level under `prefix`, in byte
-    /// order. Not implemented yet.
+    /// The full names of the refs exactly one level under `prefix`, loose
+    /// and packed, in byte order: the refs git's glob `<prefix>*` matches in
+    /// `git for-each-ref`, so `refs/heads/workspace/a/b` is not under
+    /// `refs/heads/workspace/` (assumption A3).
+    ///
+    /// `prefix` must end in `/`: gix matches it as a partial name, so
+    /// `refs/heads/workspace` without the slash also lists `workspace-x`.
+    ///
+    /// A ref that fails to read is `Error::Gix` naming `prefix`, never a
+    /// shorter list: git warns and skips a corrupt loose ref, which could
+    /// leave one candidate where there are two. A dangling symbolic ref is
+    /// listed, where `git for-each-ref` omits it.
     pub fn refs_directly_under(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-        let _ = prefix;
-        Ok(Vec::new())
+        let failed = |message: String| Error::Gix {
+            what: format!("list the refs directly under {}", lossy(prefix)),
+            message,
+        };
+        let platform = self
+            .repo
+            .references()
+            .map_err(|err| failed(err.to_string()))?;
+        let refs = platform
+            .prefixed(prefix.as_bstr())
+            .map_err(|err| failed(err.to_string()))?;
+        let mut names = Vec::new();
+        for reference in refs {
+            let reference = reference.map_err(|err| failed(err.to_string()))?;
+            let full: &[u8] = reference.name().as_bstr();
+            if full
+                .strip_prefix(prefix)
+                .is_some_and(|rest| !rest.contains(&b'/'))
+            {
+                names.push(full.to_vec());
+            }
+        }
+        names.sort();
+        Ok(names)
     }
 }
 
