@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-11-08T15:35:26.982Z"
+stopped_at: Completed 04-05-PLAN.md
+last_updated: "2026-11-08T15:50:00.290Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 54de54718167478f3c07f4df88f3a6317c15613a
+state_head: 57390493e031b4a2032b4820e234584583bc1cb6
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 38
+  completed_plans: 39
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 3 of 11
+Plan: 4 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -96,6 +96,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 03.1 P04 | 7 min | 3 tasks | 4 files |
 | Phase 04 P01 | 17 min | 2 tasks | 8 files |
 | Phase 04 P02 | 3 min | 1 tasks | 1 files |
+| Phase 04 P05 | 11min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -178,6 +179,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-01: printed fix commands take byte arguments through shell_word, or a placeholder (<remote>, <ref>) when no shell quoting can carry the bytes; prose uses c_quote
 - [Phase 04]: 04-01: tree.find_entry takes the raw &[u8] name; RESEARCH Pattern 6's .as_bstr() argument does not compile on gix 0.90.0
 - [Phase 04]: Harness fixture writes wsx.baseRef as the bare integration branch plus explicit wsx.baseRemote and wsx.pushRemote from RepoConfig; the fork preset states baseRemote=upstream — D-02, D-05, D-08: phase 5 Rust sides must start from config the repo model accepts
+- [Phase 04]: 04-05: A1 applied - an include.path value (gix Source::Local level 1) does not configure the repo; git config --local --get agrees (exit 1)
+- [Phase 04]: 04-05: A4 applied - D-18 refuses a repeated or empty value only for the key single reads; an empty wsx.protectedBranches and a repeated wsx.other leave resolve Configured
+- [Phase 04]: 04-05: a ref namespace (GIT_NAMESPACE or gitoxide.core.refsNamespace) is refused in Repo::discover as git::Error::RefsNamespace, read from repo.namespace(), not cleared after open
 
 ### Pending Todos
 
@@ -210,6 +214,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T15:35:26.660Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-11-08T15:49:59.950Z
+Stopped at: Completed 04-05-PLAN.md
 Resume file: None
