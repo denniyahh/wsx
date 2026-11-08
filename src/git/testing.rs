@@ -22,6 +22,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use gix::bstr::ByteSlice;
 use tempfile::TempDir;
 
 use super::ObjectId;
@@ -418,6 +419,77 @@ pub fn criss_cross(scratch: &Scratch) -> Result<PathBuf, String> {
         ));
     }
     Ok(repo)
+}
+
+/// The edge names `all_bytes_repo` adds to its `p<byte>q` names: edge space
+/// and tab, inner spaces, a double quote, a backslash, raw UTF-8, raw
+/// non-UTF-8, the `#`, `*` and `-` that start a word, newline, CR and DEL.
+const ALL_BYTES_EDGE_NAMES: [&[u8]; 16] = [
+    b" lead",
+    b"trail ",
+    b"\tleadtab",
+    b"trailtab\t",
+    b"my dir",
+    b"\"q\"",
+    b"back\\slash",
+    b"caf\xc3\xa9",
+    b"raw\xe9",
+    b"#hash",
+    b"*star",
+    b"nl\nnl",
+    b"cr\r",
+    b"\x7f",
+    b"-dash",
+    b"a  b",
+];
+
+/// `<root>/names`: one empty file staged, not committed, for `p<byte>q` with
+/// every byte 1 to 255 except `/`, and for each of `ALL_BYTES_EDGE_NAMES`,
+/// 270 names in all. Fails unless `git ls-files -z` lists exactly those
+/// names, so a name the filesystem or git changed cannot pass unnoticed.
+pub fn all_bytes_repo(scratch: &Scratch) -> Result<PathBuf, String> {
+    let repo = scratch.root.join("names");
+    fs::create_dir_all(&repo).map_err(|err| format!("create {}: {err}", repo.display()))?;
+    git_ok(scratch, &repo, ["init", "-q", "-b", "main"])?;
+    let mut names: Vec<Vec<u8>> = (1..=u8::MAX)
+        .filter(|byte| *byte != b'/')
+        .map(|byte| vec![b'p', byte, b'q'])
+        .collect();
+    names.extend(ALL_BYTES_EDGE_NAMES.iter().map(|name| name.to_vec()));
+    for name in &names {
+        write(&repo.join(OsStr::from_bytes(name)), b"")?;
+    }
+    git_ok(scratch, &repo, ["add", "--all"])?;
+    let mut listed = records(&git_ok(scratch, &repo, ["ls-files", "-z"])?, 0);
+    listed.sort();
+    names.sort();
+    if listed != names {
+        let unlisted: Vec<_> = names
+            .iter()
+            .filter(|name| !listed.contains(name))
+            .map(|name| name.as_bstr())
+            .collect();
+        return Err(format!(
+            "all-bytes repo: git ls-files -z lists {} names, not the {} written; unlisted: {unlisted:?}",
+            listed.len(),
+            names.len()
+        ));
+    }
+    Ok(repo)
+}
+
+/// `output` split into records ending in `separator`: one per `git ls-files`
+/// line with `b'\n'`, one per raw name with `0` for `-z`. The empty record
+/// after the last separator is dropped.
+pub fn records(output: &[u8], separator: u8) -> Vec<Vec<u8>> {
+    let mut fields: Vec<Vec<u8>> = output
+        .split(|byte| *byte == separator)
+        .map(<[u8]>::to_vec)
+        .collect();
+    if fields.last().is_some_and(Vec::is_empty) {
+        fields.pop();
+    }
+    fields
 }
 
 /// A repository with a ref named like `git describe` output, whose hex part

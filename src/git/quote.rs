@@ -12,6 +12,12 @@ pub fn c_quote(raw: &[u8]) -> Vec<u8> {
     gix::quote::ansi_c::quote(raw.as_bstr()).to_vec()
 }
 
+/// The raw bytes of `token`, a path as `c_quote` or git prints it. Not yet
+/// implemented: returns `token` unchanged.
+pub fn c_unquote(token: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(token.to_vec())
+}
+
 /// `raw` as one word that `sh`, `bash` and `fish` each read back as exactly
 /// `raw`, for an argument in a command wsx prints for the user to paste, or
 /// `None` when no such quoting exists here: for an empty value, and for any
@@ -51,8 +57,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
-    use super::super::testing::{self, Scratch, T0, commit_all, git_ok, write};
-    use super::{c_quote, shell_word};
+    use gix::bstr::ByteSlice;
+
+    use super::super::testing::{
+        self, Scratch, T0, all_bytes_repo, commit_all, git_ok, records, write,
+    };
+    use super::{c_quote, c_unquote, shell_word};
 
     /// A ref name `git check-ref-format` accepts that holds a command
     /// substitution creating the file `marker` in the shell's directory.
@@ -186,6 +196,152 @@ mod tests {
         assert!(
             ref_exists(&scratch, &dir),
             "/bin/sh -c {line:?} removed {SHELL_SYNTAX_REF}"
+        );
+    }
+
+    /// The raw names `git ls-files -z` lists in `repo`, and the lines
+    /// `git <config> ls-files` prints there, both in index order, so the two
+    /// lists pair up by position.
+    fn listing(scratch: &Scratch, repo: &Path, config: &[&str]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let ls = |args: &[&str]| git_ok(scratch, repo, args).unwrap_or_else(|err| panic!("{err}"));
+        let raw = records(&ls(&["ls-files", "-z"]), 0);
+        let lines = records(&ls(&[config, &["ls-files"]].concat()), b'\n');
+        assert_eq!(
+            raw.len(),
+            lines.len(),
+            "git {config:?} ls-files and git ls-files -z list different counts"
+        );
+        (raw, lines)
+    }
+
+    /// Each position where `ours` and `git` differ, both shown escaped.
+    fn differences(ours: &[Vec<u8>], git: &[Vec<u8>]) -> Vec<String> {
+        assert_eq!(ours.len(), git.len(), "the lists differ in length");
+        ours.iter()
+            .zip(git)
+            .enumerate()
+            .filter(|(_, (left, right))| left != right)
+            .map(|(index, (left, right))| {
+                format!(
+                    "{index}: ours {:?}, git {:?}",
+                    left.as_bstr(),
+                    right.as_bstr()
+                )
+            })
+            .collect()
+    }
+
+    /// How many positions of `ours` and `git` differ, with the first five,
+    /// or `None` when the lists are equal.
+    fn mismatch_report(ours: &[Vec<u8>], git: &[Vec<u8>]) -> Option<String> {
+        const SHOWN: usize = 5;
+        let found = differences(ours, git);
+        (!found.is_empty()).then(|| {
+            format!(
+                "{} of {} differ, first {:?}",
+                found.len(),
+                ours.len(),
+                &found[..found.len().min(SHOWN)]
+            )
+        })
+    }
+
+    #[test]
+    fn c_quote_matches_git_on_every_byte() {
+        let scratch = Scratch::new("quote-all-bytes").expect("create scratch");
+        let repo = all_bytes_repo(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let (raw, lines) = listing(&scratch, &repo, &[]);
+        let ours: Vec<Vec<u8>> = raw.iter().map(|name| c_quote(name)).collect();
+        if let Some(report) = mismatch_report(&ours, &lines) {
+            panic!("c_quote differs from git ls-files: {report}");
+        }
+    }
+
+    #[test]
+    fn a_changed_byte_is_detected() {
+        let scratch = Scratch::new("quote-changed-byte").expect("create scratch");
+        let repo = all_bytes_repo(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let (mut raw, lines) = listing(&scratch, &repo, &[]);
+        let changed = raw
+            .iter()
+            .position(|name| name == b"p\x01q")
+            .expect("git ls-files -z lists p<01>q");
+        raw[changed][1] = 0x02;
+        let ours: Vec<Vec<u8>> = raw.iter().map(|name| c_quote(name)).collect();
+        assert_eq!(
+            differences(&ours, &lines).len(),
+            1,
+            "one changed byte did not make exactly one quoted line differ"
+        );
+    }
+
+    #[test]
+    fn c_unquote_reverses_git_output_on_every_byte() {
+        let scratch = Scratch::new("unquote-all-bytes").expect("create scratch");
+        let repo = all_bytes_repo(&scratch).unwrap_or_else(|err| panic!("{err}"));
+        let (raw, quoted) = listing(&scratch, &repo, &[]);
+        let (raw_again, unquoted_path) = listing(&scratch, &repo, &["-c", "core.quotePath=false"]);
+        assert_eq!(raw, raw_again, "git ls-files -z changed between runs");
+        assert_ne!(
+            quoted, unquoted_path,
+            "core.quotePath=false printed the same lines as the default"
+        );
+        for (config, lines) in [
+            ("default", &quoted),
+            ("core.quotePath=false", &unquoted_path),
+        ] {
+            let ours: Vec<Vec<u8>> = lines
+                .iter()
+                .map(|line| {
+                    c_unquote(line)
+                        .unwrap_or_else(|err| panic!("c_unquote({:?}): {err}", line.as_bstr()))
+                })
+                .collect();
+            if let Some(report) = mismatch_report(&ours, &raw) {
+                panic!(
+                    "c_unquote of git ls-files ({config}) differs from git ls-files -z: {report}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn octal_escape_at_the_byte_limit_parses() {
+        assert_eq!(c_unquote(br#""\377""#), Ok(vec![0xff]));
+    }
+
+    #[test]
+    fn octal_escape_past_the_byte_limit_is_refused() {
+        let result = c_unquote(br#""\400""#);
+        assert!(
+            result.is_err(),
+            "c_unquote of an escape past 377: {result:?}"
+        );
+    }
+
+    #[test]
+    fn c_unquote_refuses_text_after_the_closing_quote() {
+        assert_eq!(
+            c_unquote(br#""a"b"#),
+            Err("text after the closing quote".to_owned())
+        );
+    }
+
+    #[test]
+    fn c_unquote_refuses_an_unterminated_token() {
+        let result = c_unquote(br#""abc"#);
+        assert!(
+            result.is_err(),
+            "c_unquote of an unterminated token: {result:?}"
+        );
+    }
+
+    #[test]
+    fn c_unquote_refuses_an_unknown_escape() {
+        let result = c_unquote(br#""a\q""#);
+        assert!(
+            result.is_err(),
+            "c_unquote of an unknown escape: {result:?}"
         );
     }
 }
