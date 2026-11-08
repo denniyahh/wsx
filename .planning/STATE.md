@@ -5,10 +5,10 @@ current_phase: 04
 current_phase_name: Repo model
 status: executing
 stopped_at: Completed 04-11-PLAN.md
-last_updated: "2026-11-08T17:36:13.998Z"
+last_updated: "2026-11-08T18:19:41.638Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 232a9a04c2f870fa46eea44013f86cece5758853
+state_head: 09eca8c4e3928f633d2952a1f6a36a9fb64ba9e5
 progress:
   total_phases: 16
   completed_phases: 4
@@ -225,6 +225,14 @@ Recent decisions affecting current work:
 - Phase 5: enable check::reftable_refused's Rust side with wsx check, give it a rust_stderr naming reftable, and replace its placeholder refusal exit 1 with the IF-01 exit code (scenario added in 03-02; the unit-level refusal is proven by git::repo::tests::reftable_repo_is_refused in 03-06)
 - Phase 5: assign exit codes to the refusals added in phase 3 review (RelativeRepoEnv, ObjectStoreEnv incl. GIT_COMMON_DIR and receive-pack quarantine, ImplicitWorkTree, StaleWorktree, GitEmptyOutput); see 03-CONTEXT 'Decided during code review'
 - Phases 4 and 8 (03.1 D-04): a user's `<branch>` argument (`wsx new|land|rm <branch>`) is read as exactly `refs/heads/<branch>`, after a branch-name check, never through git's DWIM ladder or a revspec parser, so a branch named like a hex prefix (`abc1234`) or like describe output (`rel-1-gdeadbee`) reads that branch. Since 03.1-04, gix's revspec parsers fail `scripts/check.sh clippy`.
+- Phase 8: supply the real recorded set to model::resolve's recorded parameter (D-17); production passes an empty set until then, so CONF-05's "ignoring branches made by wsx new" is proven at the input only, not end to end
+- Phase 5: assign IF-01 exit codes to every model::Error variant, and remove the dead_code expectation from src/model/mod.rs along with src/git/mod.rs's
+- Phase 5: git::Error::ReplacementRef has no model::Error variant of its own, nor have ReplacementRefDuplicate and ReplaceBaseDiffers (D-22): resolve returns each inside Error::Git, and require inside NotConfigured's boxed reason, so a separate exit code for them needs git::Error::is_replacement_refusal checked inside both, or they take whatever code Git and NotConfigured get
+- Phase 5: assign IF-01 exit codes to the git::Error refusals phase 4 added outside model::Error: RefsNamespace, which Repo::discover returns before any model exists, like the phase 3 refusals (ObjectStoreEnv and the rest), and TreeNotSorted, which reaches the user as the source of model::Error::ManifestUnreadable, so it takes that variant's code unless phase 5 matches inside it
+- Phase 5: every wsx command gets its model from model::resolve or require before any other Repo read, and later phases keep that order; refuse_unfollowable_replacements runs only inside root_entry, so a Repo read made first (merge_base and the rest, from phase 3) can return other bytes than git under a replacement chain, with no error
+- Phase 6: the guard exits 0 on RepoModel::NotConfigured and fails closed on an Err from model::resolve; it reads the state and never classifies errors (D-16, D-21)
+- Phase 6: the guard must decide how a Repo::discover refusal is treated in a repository it cannot classify as configured or not configured, because the refusal comes before any model exists and D-16's exit 0 for a not-configured repository is never reached: RefsNamespace (04-05) refuses in every repository on the machine while gitoxide.core.refsNamespace is in global config or GIT_NAMESPACE is exported, and phase 3's ObjectStoreEnv refuses wherever GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES or GIT_COMMON_DIR is set, a receive-pack quarantine included
+- Phase 12: wsx init and wsx migrate write wsx.baseRef as a bare branch name plus wsx.baseRemote and wsx.pushRemote (D-02, D-08), and write manifest paths through manifest::encode_path, because git prints edge spaces bare and D-19 refuses them bare
 
 ### Roadmap Evolution
 
