@@ -144,6 +144,24 @@ mod tests {
     }
 
     #[test]
+    fn escape_bytes_in_a_line_render_quoted() {
+        let err = ParseError {
+            line: 1,
+            text: b"sync \x1b[2J".to_vec(),
+            problem: Problem::UnknownKind,
+        };
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains('\x1b'),
+            "a raw ESC byte reached the message: {rendered:?}"
+        );
+        assert_eq!(
+            rendered,
+            r#"line 1: expected a comment or an "only <path>" or "modified <path>" line: "sync \033[2J""#
+        );
+    }
+
+    #[test]
     fn unknown_kind_names_the_line() {
         assert_eq!(
             parse(b"only a\nsync b\n"),

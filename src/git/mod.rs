@@ -23,6 +23,7 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 
 mod config;
+mod quote;
 mod reads;
 mod refs;
 mod repo;
@@ -30,6 +31,8 @@ mod spawn;
 #[cfg(test)]
 pub(crate) mod testing;
 
+pub use quote::c_quote;
+pub use quote::shell_word;
 pub use refs::{RootEntry, is_branch_name};
 pub use repo::Repo;
 
