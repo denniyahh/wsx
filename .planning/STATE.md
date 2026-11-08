@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-08-PLAN.md
-last_updated: "2026-11-08T16:59:51.456Z"
+stopped_at: Completed 04-09-PLAN.md
+last_updated: "2026-11-08T17:19:38.424Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 37f8a9a1295bb15ffed11f5db5eab899c9e2a9cc
+state_head: 5fef3a62474d2d420987a5042562abb5ccb5c7ed
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 44
+  completed_plans: 45
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 9 of 11
+Plan: 10 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -102,6 +102,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P04 | 8min | 2 tasks | 1 files |
 | Phase 04 P07 | 8min | 2 tasks | 3 files |
 | Phase 04 P08 | 14 min | 2 tasks | 2 files |
+| Phase 04 P09 | 13 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -201,6 +202,10 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-08: A3 adopted: a workspace-branch candidate is exactly one level under refs/heads/workspace/ or refs/heads/personal/, as git for-each-ref's glob reads it
 - [Phase 04]: 04-08: build maps a failed tip-commit or root-tree read to ManifestUnreadable on both the configured and the inferred path; a configured repo still fails closed, now with that error
 - [Phase 04]: 04-08: a corrupt candidate ref stays in NotConfigured { inferred: Err(Git) } and require passes it through unwrapped; only manifest failures become NotConfigured
+- [Phase 04]: 04-09: root_entry decodes the root tree whole and refuses one out of git's tree order as git::Error::TreeNotSorted before reading any entry; build reports it as ManifestUnreadable
+- [Phase 04]: 04-09: the tree-entry mode is checked before any blob read; symlink, directory and gitlink are RootEntry::NotABlob, so link text is never parsed as a manifest
+- [Phase 04]: 04-09: wsx.worktreeDir is read through single (D-18) and manifest::normalize_path (D-14), refused as WorktreeDirInvalid; unset is .worktrees (D-20)
+- [Phase 04]: 04-09: the CONF-07 hook test runs a real pre-commit hook in a linked worktree instead of a simulated environment
 
 ### Pending Todos
 
@@ -233,6 +238,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T16:59:51.115Z
-Stopped at: Completed 04-08-PLAN.md
+Last session: 2026-11-08T17:19:38.001Z
+Stopped at: Completed 04-09-PLAN.md
 Resume file: None
