@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-05-PLAN.md
-last_updated: "2026-11-08T15:50:00.290Z"
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-11-08T16:06:45.909Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 57390493e031b4a2032b4820e234584583bc1cb6
+state_head: a2971dd969233618fd4e291a3590bdfbc30ce90b
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 39
+  completed_plans: 40
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 4 of 11
+Plan: 5 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -97,6 +97,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P01 | 17 min | 2 tasks | 8 files |
 | Phase 04 P02 | 3 min | 1 tasks | 1 files |
 | Phase 04 P05 | 11min | 3 tasks | 5 files |
+| Phase 04 P03 | 11 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -182,6 +183,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-05: A1 applied - an include.path value (gix Source::Local level 1) does not configure the repo; git config --local --get agrees (exit 1)
 - [Phase 04]: 04-05: A4 applied - D-18 refuses a repeated or empty value only for the key single reads; an empty wsx.protectedBranches and a repeated wsx.other leave resolve Configured
 - [Phase 04]: 04-05: a ref namespace (GIT_NAMESPACE or gitoxide.core.refsNamespace) is refused in Repo::discover as git::Error::RefsNamespace, read from repo.namespace(), not cleared after open
+- [Phase 04]: 04-03: manifest quoting is c_unquote (gix undo plus a refusal of text after the closing quote) and encode_path (c_quote plus quotes around a bare path whose edge, one trailing / set aside, is A6 whitespace); both equal git 2.56.0 on every byte value
+- [Phase 04]: 04-03: Problem::BadQuoting gets its own test (only "a"b refused), not in the plan's sixteen; 04-04 adds none
+- [Phase 04]: 04-03: every proptest! block in model::manifest takes property_config(); property_runs_its_configured_cases fails below 2048 cases, so PROPTEST_CASES=0 is a named failure
 
 ### Pending Todos
 
@@ -214,6 +218,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T15:49:59.950Z
-Stopped at: Completed 04-05-PLAN.md
+Last session: 2026-11-08T16:06:45.599Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None
