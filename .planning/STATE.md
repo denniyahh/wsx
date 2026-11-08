@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-11-08T15:30:05.374Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-11-08T15:35:26.982Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 7d0a3ca1a3f38a550afd69910db46ef5d5cf5ce6
+state_head: 54de54718167478f3c07f4df88f3a6317c15613a
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 37
+  completed_plans: 38
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 2 of 11
+Plan: 3 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -95,6 +95,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 03.1 P03 | 5 min | 2 tasks | 2 files |
 | Phase 03.1 P04 | 7 min | 3 tasks | 4 files |
 | Phase 04 P01 | 17 min | 2 tasks | 8 files |
+| Phase 04 P02 | 3 min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -176,6 +177,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-01: ref_commit follows symbolic refs only through find_ref, at most 5 reads (git 2.56.0: 4 hops resolve, 5 refused), and peels the id each read returned
 - [Phase 04]: 04-01: printed fix commands take byte arguments through shell_word, or a placeholder (<remote>, <ref>) when no shell quoting can carry the bytes; prose uses c_quote
 - [Phase 04]: 04-01: tree.find_entry takes the raw &[u8] name; RESEARCH Pattern 6's .as_bstr() argument does not compile on gix 0.90.0
+- [Phase 04]: Harness fixture writes wsx.baseRef as the bare integration branch plus explicit wsx.baseRemote and wsx.pushRemote from RepoConfig; the fork preset states baseRemote=upstream — D-02, D-05, D-08: phase 5 Rust sides must start from config the repo model accepts
 
 ### Pending Todos
 
@@ -208,6 +210,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T15:30:05.049Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-11-08T15:35:26.660Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
