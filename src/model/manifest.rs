@@ -323,7 +323,6 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use gix::bstr::ByteSlice;
     use proptest::prelude::*;
     use proptest::test_runner::Config;
 
@@ -381,16 +380,16 @@ mod tests {
                 text,
                 problem,
             }),
-            "only {:?}",
-            value.as_bstr()
+            "only {}",
+            shown(value)
         );
     }
 
     /// The path `parse` gives the one line `only <value>`.
     fn parsed_path(value: &[u8]) -> Vec<u8> {
-        let manifest = parse(&only_line(value))
-            .unwrap_or_else(|err| panic!("only {:?}: {err:?}", value.as_bstr()));
-        assert_eq!(manifest.entries.len(), 1, "only {:?}", value.as_bstr());
+        let manifest =
+            parse(&only_line(value)).unwrap_or_else(|err| panic!("only {}: {err:?}", shown(value)));
+        assert_eq!(manifest.entries.len(), 1, "only {}", shown(value));
         manifest.entries[0].path.clone()
     }
 
@@ -448,14 +447,14 @@ mod tests {
                         .map(|entry| &entry.path)
                         .collect::<Vec<_>>(),
                     vec![name],
-                    "only {:?}",
-                    line.as_bstr()
+                    "only {}",
+                    shown(line)
                 ),
                 Err(ParseError {
                     problem: Problem::EdgeWhitespace,
                     ..
                 }) => refused.push(name.clone()),
-                Err(err) => panic!("only {:?}: {err:?}", line.as_bstr()),
+                Err(err) => panic!("only {}: {err:?}", shown(line)),
             }
         }
         refused.sort();
@@ -607,10 +606,16 @@ mod tests {
         );
     }
 
+    /// `bytes` as git's C-quoting prints them, for a failure message: every
+    /// byte readable, and no gix type in the model.
+    fn shown(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(&c_quote(bytes)).into_owned()
+    }
+
     /// The line and problem `parse` refuses `bytes` with; panics on `Ok`.
     fn refusal(bytes: &[u8]) -> (usize, Problem) {
         match parse(bytes) {
-            Ok(manifest) => panic!("{:?} parsed: {manifest:?}", bytes.as_bstr()),
+            Ok(manifest) => panic!("{} parsed: {manifest:?}", shown(bytes)),
             Err(err) => (err.line, err.problem),
         }
     }
@@ -619,7 +624,7 @@ mod tests {
     /// `Err`.
     fn paths(bytes: &[u8]) -> Vec<Vec<u8>> {
         parse(bytes)
-            .unwrap_or_else(|err| panic!("{:?}: {err:?}", bytes.as_bstr()))
+            .unwrap_or_else(|err| panic!("{}: {err:?}", shown(bytes)))
             .entries
             .into_iter()
             .map(|entry| entry.path)
@@ -1162,9 +1167,9 @@ modified .gitignore
                 .filter(|path| covers(entry, path))
                 .cloned()
                 .collect();
-            assert_eq!(from_covers, from_git, "entry {:?}", entry.as_bstr());
+            assert_eq!(from_covers, from_git, "entry {}", shown(entry));
             let selects: Vec<Vec<u8>> = selects.iter().map(|path| path.to_vec()).collect();
-            assert_eq!(from_git, selects, "git for entry {:?}", entry.as_bstr());
+            assert_eq!(from_git, selects, "git for entry {}", shown(entry));
         }
     }
 
