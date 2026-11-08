@@ -1178,7 +1178,18 @@ mod tests {
 
     /// Runs `state_child` on `work` with the scratch environment.
     fn state_child_output(scratch: &Scratch, work: &Path) -> Output {
+        state_child_output_with(scratch, work, &[])
+    }
+
+    /// Runs `state_child` on `work` with the scratch environment plus each
+    /// `(name, value)` in `extra`.
+    fn state_child_output_with(scratch: &Scratch, work: &Path, extra: &[(&str, &str)]) -> Output {
         let mut env = scratch.env.clone();
+        env.extend(
+            extra
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into())),
+        );
         env.push((START_VAR.into(), work.into()));
         ok(testing::reexec(
             &child_path("state_child"),
@@ -1191,7 +1202,13 @@ mod tests {
     /// Runs `state_child` on `work` with the scratch environment and returns
     /// its `state` marker, with its `error` marker when it printed one.
     fn child_state(scratch: &Scratch, work: &Path) -> String {
-        let child = state_child_output(scratch, work);
+        child_state_with(scratch, work, &[])
+    }
+
+    /// `child_state` with each `(name, value)` in `extra` added to the
+    /// child's environment.
+    fn child_state_with(scratch: &Scratch, work: &Path, extra: &[(&str, &str)]) -> String {
+        let child = state_child_output_with(scratch, work, extra);
         let state = ok(testing::marker(&child, "state"));
         match testing::marker(&child, "error") {
             Ok(error) => format!("{state}: {error}"),
@@ -4699,6 +4716,707 @@ mod tests {
             "the snapshot missed the new ref refs/heads/x: {:?}",
             changed_paths(&before, &after)
         );
+    }
+
+    /// The workspace manifest as git names it, read through every
+    /// replacement git follows.
+    const WORKSPACE_MANIFEST: &str = "refs/heads/workspace/dev:.wsx.conf";
+
+    /// `git rev-parse --verify <rev>` in `work`, as hex. Read every id a
+    /// test needs before it adds a replacement, which changes this answer.
+    fn rev_id(scratch: &Scratch, work: &Path, rev: &str) -> String {
+        let stdout = run(scratch, work, &["rev-parse", "--verify", rev]);
+        String::from_utf8_lossy(&stdout).trim_end().to_owned()
+    }
+
+    /// On a new branch `name` from `workspace/dev` in `work`, `.wsx.conf`
+    /// holding `bytes`, committed, with `main` checked out again by
+    /// `git switch -q -f`. Returns the side commit's id: a real commit, with
+    /// its tree at `<id>^{tree}` and its manifest blob at `<id>:.wsx.conf`.
+    fn side_manifest(scratch: &Scratch, work: &Path, name: &str, bytes: &[u8]) -> String {
+        run(
+            scratch,
+            work,
+            &["switch", "-q", "-c", name, "workspace/dev"],
+        );
+        ok(write(&work.join(".wsx.conf"), bytes));
+        ok(commit_all(scratch, work, name, T0 + 5 * TICK));
+        run(scratch, work, &["switch", "-q", "-f", "main"]);
+        rev_id(scratch, work, name)
+    }
+
+    /// One commit's ids: the commit, its root tree and its `.wsx.conf` blob.
+    struct Objects {
+        commit: String,
+        tree: String,
+        blob: String,
+    }
+
+    /// The `Objects` of the commit `rev` names in `work`.
+    fn objects(scratch: &Scratch, work: &Path, rev: &str) -> Objects {
+        Objects {
+            commit: rev_id(scratch, work, &format!("{rev}^{{commit}}")),
+            tree: rev_id(scratch, work, &format!("{rev}^{{tree}}")),
+            blob: rev_id(scratch, work, &format!("{rev}:.wsx.conf")),
+        }
+    }
+
+    /// The workspace tip `a` (`only .planning`) and the side manifests `b`
+    /// (`only b`) and `c` (`only c`) in `work`, each read before any
+    /// replacement exists.
+    struct Sides {
+        a: Objects,
+        b: Objects,
+        c: Objects,
+    }
+
+    /// Makes the side manifests `b` and `c` in `work` and reads `Sides`.
+    fn sides(scratch: &Scratch, work: &Path) -> Sides {
+        let b = side_manifest(scratch, work, "side-b", b"only b\n");
+        let c = side_manifest(scratch, work, "side-c", b"only c\n");
+        Sides {
+            a: objects(scratch, work, "refs/heads/workspace/dev"),
+            b: objects(scratch, work, &b),
+            c: objects(scratch, work, &c),
+        }
+    }
+
+    /// What `git cat-file blob refs/heads/workspace/dev:.wsx.conf` answers
+    /// in `work` under `env`, whatever its exit status.
+    fn git_manifest_in(env: &testing::Env, work: &Path) -> Output {
+        ok(testing::git_in_env(
+            env,
+            work,
+            ["cat-file", "blob", WORKSPACE_MANIFEST],
+        ))
+    }
+
+    /// The bytes git prints for the workspace manifest in `work`; fails the
+    /// test, printing git's stderr, when git fails.
+    fn git_prints(scratch: &Scratch, work: &Path) -> String {
+        let output = git_manifest_in(&scratch.env, work);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "git cat-file blob {WORKSPACE_MANIFEST} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// git's stderr for the workspace manifest in `work`; fails the test
+    /// when git reads it.
+    fn git_refuses(scratch: &Scratch, work: &Path) -> String {
+        let output = git_manifest_in(&scratch.env, work);
+        assert_ne!(
+            output.status.code(),
+            Some(0),
+            "git cat-file blob {WORKSPACE_MANIFEST} printed {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    /// Asserts a fresh `Repo::discover` of `work` resolves `Configured` with
+    /// the personal paths the manifest `only <only>` gives.
+    fn assert_lists(work: &Path, only: &str) -> Model {
+        let model = configured(work);
+        assert_eq!(
+            personal_list(&model),
+            vec![
+                ".wsx.conf".to_owned(),
+                ".worktrees".to_owned(),
+                only.to_owned()
+            ],
+            "personal paths"
+        );
+        model
+    }
+
+    /// The `name` and `target` of `err`, which must be `Error::Git`
+    /// wrapping `git::Error::ReplacementRef`.
+    fn replacement_ref(err: &Error) -> (String, String) {
+        match err {
+            Error::Git(git::Error::ReplacementRef { name, target }) => (
+                String::from_utf8_lossy(name).into_owned(),
+                String::from_utf8_lossy(target).into_owned(),
+            ),
+            other => panic!("expected Err(Git(ReplacementRef)), got {other:?}"),
+        }
+    }
+
+    /// `refs/replace/<hex>`.
+    fn replace_ref(hex: &str) -> String {
+        format!("refs/replace/{hex}")
+    }
+
+    /// Asserts `rendered` names the replace ref `name` and the command that
+    /// removes it, and does not say `.wsx.conf` cannot be read.
+    fn assert_blames_the_ref(rendered: &str, name: &str) {
+        assert!(
+            rendered.contains(&format!("git update-ref --no-deref -d {name}")),
+            "{rendered:?} does not name {name} and the command that removes it"
+        );
+        assert!(
+            !rendered.contains("cannot be read"),
+            "{rendered:?} says the manifest cannot be read"
+        );
+    }
+
+    /// One replacement of the manifest blob reads the bytes git prints, and
+    /// removing it gives the original list again.
+    #[test]
+    fn single_replacement_reads_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-blob").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        assert_eq!(git_prints(&scratch, &work), "only b\n", "git's manifest");
+
+        assert_lists(&work, "b");
+
+        run(&scratch, &work, &["replace", "-d", &ids.a.blob]);
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only .planning\n",
+            "git's manifest with the replacement removed"
+        );
+        assert_lists(&work, ".planning");
+    }
+
+    #[test]
+    fn single_tree_replacement_reads_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-tree").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.tree, &ids.b.tree]);
+        assert_eq!(git_prints(&scratch, &work), "only b\n", "git's manifest");
+
+        let model = assert_lists(&work, "b");
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            tip(&scratch, &work, "refs/heads/workspace/dev"),
+            "workspace tip against git show-ref"
+        );
+    }
+
+    #[test]
+    fn single_commit_replacement_reads_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-commit").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.commit, &ids.b.commit]);
+        assert_eq!(git_prints(&scratch, &work), "only b\n", "git's manifest");
+
+        let model = assert_lists(&work, "b");
+        let shown_tip = tip(&scratch, &work, "refs/heads/workspace/dev");
+        assert_eq!(shown_tip, ids.a.commit, "git show-ref's tip");
+        assert_eq!(
+            model.workspace_tip.to_string(),
+            shown_tip,
+            "workspace tip against git show-ref"
+        );
+    }
+
+    /// A chain on the manifest blob, which git follows to its end and gix
+    /// for one hop, is refused, naming the first link.
+    #[test]
+    fn replacement_chain_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-chain").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        run(&scratch, &work, &["replace", &ids.b.blob, &ids.c.blob]);
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        let err = refusal(&work);
+        let name = replace_ref(&ids.a.blob);
+        assert_eq!(
+            replacement_ref(&err),
+            (name.clone(), ids.b.blob.clone()),
+            "the refused ref and its target"
+        );
+        assert_blames_the_ref(&err.to_string(), &name);
+    }
+
+    #[test]
+    fn replacement_chain_on_the_tip_tree_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-tree-chain").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.tree, &ids.b.tree]);
+        run(&scratch, &work, &["replace", &ids.b.tree, &ids.c.tree]);
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        assert_eq!(
+            replacement_ref(&refusal(&work)),
+            (replace_ref(&ids.a.tree), ids.b.tree.clone()),
+            "the refused ref and its target"
+        );
+    }
+
+    #[test]
+    fn replacement_chain_on_the_tip_commit_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-commit-chain").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.commit, &ids.b.commit]);
+        run(&scratch, &work, &["replace", &ids.b.commit, &ids.c.commit]);
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        assert_eq!(
+            replacement_ref(&refusal(&work)),
+            (replace_ref(&ids.a.commit), ids.b.commit.clone()),
+            "the refused ref and its target"
+        );
+    }
+
+    #[test]
+    fn replacement_cycle_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-cycle").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", &replace_ref(&ids.b.blob), &ids.a.blob],
+        );
+        let stderr = git_refuses(&scratch, &work);
+        assert!(
+            stderr.contains("replace depth too high"),
+            "git's refusal {stderr:?}"
+        );
+
+        let (name, _) = replacement_ref(&refusal(&work));
+        assert!(
+            [replace_ref(&ids.a.blob), replace_ref(&ids.b.blob)].contains(&name),
+            "the refused ref {name} is not a link of the cycle"
+        );
+    }
+
+    #[test]
+    fn symbolic_replacement_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-symbolic").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["update-ref", "refs/tags/x", &ids.b.blob]);
+        let name = replace_ref(&ids.a.blob);
+        run(&scratch, &work, &["symbolic-ref", &name, "refs/tags/x"]);
+        assert_eq!(git_prints(&scratch, &work), "only b\n", "git's manifest");
+
+        let err = refusal(&work);
+        assert_eq!(
+            replacement_ref(&err),
+            (name.clone(), "refs/tags/x".to_owned()),
+            "the refused ref and its target"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("it points at refs/tags/x"),
+            "{rendered:?} does not name refs/tags/x"
+        );
+        assert_blames_the_ref(&rendered, &name);
+    }
+
+    #[test]
+    fn replacement_chain_through_an_uppercase_name_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-upper").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let upper = ids.b.blob.to_ascii_uppercase();
+        assert_ne!(upper, ids.b.blob, "the id of b has no hex letter");
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", &replace_ref(&upper), &ids.c.blob],
+        );
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        assert_eq!(
+            replacement_ref(&refusal(&work)),
+            (replace_ref(&ids.a.blob), ids.b.blob.clone()),
+            "the refused ref and its target"
+        );
+    }
+
+    #[test]
+    fn packed_replacement_chain_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-packed").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        run(&scratch, &work, &["replace", &ids.b.blob, &ids.c.blob]);
+        run(&scratch, &work, &["pack-refs", "--all"]);
+        let loose = work.join(".git").join(replace_ref(&ids.a.blob));
+        assert!(
+            !loose.exists(),
+            "{} is still a loose ref after git pack-refs --all",
+            loose.display()
+        );
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        assert_eq!(
+            replacement_ref(&refusal(&work)),
+            (replace_ref(&ids.a.blob), ids.b.blob.clone()),
+            "the refused ref and its target"
+        );
+    }
+
+    /// D-22: a chain among objects the manifest read never touches stops
+    /// the model too, while git still reads `.wsx.conf`, and the error
+    /// blames the ref, not the manifest.
+    #[test]
+    fn replacement_chain_on_an_unrelated_object_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-unrelated").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let x = side_manifest(&scratch, &work, "side-x", b"only x\n");
+        let y = side_manifest(&scratch, &work, "side-y", b"only y\n");
+        let z = side_manifest(&scratch, &work, "side-z", b"only z\n");
+        let [x, y, z] = [x, y, z].map(|id| rev_id(&scratch, &work, &format!("{id}:.wsx.conf")));
+        run(&scratch, &work, &["replace", &x, &y]);
+        run(&scratch, &work, &["replace", &y, &z]);
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only .planning\n",
+            "git's manifest"
+        );
+
+        let err = refusal(&work);
+        let name = replace_ref(&x);
+        assert_eq!(
+            replacement_ref(&err),
+            (name.clone(), y),
+            "the refused ref and its target"
+        );
+        let rendered = err.to_string();
+        assert_blames_the_ref(&rendered, &name);
+        assert!(
+            !rendered.contains(".wsx.conf"),
+            "{rendered:?} names .wsx.conf"
+        );
+    }
+
+    /// The control for the replacement arm in `build`: a manifest that
+    /// really cannot be read, with no replace ref, still says so.
+    #[test]
+    fn missing_blob_still_renders_cannot_be_read() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-control").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_manifest_object(&scratch, &work);
+        assert_eq!(
+            run(&scratch, &work, &["for-each-ref", "refs/replace/"]),
+            b"",
+            "git for-each-ref refs/replace/"
+        );
+
+        let err = refusal(&work);
+        let rendered = err.to_string();
+        assert_eq!(
+            unreadable_branch(&err),
+            "workspace/dev",
+            "resolve's refusal"
+        );
+        assert!(
+            rendered.contains(".wsx.conf at the tip of") && rendered.contains("cannot be read"),
+            "{rendered:?} does not say the manifest cannot be read"
+        );
+    }
+
+    /// The variable `GIT_REPLACE_REF_BASE` and the base a test sets it to.
+    const REPLACE_BASE_VAR: &str = "GIT_REPLACE_REF_BASE";
+    const OTHER_BASE: &str = "refs/other/";
+
+    /// With `GIT_REPLACE_REF_BASE` set, git and gix both read replace refs
+    /// under it, so a chain there is refused; without it neither applies
+    /// those refs and the model resolves.
+    #[test]
+    fn replacement_chain_under_the_env_base_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-env-base").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let other = |hex: &str| format!("{OTHER_BASE}{hex}");
+        run(
+            &scratch,
+            &work,
+            &["update-ref", &other(&ids.a.blob), &ids.b.blob],
+        );
+        run(
+            &scratch,
+            &work,
+            &["update-ref", &other(&ids.b.blob), &ids.c.blob],
+        );
+        let mut env = scratch.env.clone();
+        env.push((REPLACE_BASE_VAR.into(), OTHER_BASE.into()));
+        let under_env = git_manifest_in(&env, &work);
+        assert_eq!(
+            String::from_utf8_lossy(&under_env.stdout),
+            "only c\n",
+            "git's manifest under {REPLACE_BASE_VAR}={OTHER_BASE}: {}",
+            String::from_utf8_lossy(&under_env.stderr).trim_end()
+        );
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only .planning\n",
+            "git's manifest without {REPLACE_BASE_VAR}"
+        );
+
+        let state = child_state_with(&scratch, &work, &[(REPLACE_BASE_VAR, OTHER_BASE)]);
+        let refused = format!("failed: refusing {}: ", other(&ids.a.blob));
+        assert!(
+            state.starts_with(&refused),
+            "the child under {REPLACE_BASE_VAR}={OTHER_BASE} answered {state:?}, not {refused:?}"
+        );
+        assert_eq!(
+            child_state(&scratch, &work),
+            "configured",
+            "the child without {REPLACE_BASE_VAR}"
+        );
+    }
+
+    /// D-16: a chain in a repository with no `wsx.sourceBranch` stays in
+    /// `inferred`, and `require` reads it as run `wsx init`.
+    #[test]
+    fn replacement_chain_leaves_a_not_configured_repo_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-unconfigured").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let ids = sides(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        run(&scratch, &work, &["replace", &ids.b.blob, &ids.c.blob]);
+        assert_eq!(git_prints(&scratch, &work), "only c\n", "git's manifest");
+
+        let answer = resolved(&work).expect("resolve a repository with no wsx.sourceBranch");
+        let name = replace_ref(&ids.a.blob);
+        let RepoModel::NotConfigured { inferred } = answer else {
+            panic!("resolve: expected RepoModel::NotConfigured, got {answer:?}");
+        };
+        let inferred_err = match &inferred {
+            Err(err) => err,
+            Ok(model) => panic!("inferred: expected an error, got {model:?}"),
+        };
+        assert_eq!(
+            replacement_ref(inferred_err),
+            (name.clone(), ids.b.blob.clone()),
+            "the inferred refusal"
+        );
+
+        let required = RepoModel::NotConfigured { inferred }.require();
+        let err = match required {
+            Err(err @ Error::NotConfigured { .. }) => err,
+            other => panic!("require: expected Err(NotConfigured), got {other:?}"),
+        };
+        let rendered = err.to_string();
+        assert_blames_the_ref(&rendered, &name);
+        assert!(
+            rendered.contains(&name) && rendered.ends_with("Run wsx init."),
+            "{rendered:?} does not name {name} and say run wsx init"
+        );
+    }
+
+    #[test]
+    fn replace_refs_differing_only_in_case_fail_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-case").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let lower = replace_ref(&ids.a.blob);
+        let upper = replace_ref(&ids.a.blob.to_ascii_uppercase());
+        assert_ne!(upper, lower, "the id of a has no hex letter");
+        run(&scratch, &work, &["update-ref", &lower, &ids.b.blob]);
+        run(&scratch, &work, &["update-ref", &upper, &ids.c.blob]);
+        let stderr = git_refuses(&scratch, &work);
+        assert!(
+            stderr.contains("duplicate replace ref"),
+            "git's refusal {stderr:?}"
+        );
+
+        let err = refusal(&work);
+        let rendered = err.to_string();
+        match &err {
+            Error::Git(git::Error::ReplacementRefDuplicate { first, second }) => {
+                let named: BTreeSet<String> = [first, second]
+                    .into_iter()
+                    .map(|name| String::from_utf8_lossy(name).into_owned())
+                    .collect();
+                assert_eq!(
+                    named,
+                    BTreeSet::from([lower.clone(), upper.clone()]),
+                    "the refs the refusal names"
+                );
+            }
+            other => panic!("expected Err(Git(ReplacementRefDuplicate)), got {other:?}"),
+        }
+        assert_blames_the_ref(&rendered, &lower);
+        assert_blames_the_ref(&rendered, &upper);
+
+        run(&scratch, &work, &["update-ref", "--no-deref", "-d", &upper]);
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only b\n",
+            "git's manifest with the uppercase ref deleted"
+        );
+        assert_lists(&work, "b");
+    }
+
+    /// The replace-base key only gix reads.
+    const REPLACE_BASE_KEY: &str = "gitoxide.objects.replaceRefBase";
+
+    /// `gitoxide.objects.replaceRefBase` set to `refs/other/` in `work`'s own
+    /// config, with no `GIT_REPLACE_REF_BASE`.
+    fn set_replace_base_key(scratch: &Scratch, work: &Path) {
+        set_config(scratch, work, REPLACE_BASE_KEY, OTHER_BASE);
+    }
+
+    /// Asserts `err` is `Error::Git` wrapping `git::Error::ReplaceBaseDiffers`
+    /// with gix's base `refs/other/` and git's `refs/replace/`, rendered with
+    /// the key and the command that unsets it.
+    fn assert_base_differs(err: &Error) {
+        match err {
+            Error::Git(git::Error::ReplaceBaseDiffers { value, git_base }) => {
+                assert_eq!(
+                    (
+                        String::from_utf8_lossy(value).as_ref(),
+                        String::from_utf8_lossy(git_base).as_ref()
+                    ),
+                    (OTHER_BASE, "refs/replace/"),
+                    "gix's base and git's"
+                );
+            }
+            other => panic!("expected Err(Git(ReplaceBaseDiffers)), got {other:?}"),
+        }
+        let rendered = err.to_string();
+        for part in [
+            REPLACE_BASE_KEY,
+            OTHER_BASE,
+            "refs/replace/",
+            "git config --local --unset gitoxide.objects.replaceRefBase",
+        ] {
+            assert!(rendered.contains(part), "{rendered:?} does not name {part}");
+        }
+        assert!(
+            !rendered.contains("cannot be read"),
+            "{rendered:?} says the manifest cannot be read"
+        );
+    }
+
+    #[test]
+    fn replace_base_key_git_ignores_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-base-key").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        set_replace_base_key(&scratch, &work);
+        let other = format!("{OTHER_BASE}{}", ids.a.blob);
+        run(&scratch, &work, &["update-ref", &other, &ids.c.blob]);
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only .planning\n",
+            "git's manifest, which ignores {REPLACE_BASE_KEY}"
+        );
+
+        assert_base_differs(&refusal(&work));
+
+        run(
+            &scratch,
+            &work,
+            &["config", "--local", "--unset", REPLACE_BASE_KEY],
+        );
+        assert_lists(&work, ".planning");
+    }
+
+    /// The key alone stops nothing: with no ref under either base, neither
+    /// reader applies a replacement.
+    #[test]
+    fn replace_base_key_without_a_replace_ref_resolves() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-base-alone").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_replace_base_key(&scratch, &work);
+        assert_eq!(
+            run(
+                &scratch,
+                &work,
+                &["for-each-ref", OTHER_BASE, "refs/replace/"]
+            ),
+            b"",
+            "git for-each-ref {OTHER_BASE} refs/replace/"
+        );
+        assert_eq!(
+            git_prints(&scratch, &work),
+            "only .planning\n",
+            "git's manifest"
+        );
+
+        assert_lists(&work, ".planning");
+    }
+
+    /// git's base is listed as well as gix's: a ref under `refs/replace/`
+    /// alone, which git applies and gix does not, is refused.
+    #[test]
+    fn replace_ref_under_git_base_with_the_key_set_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-base-git").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        set_replace_base_key(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        assert_eq!(git_prints(&scratch, &work), "only b\n", "git's manifest");
+
+        assert_base_differs(&refusal(&work));
+
+        run(&scratch, &work, &["replace", "-d", &ids.a.blob]);
+        assert_lists(&work, ".planning");
     }
 
     #[test]

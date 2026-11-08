@@ -144,6 +144,29 @@ pub enum Error {
     /// order, so git's lookup by name can miss an entry a scan finds; git
     /// fsck reports such a tree as `treeNotSorted`.
     TreeNotSorted { commit: ObjectId, tree: ObjectId },
+    /// The replace ref `name` is symbolic, naming the ref `target`, or holds
+    /// `target`, the hex of an object another replace ref replaces. git
+    /// follows both shapes and gix does not, so a read could return other
+    /// bytes than git's.
+    ReplacementRef { name: Vec<u8>, target: Vec<u8> },
+    /// The replace refs `first` and `second` name one object in different
+    /// hex case: git stops with `duplicate replace ref` while both exist, and
+    /// gix applies one of them.
+    ReplacementRefDuplicate { first: Vec<u8>, second: Vec<u8> },
+    /// `gitoxide.objects.replaceRefBase` is `value`, so gix takes replace
+    /// refs from under `value` while git, which does not read the key, takes
+    /// them from under `git_base`.
+    ReplaceBaseDiffers { value: Vec<u8>, git_base: Vec<u8> },
+}
+
+impl Error {
+    /// Whether this is one of the refusals of a replacement git and gix
+    /// follow differently: `ReplacementRef`, `ReplacementRefDuplicate` or
+    /// `ReplaceBaseDiffers`. Every caller that treats those apart from other
+    /// failures reads this one list.
+    pub fn is_replacement_refusal(&self) -> bool {
+        false
+    }
 }
 
 impl fmt::Display for Error {
@@ -253,8 +276,56 @@ impl fmt::Display for Error {
                  Write the tree again with git, which sorts it, and commit that tree:\n\
                  \tgit ls-tree -z {commit} | git mktree -z"
             ),
+            Error::ReplacementRef { name, target } => write!(
+                f,
+                "refusing {}: it points at {}, and git and wsx's reader follow a replacement \
+                 differently when it is symbolic or is itself replaced, so wsx could read other \
+                 bytes than git.\n\
+                 To remove it, run:\n\
+                 \tgit update-ref --no-deref -d {}",
+                shown(name),
+                shown(target),
+                ref_word(name)
+            ),
+            Error::ReplacementRefDuplicate { first, second } => write!(
+                f,
+                "refusing {} and {}: they name one object in different hex case, so git stops \
+                 with \"duplicate replace ref\" while both exist, and wsx's reader would take one \
+                 of them.\n\
+                 To remove one, run one of:\n\
+                 \tgit update-ref --no-deref -d {}\n\
+                 \tgit update-ref --no-deref -d {}",
+                shown(first),
+                shown(second),
+                ref_word(first),
+                ref_word(second)
+            ),
+            // The command line holds no byte field, so it is safe to paste.
+            Error::ReplaceBaseDiffers { value, git_base } => write!(
+                f,
+                "refusing gitoxide.objects.replaceRefBase = {value}: wsx's reader takes replace \
+                 refs from under {value}, while git takes them from under {git_base}, so wsx \
+                 could read other bytes than git.\n\
+                 Unset the key in the config file that sets it, for example:\n\
+                 \tgit config --local --unset gitoxide.objects.replaceRefBase",
+                value = shown(value),
+                git_base = shown(git_base)
+            ),
         }
     }
+}
+
+/// `bytes` for prose in a message: git's C-style quoting, then lossy UTF-8,
+/// so a control byte in a ref name never reaches the terminal raw.
+fn shown(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&c_quote(bytes)).into_owned()
+}
+
+/// The ref `name` as an argument in a command line a message prints for the
+/// user to paste: `shell_word`'s form, or `<ref>` when no shell quoting can
+/// carry it. `c_quote` would leave a command substitution in the name live.
+fn ref_word(name: &[u8]) -> String {
+    shell_word(name).unwrap_or_else(|| "<ref>".to_owned())
 }
 
 impl std::error::Error for Error {}
@@ -431,6 +502,148 @@ mod tests {
              Write the tree again with git, which sorts it, and commit that tree:\n\
              \tgit ls-tree -z c0ffee | git mktree -z"
         );
+    }
+
+    /// A replaced object's name and its replacement, as 40-hex ids.
+    const A_HEX: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const B_HEX: &str = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+    const A_UPPER_HEX: &str = "A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1";
+
+    fn replace_ref(hex: &str) -> Vec<u8> {
+        format!("refs/replace/{hex}").into_bytes()
+    }
+
+    #[test]
+    fn replacement_ref_message_names_the_ref_and_the_fix() {
+        let chained = Error::ReplacementRef {
+            name: replace_ref(A_HEX),
+            target: B_HEX.as_bytes().to_vec(),
+        };
+        assert_eq!(
+            chained.to_string(),
+            format!(
+                "refusing refs/replace/{A_HEX}: it points at {B_HEX}, and git and wsx's reader \
+                 follow a replacement differently when it is symbolic or is itself replaced, so \
+                 wsx could read other bytes than git.\n\
+                 To remove it, run:\n\
+                 \tgit update-ref --no-deref -d refs/replace/{A_HEX}"
+            )
+        );
+    }
+
+    #[test]
+    fn duplicate_replacement_refs_message_names_both_and_the_fix() {
+        let duplicate = Error::ReplacementRefDuplicate {
+            first: replace_ref(A_UPPER_HEX),
+            second: replace_ref(A_HEX),
+        };
+        assert_eq!(
+            duplicate.to_string(),
+            format!(
+                "refusing refs/replace/{A_UPPER_HEX} and refs/replace/{A_HEX}: they name one \
+                 object in different hex case, so git stops with \"duplicate replace ref\" while \
+                 both exist, and wsx's reader would take one of them.\n\
+                 To remove one, run one of:\n\
+                 \tgit update-ref --no-deref -d refs/replace/{A_UPPER_HEX}\n\
+                 \tgit update-ref --no-deref -d refs/replace/{A_HEX}"
+            )
+        );
+    }
+
+    #[test]
+    fn replace_base_differs_message_names_the_key_and_the_fix() {
+        let differs = Error::ReplaceBaseDiffers {
+            value: b"refs/other/".to_vec(),
+            git_base: b"refs/replace/".to_vec(),
+        };
+        assert_eq!(
+            differs.to_string(),
+            "refusing gitoxide.objects.replaceRefBase = refs/other/: wsx's reader takes replace \
+             refs from under refs/other/, while git takes them from under refs/replace/, so wsx \
+             could read other bytes than git.\n\
+             Unset the key in the config file that sets it, for example:\n\
+             \tgit config --local --unset gitoxide.objects.replaceRefBase"
+        );
+    }
+
+    /// The lines of `rendered` that are command lines: a tab, then `git`.
+    fn command_lines(rendered: &str) -> Vec<&str> {
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("\tgit "))
+            .collect()
+    }
+
+    #[test]
+    fn replacement_fix_commands_quote_a_ref_name_for_the_shell() {
+        let shell_syntax = b"refs/replace/$(touch${IFS}m)".to_vec();
+        let symbolic = Error::ReplacementRef {
+            name: shell_syntax.clone(),
+            target: b"refs/tags/x".to_vec(),
+        };
+        assert_eq!(
+            command_lines(&symbolic.to_string()),
+            vec!["\tgit update-ref --no-deref -d 'refs/replace/$(touch${IFS}m)'"],
+            "ReplacementRef's command line"
+        );
+
+        let duplicate = Error::ReplacementRefDuplicate {
+            first: shell_syntax,
+            second: replace_ref(A_HEX),
+        };
+        assert_eq!(
+            command_lines(&duplicate.to_string()),
+            vec![
+                "\tgit update-ref --no-deref -d 'refs/replace/$(touch${IFS}m)'".to_owned(),
+                format!("\tgit update-ref --no-deref -d refs/replace/{A_HEX}"),
+            ],
+            "ReplacementRefDuplicate's command lines"
+        );
+
+        let latin1 = Error::ReplacementRef {
+            name: b"refs/replace/\xe9".to_vec(),
+            target: B_HEX.as_bytes().to_vec(),
+        };
+        let rendered = latin1.to_string();
+        assert_eq!(
+            command_lines(&rendered),
+            vec!["\tgit update-ref --no-deref -d <ref>"],
+            "ReplacementRef's command line for a name holding byte 0xe9"
+        );
+        assert!(
+            !rendered.as_bytes().contains(&0xe9),
+            "{rendered:?} holds the raw byte 0xe9"
+        );
+        assert!(
+            !rendered.contains('\u{fffd}'),
+            "{rendered:?} replaced a byte instead of quoting it"
+        );
+    }
+
+    #[test]
+    fn replacement_refusals_are_recognised() {
+        let refusals = [
+            Error::ReplacementRef {
+                name: replace_ref(A_HEX),
+                target: B_HEX.as_bytes().to_vec(),
+            },
+            Error::ReplacementRefDuplicate {
+                first: replace_ref(A_UPPER_HEX),
+                second: replace_ref(A_HEX),
+            },
+            Error::ReplaceBaseDiffers {
+                value: b"refs/other/".to_vec(),
+                git_base: b"refs/replace/".to_vec(),
+            },
+        ];
+        for refusal in &refusals {
+            assert!(refusal.is_replacement_refusal(), "{refusal:?}");
+        }
+        let gix = Error::Gix {
+            what: "read x".to_owned(),
+            message: "m".to_owned(),
+        };
+        assert!(!gix.is_replacement_refusal(), "{gix:?}");
     }
 
     #[test]
