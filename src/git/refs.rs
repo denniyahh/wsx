@@ -40,9 +40,21 @@ pub enum RootEntry {
 /// commit and refuses one five hops away.
 const SYMREF_MAX_DEPTH: usize = 5;
 
-/// Whether `name` is a valid branch name: `refs/heads/<name>` is a valid
-/// full ref name. A caller reads the branch only as that one full ref.
+/// Whether `name` is a valid branch name, as `git check-ref-format --branch`
+/// decides: `refs/heads/<name>` is a valid full ref name, and `name` is
+/// neither `HEAD` nor starts with `-`. A caller reads the branch only as that
+/// one full ref.
+///
+/// gix's full-name check alone agrees with git on every name tried except
+/// `HEAD` and a leading `-`, which gix accepts and git refuses, so those two
+/// checks are added here. Measured on git 2.56.0 by
+/// `branch_names_agree_with_git`: git accepts `develop`, `workspace/dev`,
+/// `a/b`, `refs/heads/x` and a name holding the byte E9, and refuses
+/// `HEAD`, `-x`, `a..b`, `a b`, `a.lock`, `.a`, `a/` and the empty name.
 pub fn is_branch_name(name: &[u8]) -> bool {
+    if name == b"HEAD" || name.starts_with(b"-") {
+        return false;
+    }
     let full = [b"refs/heads/".as_slice(), name].concat();
     gix::refs::FullName::try_from(full.as_bstr()).is_ok()
 }

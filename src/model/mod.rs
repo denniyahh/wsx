@@ -396,11 +396,25 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
 /// remote's default (D-06, D-07).
 const CHAIN: [&[u8]; 2] = [b"develop", b"next"];
 
-/// The integration branch: `develop`, then `next`, then the branch the base
-/// remote's `HEAD` names, each read from the base remote's tracking refs;
-/// with no base remote, the local `develop`, then the local `next` (D-06,
-/// D-07). Nothing else is tried: no `main` or `master`, no network call
-/// (D-09), and a stale `<remote>/HEAD` is used as it is (D-10).
+/// `value` of `key` when it is a valid branch name, else
+/// `Error::NotABranchName`. After this check the value is read only as one
+/// exact full ref, never through git's DWIM ladder (03.1 D-04).
+fn branch_name(key: &'static str, value: Vec<u8>) -> Result<Vec<u8>, Error> {
+    if git::is_branch_name(&value) {
+        Ok(value)
+    } else {
+        Err(Error::NotABranchName { key, value })
+    }
+}
+
+/// The integration branch. `wsx.baseRef`, when set, is a bare branch name
+/// read on the base remote (locally with no base remote), and a missing ref
+/// is `Error::BaseRefMissing` with no fallback to the chain (D-08).
+/// Otherwise `develop`, then `next`, then the branch the base remote's
+/// `HEAD` names, each read from the base remote's tracking refs; with no
+/// base remote, the local `develop`, then the local `next` (D-06, D-07).
+/// Nothing else is tried: no `main` or `master`, no network call (D-09), and
+/// a stale `<remote>/HEAD` is used as it is (D-10).
 ///
 /// Every rung is one exact read of a full ref through `find_ref`. A
 /// symbolic ref on a rung is `Error::IntegrationRefSymbolic`, never followed
@@ -428,6 +442,14 @@ fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
             })),
         }
     };
+    if let Some(value) = single(repo, BASE_REF)? {
+        let value = branch_name(BASE_REF, value)?;
+        let tried = full(&value);
+        return match found(&value)? {
+            Some(integration) => Ok(integration),
+            None => Err(Error::BaseRefMissing { value, tried }),
+        };
+    }
     let mut tried = Vec::new();
     for branch in CHAIN {
         if let Some(integration) = found(branch)? {
@@ -2365,9 +2387,13 @@ mod tests {
         }
         let scratch = Scratch::new("base-ref-slash").expect("create scratch");
         let work = chain_repo(&scratch);
-        with_fork(&scratch, &work);
+        let fork = with_fork(&scratch, &work);
+        run(&scratch, &fork, &["branch", "next", ORIGIN_NEXT]);
+        run(&scratch, &work, &["fetch", "-q", "upstream"]);
         set_config(&scratch, &work, BASE_REMOTE, "upstream");
         set_config(&scratch, &work, BASE_REF, "upstream/next");
+        // The control: `upstream`'s `next` exists, so reading the value as
+        // a remote and a branch would have resolved.
         tip(&scratch, &work, "refs/remotes/upstream/next");
 
         let err = refusal(&work);
