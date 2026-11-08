@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-09-PLAN.md
-last_updated: "2026-11-08T17:19:38.424Z"
+stopped_at: Completed 04-11-PLAN.md
+last_updated: "2026-11-08T17:36:13.998Z"
 last_activity: 2026-11-08
 last_activity_desc: Phase 04 execution started
-state_head: 5fef3a62474d2d420987a5042562abb5ccb5c7ed
+state_head: 232a9a04c2f870fa46eea44013f86cece5758853
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 47
-  completed_plans: 45
+  completed_plans: 46
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 10 of 11
+Plan: 11 of 11
 Status: Ready to execute
 Last activity: 2026-11-08 — Phase 04 execution started
 
@@ -103,6 +103,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P07 | 8min | 2 tasks | 3 files |
 | Phase 04 P08 | 14 min | 2 tasks | 2 files |
 | Phase 04 P09 | 13 min | 3 tasks | 4 files |
+| Phase 04 P11 | 12 min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -206,6 +207,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-09: the tree-entry mode is checked before any blob read; symlink, directory and gitlink are RootEntry::NotABlob, so link text is never parsed as a manifest
 - [Phase 04]: 04-09: wsx.worktreeDir is read through single (D-18) and manifest::normalize_path (D-14), refused as WorktreeDirInvalid; unset is .worktrees (D-20)
 - [Phase 04]: 04-09: the CONF-07 hook test runs a real pre-commit hook in a linked worktree instead of a simulated environment
+- [Phase 04]: 04-11: the replacement refusal reads only the first ref per base from gix's prefixed listing when git's and gix's replace bases differ; one ref is enough to refuse
+- [Phase 04]: 04-11: gix's replace base is read with config_snapshot().string, which takes reduced-trust values gix's own open filters out; that difference over-refuses, the safe side
 
 ### Pending Todos
 
@@ -238,6 +241,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T17:19:38.001Z
-Stopped at: Completed 04-09-PLAN.md
+Last session: 2026-11-08T17:36:13.304Z
+Stopped at: Completed 04-11-PLAN.md
 Resume file: None
