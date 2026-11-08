@@ -115,76 +115,115 @@ impl fmt::Display for ParseError {
     }
 }
 
-/// Parses a manifest blob: lines split on `\n` and numbered from 1, an empty
-/// line or one starting with `#` skipped (D-11), an `only ` or `modified `
-/// line kept with its path read by `path_value`. Any other line refuses the
-/// whole manifest, naming the line.
+/// Parses a manifest blob: lines split on `\n` and numbered from 1, each
+/// read by `read_line`. The first line it refuses refuses the whole
+/// manifest, naming that line.
 pub fn parse(bytes: &[u8]) -> Result<Manifest, ParseError> {
     let mut entries = Vec::new();
     for (index, text) in bytes.split(|byte| *byte == b'\n').enumerate() {
         let line = index + 1;
-        if text.is_empty() || text.starts_with(b"#") {
-            continue;
-        }
-        let (kind, rest) = if let Some(rest) = text.strip_prefix(b"only ") {
-            (EntryKind::Only, rest)
-        } else if let Some(rest) = text.strip_prefix(b"modified ") {
-            (EntryKind::Modified, rest)
-        } else {
-            return Err(ParseError {
-                line,
-                text: text.to_vec(),
-                problem: Problem::UnknownKind,
-            });
-        };
-        let path = path_value(rest).map_err(|problem| ParseError {
+        let read = read_line(text).map_err(|problem| ParseError {
             line,
             text: text.to_vec(),
             problem,
         })?;
-        entries.push(Entry {
-            kind,
-            path,
-            line,
-            text: text.to_vec(),
-        });
+        if let Some((kind, path)) = read {
+            entries.push(Entry {
+                kind,
+                path,
+                line,
+                text: text.to_vec(),
+            });
+        }
     }
     Ok(Manifest { entries })
 }
 
-/// The path a manifest line's value names, everything after the keyword and
-/// its one space (D-19). A value starting with a double quote must be exactly
-/// one C-quoted string, read by `c_unquote`; any other value is its bytes as
-/// written, refused when it starts or ends with edge whitespace once one
-/// trailing `/` is set aside. Either way one trailing `/` is then stripped
-/// (D-14).
-fn path_value(value: &[u8]) -> Result<Vec<u8>, Problem> {
-    let mut path = if value.starts_with(b"\"") {
-        c_unquote(value).map_err(|reason| Problem::BadQuoting { reason })?
-    } else {
-        if has_edge_whitespace(value.strip_suffix(b"/").unwrap_or(value)) {
-            return Err(Problem::EdgeWhitespace);
-        }
-        value.to_vec()
-    };
-    if path.last() == Some(&b'/') {
-        path.pop();
+/// The entry one manifest line declares, or `None` for a comment or an empty
+/// line. In order: a line ending in CR is refused, a comment included
+/// (D-19); an empty line or one starting with `#` is skipped (D-11); the
+/// keyword is split off by `keyword`; the value is read by `path_value`; and
+/// the path is checked by `normalize_path` (D-14).
+fn read_line(text: &[u8]) -> Result<Option<(EntryKind, Vec<u8>)>, Problem> {
+    if text.last() == Some(&b'\r') {
+        return Err(Problem::LineEndsInCr);
     }
-    Ok(path)
+    if text.is_empty() || text.starts_with(b"#") {
+        return Ok(None);
+    }
+    let (kind, value) = keyword(text)?;
+    let path = normalize_path(&path_value(value)?)?;
+    Ok(Some((kind, path)))
 }
 
-/// A manifest path as an entry holds it, or why it could never name a git
-/// tree path (D-14).
+/// A line's kind and its value, everything after the keyword and one space
+/// (D-19). A line that is exactly `only` or `modified` has an empty path;
+/// any other line not starting with a keyword and one space is unknown, a
+/// keyword followed by a tab or another byte included (D-11).
+fn keyword(text: &[u8]) -> Result<(EntryKind, &[u8]), Problem> {
+    for (word, kind) in [
+        (&b"only"[..], EntryKind::Only),
+        (b"modified", EntryKind::Modified),
+    ] {
+        let Some(rest) = text.strip_prefix(word) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Err(Problem::EmptyPath);
+        }
+        if let Some(value) = rest.strip_prefix(b" ") {
+            return Ok((kind, value));
+        }
+    }
+    Err(Problem::UnknownKind)
+}
+
+/// The path a manifest line's value names, before `normalize_path` (D-19).
+/// A value starting with a double quote must be exactly one C-quoted string,
+/// read by `c_unquote`; any other value is its bytes as written, refused
+/// when it starts or ends with edge whitespace once one trailing `/` is set
+/// aside. The `/` stays on: `normalize_path` strips it, once.
+fn path_value(value: &[u8]) -> Result<Vec<u8>, Problem> {
+    if value.starts_with(b"\"") {
+        return c_unquote(value).map_err(|reason| Problem::BadQuoting { reason });
+    }
+    if has_edge_whitespace(value.strip_suffix(b"/").unwrap_or(value)) {
+        return Err(Problem::EdgeWhitespace);
+    }
+    Ok(value.to_vec())
+}
+
+/// A manifest path as an entry holds it: one trailing `/` stripped, then
+/// refused if it could never name a git tree path (D-14): a NUL byte, an
+/// empty path, a leading `/`, an empty component (`a//b`, or `a//` once one
+/// `/` is stripped), or a `.` or `..` component. Raw bytes, no other change.
 pub fn normalize_path(path: &[u8]) -> Result<Vec<u8>, Problem> {
-    Ok(path.to_vec())
+    if path.contains(&0) {
+        return Err(Problem::Nul);
+    }
+    let stripped = path.strip_suffix(b"/").unwrap_or(path);
+    if stripped.is_empty() {
+        return Err(Problem::EmptyPath);
+    }
+    if stripped.starts_with(b"/") {
+        return Err(Problem::AbsolutePath);
+    }
+    for component in stripped.split(|byte| *byte == b'/') {
+        match component {
+            b"" => return Err(Problem::EmptyComponent),
+            b"." | b".." => return Err(Problem::DotComponent),
+            _ => {}
+        }
+    }
+    Ok(stripped.to_vec())
 }
 
 /// `path` as a manifest line writes it, so that `parse` reads back exactly
 /// `path`, with or without one trailing `/`: git's C quoting (`c_quote`),
 /// plus double quotes around a path git leaves bare whose edge, one trailing
 /// `/` set aside, is whitespace. Git prints a leading or trailing space bare,
-/// and D-19 refuses that bare. The `/` is set aside because `parse` strips it
-/// before its own edge check, so `a /` must be written quoted too.
+/// and D-19 refuses that bare. The `/` is set aside because `parse` sets it
+/// aside before its own edge check, so `a /` must be written quoted too.
 pub fn encode_path(path: &[u8]) -> Vec<u8> {
     let quoted = c_quote(path);
     if quoted == path && has_edge_whitespace(path.strip_suffix(b"/").unwrap_or(path)) {
