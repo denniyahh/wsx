@@ -1051,7 +1051,8 @@ fn one_commit_repo(scratch: &Scratch, name: &str) -> PathBuf {
 
 /// The libtest filters for the modules whose tests discover a repository in
 /// the test process itself.
-const DISCOVERING_SUITES: [&str; 4] = [
+const DISCOVERING_SUITES: [&str; 5] = [
+    "git::config::tests::",
     "git::reads::tests::",
     "git::refs::tests::",
     "git::repo::tests::",
