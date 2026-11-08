@@ -8,6 +8,13 @@ use std::fmt;
 
 use crate::git::{c_quote, c_unquote};
 
+/// The longest manifest `parse` reads: 64 KiB. By the operator's ruling of
+/// 2026-11-05 under D-12, "only ambiguity is invalid" contrasts ambiguity
+/// with staleness and does not forbid a size limit, and a manifest over
+/// 64 KiB is invalid: the overlap check is quadratic in the entry count and
+/// the blob can arrive through a merge (T-04-10).
+const MAX_MANIFEST_BYTES: usize = 65_536;
+
 /// What a manifest line declares about its path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryKind {
@@ -66,6 +73,20 @@ pub enum Problem {
     DotComponent,
     /// The path holds a NUL byte, which no git tree path can (D-14's reason).
     Nul,
+    /// The path is both `only` and `modified`: this line and an earlier line
+    /// of the other kind cover one another, in either direction (D-12).
+    Overlap {
+        /// The earlier line's number.
+        other_line: usize,
+        /// The earlier line's raw bytes, without its newline.
+        other_text: Vec<u8>,
+    },
+    /// The manifest is longer than `MAX_MANIFEST_BYTES`; reported at the
+    /// line holding the first byte past the limit, with no line text.
+    TooLarge {
+        /// The manifest's length in bytes.
+        size: usize,
+    },
 }
 
 impl fmt::Display for Problem {
@@ -88,6 +109,18 @@ impl fmt::Display for Problem {
             Problem::EmptyComponent => f.write_str("the path has an empty component (//)"),
             Problem::DotComponent => f.write_str("the path has a . or .. component"),
             Problem::Nul => f.write_str("the path contains a NUL byte"),
+            Problem::Overlap {
+                other_line,
+                other_text,
+            } => write!(
+                f,
+                "this line overlaps line {other_line}: {}; a path cannot be both only and modified",
+                String::from_utf8_lossy(&c_quote(other_text))
+            ),
+            Problem::TooLarge { size } => write!(
+                f,
+                "the manifest is {size} bytes, over the limit of {MAX_MANIFEST_BYTES} bytes (64 KiB)"
+            ),
         }
     }
 }
@@ -254,15 +287,17 @@ pub fn covers(entry: &[u8], path: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use gix::bstr::ByteSlice;
     use proptest::prelude::*;
     use proptest::test_runner::Config;
 
-    use super::{Entry, EntryKind, Manifest, ParseError, Problem, encode_path, parse};
+    use super::{Entry, EntryKind, Manifest, ParseError, Problem, covers, encode_path, parse};
     use crate::git::c_quote;
-    use crate::git::testing::{Scratch, all_bytes_repo, git_ok, records};
+    use crate::git::testing::{Scratch, all_bytes_repo, git_ok, records, write};
 
     /// The case count every property here runs, at least.
     const PROPERTY_CASES: u32 = 2048;
@@ -788,5 +823,326 @@ mod tests {
             .map(|entry| entry.line)
             .collect();
         assert_eq!(lines, vec![3, 7, 8]);
+    }
+
+    /// `parse` of `bytes` must be `Problem::Overlap` at `line` (`text`)
+    /// naming `other_line` (`other_text`), and render exactly `rendered`.
+    fn assert_overlap(
+        bytes: &[u8],
+        (line, text): (usize, &[u8]),
+        (other_line, other_text): (usize, &[u8]),
+        rendered: &str,
+    ) {
+        let expected = ParseError {
+            line,
+            text: text.to_vec(),
+            problem: Problem::Overlap {
+                other_line,
+                other_text: other_text.to_vec(),
+            },
+        };
+        assert_eq!(parse(bytes), Err(expected.clone()));
+        assert_eq!(expected.to_string(), rendered);
+    }
+
+    #[test]
+    fn only_with_modified_of_the_same_path_overlaps() {
+        assert_overlap(
+            b"only a\nmodified a\n",
+            (2, b"modified a"),
+            (1, b"only a"),
+            "line 2: this line overlaps line 1: only a; a path cannot be both only and modified: modified a",
+        );
+    }
+
+    #[test]
+    fn only_with_modified_under_it_overlaps() {
+        assert_overlap(
+            b"only a\nmodified a/b\n",
+            (2, b"modified a/b"),
+            (1, b"only a"),
+            "line 2: this line overlaps line 1: only a; a path cannot be both only and modified: modified a/b",
+        );
+    }
+
+    #[test]
+    fn modified_under_a_later_only_overlaps() {
+        assert_overlap(
+            b"modified a/b\nonly a\n",
+            (2, b"only a"),
+            (1, b"modified a/b"),
+            "line 2: this line overlaps line 1: modified a/b; a path cannot be both only and modified: only a",
+        );
+    }
+
+    #[test]
+    fn only_with_a_trailing_slash_overlaps_modified() {
+        assert_overlap(
+            b"only a/\nmodified a\n",
+            (2, b"modified a"),
+            (1, b"only a/"),
+            "line 2: this line overlaps line 1: only a/; a path cannot be both only and modified: modified a",
+        );
+    }
+
+    #[test]
+    fn modified_with_only_under_it_overlaps() {
+        assert_overlap(
+            b"modified a\nonly a/b\n",
+            (2, b"only a/b"),
+            (1, b"modified a"),
+            "line 2: this line overlaps line 1: modified a; a path cannot be both only and modified: only a/b",
+        );
+    }
+
+    #[test]
+    fn only_under_a_later_modified_overlaps() {
+        assert_overlap(
+            b"# c\nonly a/b\n\nmodified a\n",
+            (4, b"modified a"),
+            (2, b"only a/b"),
+            "line 4: this line overlaps line 2: only a/b; a path cannot be both only and modified: modified a",
+        );
+    }
+
+    #[test]
+    fn exact_duplicates_of_one_kind_parse() {
+        assert_eq!(
+            paths(b"only a\nonly a\nmodified b\nmodified b\n"),
+            vec![b"a".to_vec(), b"a".to_vec(), b"b".to_vec(), b"b".to_vec()]
+        );
+    }
+
+    #[test]
+    fn nested_lines_of_one_kind_parse() {
+        assert_eq!(
+            paths(b"only a\nonly a/b\nmodified c/d\nmodified c\n"),
+            vec![
+                b"a".to_vec(),
+                b"a/b".to_vec(),
+                b"c/d".to_vec(),
+                b"c".to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn name_extension_across_kinds_parses() {
+        assert_eq!(
+            paths(b"only a\nmodified ab\n"),
+            vec![b"a".to_vec(), b"ab".to_vec()]
+        );
+    }
+
+    /// 4,096 `only` lines of exactly 16 bytes, `only p`, nine digits and a
+    /// newline, every path distinct: 65,536 bytes. With `over`, the last
+    /// path has ten digits, so the manifest is 65,537 bytes and its 65,537th
+    /// byte is line 4,096's newline.
+    fn sized_manifest(over: bool) -> Vec<u8> {
+        const LINES: usize = 4096;
+        let mut bytes = Vec::new();
+        for index in 0..LINES {
+            let line = if over && index == LINES - 1 {
+                format!("only p{index:010}\n")
+            } else {
+                format!("only p{index:09}\n")
+            };
+            bytes.extend_from_slice(line.as_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn manifest_of_exactly_64_kib_parses() {
+        let bytes = sized_manifest(false);
+        assert_eq!(bytes.len(), 65_536);
+        let manifest = parse(&bytes).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(manifest.entries.len(), 4096);
+    }
+
+    #[test]
+    fn manifest_over_64_kib_is_refused() {
+        let bytes = sized_manifest(true);
+        assert_eq!(bytes.len(), 65_537);
+        let err = parse(&bytes).expect_err("a manifest over 64 KiB parsed");
+        assert_eq!(
+            err,
+            ParseError {
+                line: 4096,
+                text: vec![],
+                problem: Problem::TooLarge { size: 65_537 },
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "line 4096: the manifest is 65537 bytes, over the limit of 65536 bytes (64 KiB)"
+        );
+    }
+
+    #[test]
+    fn size_limit_is_checked_before_any_line() {
+        let mut bytes = sized_manifest(true);
+        bytes.splice(0..16, b"sync a000000000\n".iter().copied());
+        assert_eq!(bytes.len(), 65_537);
+        assert_eq!(refusal(&bytes), (4096, Problem::TooLarge { size: 65_537 }));
+    }
+
+    #[test]
+    fn declaration_covered_by_a_built_in_parses() {
+        assert_eq!(
+            parse(b"only .wsx.conf\nonly .worktrees/x\n"),
+            Ok(Manifest {
+                entries: vec![
+                    Entry {
+                        kind: EntryKind::Only,
+                        path: b".wsx.conf".to_vec(),
+                        line: 1,
+                        text: b"only .wsx.conf".to_vec(),
+                    },
+                    Entry {
+                        kind: EntryKind::Only,
+                        path: b".worktrees/x".to_vec(),
+                        line: 2,
+                        text: b"only .worktrees/x".to_vec(),
+                    },
+                ],
+            })
+        );
+    }
+
+    /// The shape of `.workspace-divergence` on the workspace branch, copied
+    /// inline: that file exists only there, not on the PR branches this
+    /// code reaches.
+    const REAL_MANIFEST: &[u8] = b"\
+# How workspace/denniyahh differs from develop. Read by
+# scripts/workspace/cut-pr-branch.sh, which never replays an `only` path.
+# Ported from devflow (Workflow B). The divergence check hook is not ported yet.
+#
+# `only <path>`: exists only on this branch (a directory covers everything in it).
+# `modified <path>`: a develop file this branch deliberately changes.
+# .planning/, graphify-out/, agent-tool paths and this file are built in
+# and need no line.
+
+# Workflow B tooling (sync, phase worktrees, clean PR branches)
+only scripts/workspace
+
+# Ignores .worktrees/ and graphify/research caches
+modified .gitignore
+";
+
+    #[test]
+    fn parses_the_shape_of_a_real_manifest() {
+        assert_eq!(
+            parse(REAL_MANIFEST),
+            Ok(Manifest {
+                entries: vec![
+                    Entry {
+                        kind: EntryKind::Only,
+                        path: b"scripts/workspace".to_vec(),
+                        line: 11,
+                        text: b"only scripts/workspace".to_vec(),
+                    },
+                    Entry {
+                        kind: EntryKind::Modified,
+                        path: b".gitignore".to_vec(),
+                        line: 14,
+                        text: b"modified .gitignore".to_vec(),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn path_covers_itself() {
+        assert!(covers(b".planning", b".planning"));
+    }
+
+    #[test]
+    fn path_covers_what_is_under_it() {
+        assert!(covers(b".planning", b".planning/x"));
+        assert!(covers(b".planning", b".planning/x/y"));
+    }
+
+    #[test]
+    fn shorter_name_is_not_covered() {
+        assert!(!covers(b".planning", b".plannin"));
+        assert!(!covers(b".planning", b".planningX"));
+    }
+
+    proptest! {
+        #![proptest_config(property_config())]
+
+        #[test]
+        fn name_extension_is_not_covered(
+            path in git_path(),
+            byte in any::<u8>().prop_filter("not a slash", |byte| *byte != b'/'),
+            below in git_path(),
+        ) {
+            let extended = [&path[..], &[byte]].concat();
+            prop_assert!(!covers(&path, &extended));
+            let under = [&path[..], b"/", &below[..]].concat();
+            prop_assert!(covers(&path, &under));
+        }
+    }
+
+    #[test]
+    fn covers_matches_a_literal_pathspec() {
+        let scratch = Scratch::new("manifest-pathspec").expect("create scratch");
+        let repo = scratch.root.join("repo");
+        let tracked_names: [&[u8]; 5] =
+            [b".planning/x", b".planningX", b".plan", b"a*b/c", b"axb/c"];
+        for name in tracked_names {
+            write(&repo.join(OsStr::from_bytes(name)), b"").unwrap_or_else(|err| panic!("{err}"));
+        }
+        let git =
+            |args: &[&OsStr]| git_ok(&scratch, &repo, args).unwrap_or_else(|err| panic!("{err}"));
+        git(&[
+            OsStr::new("init"),
+            OsStr::new("-q"),
+            OsStr::new("-b"),
+            OsStr::new("main"),
+        ]);
+        git(&[OsStr::new("add"), OsStr::new("--all")]);
+        let tracked = records(&git(&[OsStr::new("ls-files"), OsStr::new("-z")]), 0);
+        let mut sorted_names: Vec<Vec<u8>> =
+            tracked_names.iter().map(|name| name.to_vec()).collect();
+        sorted_names.sort();
+        assert_eq!(tracked, sorted_names, "the repository tracks other paths");
+        let expected: [(&[u8], Vec<&[u8]>); 3] = [
+            (b".planning", vec![b".planning/x"]),
+            (b".plan", vec![b".plan"]),
+            (b"a*b", vec![b"a*b/c"]),
+        ];
+        for (entry, selects) in expected {
+            let pathspec = [&b":(literal)"[..], entry].concat();
+            let from_git = records(
+                &git(&[
+                    OsStr::new("ls-files"),
+                    OsStr::new("-z"),
+                    OsStr::new("--"),
+                    OsStr::from_bytes(&pathspec),
+                ]),
+                0,
+            );
+            let from_covers: Vec<Vec<u8>> = tracked
+                .iter()
+                .filter(|path| covers(entry, path))
+                .cloned()
+                .collect();
+            assert_eq!(from_covers, from_git, "entry {:?}", entry.as_bstr());
+            let selects: Vec<Vec<u8>> = selects.iter().map(|path| path.to_vec()).collect();
+            assert_eq!(from_git, selects, "git for entry {:?}", entry.as_bstr());
+        }
+    }
+
+    #[test]
+    fn byte_equality_separates_unicode_normal_forms() {
+        let nfc: &[u8] = b"caf\xc3\xa9";
+        let nfd: &[u8] = b"cafe\xcc\x81";
+        assert!(!covers(nfc, nfd));
+        assert!(!covers(nfd, nfc));
+        assert!(covers(nfc, nfc));
+        assert!(covers(nfd, nfd));
     }
 }
