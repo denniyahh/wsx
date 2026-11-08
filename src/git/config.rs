@@ -8,14 +8,31 @@ use super::repo::Repo;
 
 impl Repo {
     /// Every value of `key` in this repository's own config file (gix's
-    /// `Source::Local`, the common dir's `config`), in file order, as raw
-    /// bytes. A global, system or `-c` value is never returned, so a value
-    /// set for the machine cannot configure this repository (D-01).
+    /// `Source::Local` at include level 0, the common dir's `config`), in
+    /// file order, as raw bytes. Nothing else configures the repository
+    /// (D-01): a global, system, `config.worktree` or `GIT_CONFIG_COUNT`
+    /// value is never returned, and neither is one from an `include.path`
+    /// file, which gix reads as `Source::Local` at level 1 and which a
+    /// tracked include would read live from whatever branch is checked out.
+    ///
+    /// Measured with git 2.56.0 and gix-config 0.62.2, the result equals
+    /// `git config --local --get-all`: no values where git exits 1 (an
+    /// included, global or `config.worktree` value, which `--includes` or
+    /// plain `git config --get` does return, and a `[wsx "sub"]` one),
+    /// every value of a repeated key in order, across sections too, one
+    /// empty value for `key =` and for a key line with no `=`, quotes and
+    /// comments normalised as git does, and non-UTF-8 bytes unchanged. A
+    /// linked worktree reads the common dir's file. `string_filter`, the
+    /// call `ref_storage` makes, is not used: it returns only the last value
+    /// of a repeated key and reads a key with no `=` as absent, which hides
+    /// both cases D-18 refuses.
     pub fn local_config_values(&self, key: &str) -> Vec<Vec<u8>> {
         self.repo
             .config_snapshot()
             .plumbing()
-            .strings_filter(key, |meta| meta.source == gix::config::Source::Local)
+            .strings_filter(key, |meta| {
+                meta.source == gix::config::Source::Local && meta.level == 0
+            })
             .unwrap_or_default()
             .into_iter()
             .map(Vec::from)
