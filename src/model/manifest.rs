@@ -52,6 +52,20 @@ pub enum Problem {
         /// Why the quoted string was refused.
         reason: String,
     },
+    /// The line ends in a carriage return, as every line of a CRLF file
+    /// does (D-19). Checked before anything else, comments included.
+    LineEndsInCr,
+    /// The path is empty: the keyword alone, the keyword and one space, a
+    /// lone `/`, or `""` (D-14).
+    EmptyPath,
+    /// The path starts with `/` (D-14).
+    AbsolutePath,
+    /// The path has an empty component, as `a//b` does (D-14).
+    EmptyComponent,
+    /// The path has a `.` or `..` component (D-14).
+    DotComponent,
+    /// The path holds a NUL byte, which no git tree path can (D-14's reason).
+    Nul,
 }
 
 impl fmt::Display for Problem {
@@ -66,6 +80,14 @@ impl fmt::Display for Problem {
             Problem::BadQuoting { reason } => {
                 write!(f, "the C-quoted path is malformed: {reason}")
             }
+            Problem::LineEndsInCr => f.write_str(
+                "the line ends in a carriage return (CRLF line endings are not allowed)",
+            ),
+            Problem::EmptyPath => f.write_str("the path is empty"),
+            Problem::AbsolutePath => f.write_str("the path starts with /"),
+            Problem::EmptyComponent => f.write_str("the path has an empty component (//)"),
+            Problem::DotComponent => f.write_str("the path has a . or .. component"),
+            Problem::Nul => f.write_str("the path contains a NUL byte"),
         }
     }
 }
@@ -149,6 +171,12 @@ fn path_value(value: &[u8]) -> Result<Vec<u8>, Problem> {
         path.pop();
     }
     Ok(path)
+}
+
+/// A manifest path as an entry holds it, or why it could never name a git
+/// tree path (D-14).
+pub fn normalize_path(path: &[u8]) -> Result<Vec<u8>, Problem> {
+    Ok(path.to_vec())
 }
 
 /// `path` as a manifest line writes it, so that `parse` reads back exactly
@@ -471,5 +499,255 @@ mod tests {
                 problem: Problem::UnknownKind,
             })
         );
+    }
+
+    /// The line and problem `parse` refuses `bytes` with; panics on `Ok`.
+    fn refusal(bytes: &[u8]) -> (usize, Problem) {
+        match parse(bytes) {
+            Ok(manifest) => panic!("{:?} parsed: {manifest:?}", bytes.as_bstr()),
+            Err(err) => (err.line, err.problem),
+        }
+    }
+
+    /// The paths of the entries `parse` gives `bytes`, in order; panics on
+    /// `Err`.
+    fn paths(bytes: &[u8]) -> Vec<Vec<u8>> {
+        parse(bytes)
+            .unwrap_or_else(|err| panic!("{:?}: {err:?}", bytes.as_bstr()))
+            .entries
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect()
+    }
+
+    #[test]
+    fn leading_space_is_an_unknown_line() {
+        assert_eq!(refusal(b" only a\n"), (1, Problem::UnknownKind));
+    }
+
+    #[test]
+    fn tab_after_the_keyword_is_an_unknown_line() {
+        assert_eq!(refusal(b"only\ta\n"), (1, Problem::UnknownKind));
+    }
+
+    #[test]
+    fn whitespace_only_line_is_an_unknown_line() {
+        assert_eq!(refusal(b"  \n"), (1, Problem::UnknownKind));
+    }
+
+    #[test]
+    fn keyword_with_a_suffix_is_an_unknown_line() {
+        assert_eq!(refusal(b"onlyx a\n"), (1, Problem::UnknownKind));
+    }
+
+    #[test]
+    fn line_ending_in_cr_is_refused() {
+        assert_eq!(refusal(b"only a\r\n"), (1, Problem::LineEndsInCr));
+    }
+
+    #[test]
+    fn comment_ending_in_cr_is_refused() {
+        assert_eq!(refusal(b"# c\r\n"), (1, Problem::LineEndsInCr));
+    }
+
+    #[test]
+    fn crlf_file_fails_on_its_first_line() {
+        assert_eq!(
+            refusal(b"only a\r\nmodified b\r\n"),
+            (1, Problem::LineEndsInCr)
+        );
+    }
+
+    #[test]
+    fn keyword_alone_is_an_empty_path() {
+        assert_eq!(refusal(b"only\n"), (1, Problem::EmptyPath));
+    }
+
+    #[test]
+    fn keyword_and_space_is_an_empty_path() {
+        assert_eq!(refusal(b"only \n"), (1, Problem::EmptyPath));
+    }
+
+    #[test]
+    fn slash_alone_is_an_empty_path() {
+        assert_eq!(refusal(b"only /\n"), (1, Problem::EmptyPath));
+    }
+
+    #[test]
+    fn empty_quoted_path_is_an_empty_path() {
+        assert_eq!(refusal(b"only \"\"\n"), (1, Problem::EmptyPath));
+    }
+
+    #[test]
+    fn two_spaces_after_the_keyword_are_edge_whitespace() {
+        assert_eq!(refusal(b"only  a\n"), (1, Problem::EdgeWhitespace));
+    }
+
+    #[test]
+    fn trailing_space_is_edge_whitespace() {
+        assert_eq!(refusal(b"only a \n"), (1, Problem::EdgeWhitespace));
+    }
+
+    #[test]
+    fn space_before_the_trailing_slash_is_edge_whitespace() {
+        assert_eq!(refusal(b"only a /\n"), (1, Problem::EdgeWhitespace));
+    }
+
+    #[test]
+    fn leading_slash_is_refused() {
+        assert_eq!(refusal(b"only /a\n"), (1, Problem::AbsolutePath));
+    }
+
+    #[test]
+    fn double_slash_is_refused() {
+        assert_eq!(refusal(b"only a//b\n"), (1, Problem::EmptyComponent));
+    }
+
+    #[test]
+    fn trailing_double_slash_is_refused() {
+        assert_eq!(refusal(b"only a//\n"), (1, Problem::EmptyComponent));
+    }
+
+    #[test]
+    fn lone_dot_is_refused() {
+        assert_eq!(refusal(b"only .\n"), (1, Problem::DotComponent));
+    }
+
+    #[test]
+    fn dot_component_is_refused() {
+        assert_eq!(refusal(b"only a/./b\n"), (1, Problem::DotComponent));
+    }
+
+    #[test]
+    fn dot_dot_component_is_refused() {
+        assert_eq!(refusal(b"only a/../b\n"), (1, Problem::DotComponent));
+    }
+
+    #[test]
+    fn quoted_nul_is_refused() {
+        assert_eq!(refusal(b"only \"a\\000b\"\n"), (1, Problem::Nul));
+    }
+
+    #[test]
+    fn raw_nul_is_refused() {
+        assert_eq!(refusal(b"only a\x00b\n"), (1, Problem::Nul));
+    }
+
+    #[test]
+    fn modified_line_follows_the_same_rules() {
+        assert_eq!(refusal(b"modified a/../b\n"), (1, Problem::DotComponent));
+    }
+
+    #[test]
+    fn inner_spaces_stay_in_the_path() {
+        assert_eq!(paths(b"only my dir\n"), vec![b"my dir".to_vec()]);
+    }
+
+    #[test]
+    fn one_trailing_slash_is_stripped() {
+        assert_eq!(paths(b"only a/\n"), vec![b"a".to_vec()]);
+    }
+
+    #[test]
+    fn star_is_an_ordinary_byte() {
+        assert_eq!(paths(b"only a*b\n"), vec![b"a*b".to_vec()]);
+    }
+
+    #[test]
+    fn hash_after_the_keyword_is_part_of_the_path() {
+        assert_eq!(paths(b"only #x\n"), vec![b"#x".to_vec()]);
+    }
+
+    #[test]
+    fn trailing_text_is_part_of_the_path() {
+        assert_eq!(paths(b"only a # note\n"), vec![b"a # note".to_vec()]);
+    }
+
+    #[test]
+    fn quote_inside_a_bare_path_is_literal() {
+        assert_eq!(paths(b"only a\"b\n"), vec![b"a\"b".to_vec()]);
+    }
+
+    #[test]
+    fn quoted_edge_spaces_parse() {
+        assert_eq!(paths(b"only \" a \"\n"), vec![b" a ".to_vec()]);
+    }
+
+    #[test]
+    fn raw_utf8_parses_unquoted() {
+        assert_eq!(
+            paths("only café\n".as_bytes()),
+            vec![b"caf\xc3\xa9".to_vec()]
+        );
+    }
+
+    #[test]
+    fn raw_non_utf8_parses_unquoted() {
+        assert_eq!(paths(b"only raw\xe9\n"), vec![b"raw\xe9".to_vec()]);
+    }
+
+    #[test]
+    fn control_byte_parses_unquoted() {
+        assert_eq!(paths(b"only a\x01b\n"), vec![b"a\x01b".to_vec()]);
+    }
+
+    #[test]
+    fn quoted_octal_gives_the_utf8_bytes() {
+        assert_eq!(
+            paths(b"only \"caf\\303\\251\"\n"),
+            vec![b"caf\xc3\xa9".to_vec()]
+        );
+    }
+
+    #[test]
+    fn no_trailing_newline_parses() {
+        assert_eq!(
+            paths(b"only a\nmodified b"),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
+    }
+
+    #[test]
+    fn empty_manifest_is_valid() {
+        assert_eq!(parse(b""), Ok(Manifest { entries: vec![] }));
+    }
+
+    #[test]
+    fn comments_only_manifest_is_valid() {
+        assert_eq!(parse(b"# a\n#\n# b\n"), Ok(Manifest { entries: vec![] }));
+    }
+
+    #[test]
+    fn blank_lines_are_ignored() {
+        assert_eq!(
+            paths(b"\n\nonly a\n\n\nmodified b\n\n"),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
+    }
+
+    #[test]
+    fn single_line_manifest_has_one_entry() {
+        assert_eq!(
+            parse(b"modified a\n"),
+            Ok(Manifest {
+                entries: vec![Entry {
+                    kind: EntryKind::Modified,
+                    path: b"a".to_vec(),
+                    line: 1,
+                    text: b"modified a".to_vec(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn line_numbers_count_comments_and_blanks() {
+        let lines: Vec<usize> = parse(b"# c\n\nonly a\n# d\n\n\nmodified b\nonly c\n")
+            .expect("parses")
+            .entries
+            .iter()
+            .map(|entry| entry.line)
+            .collect();
+        assert_eq!(lines, vec![3, 7, 8]);
     }
 }
