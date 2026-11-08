@@ -70,7 +70,7 @@ Evidence is from the gsd-security-auditor run at `4e64219` (ASVS L1: mitigation 
 | T-04-24 | Repudiation | 04-10 mutation pass | high | mitigate | cargo-mutants 27.1.0 at `09eca8c`: 154 caught, 0 missed, 23 unviable, 0 timeout; no source change since (process evidence, not a test) | closed |
 | T-04-25 | Repudiation | 04-10 container gate | medium | mitigate | `scripts/check-in-container.sh all` exit 0 at `b505f2d`, paste tests under dash; docs-only commits since | closed |
 | T-04-26 | Repudiation | 04-10 obligations | medium | mitigate | eight Phase 5/6/8/12 obligation lines in STATE.md `### Blockers/Concerns` | closed |
-| T-04-30 | Tampering | 04-11 replacement refs | medium | mitigate | guard runs first in `root_entry`; `replacement_chain_fails_closed`, `replacement_cycle_fails_closed`, `symbolic_replacement_fails_closed` and controls (limit: Repo reads before `resolve` are unguarded; Phase 5 obligation in STATE.md) | closed |
+| T-04-30 | Tampering | 04-11 replacement refs | medium | mitigate | guard runs first in `root_entry`; `replacement_chain_fails_closed`, `replacement_cycle_fails_closed`, `symbolic_replacement_fails_closed` and controls (limit: Repo reads before `resolve` are unguarded; Phase 5 obligation in STATE.md). **Reopened by code review CR-01 (04-REVIEW.md):** the guard lists only refs directly under the replace base, but git 2.56.0 also applies a nested `refs/replace/<dir>/<hex>` (reproduced by the orchestrator, with direct-ref and no-ref controls); per the reviewer's gix 0.90.0 probe, gix does not, so wsx and git can read different `.wsx.conf` bytes with no error. WR-01: a replace base without a trailing `/` makes the guard check nothing | open — below high threshold (non-blocking) |
 | T-04-39 | Tampering | 04-11 removal commands | medium | mitigate | `ref_word` quotes the ref name (applies T-04-36); `replacement_fix_commands_quote_a_ref_name_for_the_shell` | closed |
 | T-04-32 | Tampering | 04-11 replace ref after open | low | accept | see Accepted Risks Log | closed |
 
@@ -97,6 +97,7 @@ Evidence is from the gsd-security-auditor run at `4e64219` (ASVS L1: mitigation 
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-11-08 | 40 | 40 | 0 | gsd-security-auditor (ASVS L1, block_on high), at `4e64219` |
+| 2026-11-08 | 40 | 39 | 0 blocking (1 open below threshold: T-04-30) | orchestrator, from gsd-code-reviewer CR-01 / WR-01 (deep), at `2fc6a29` |
 
 What the audit does not establish: depth beyond L1 (no end-to-end trace; no production entry point exists until phase 5's `wsx check`); 24 of the cited tests were re-run by the auditor, the rest rest on the full suite at `74ba890` (639 passed); T-04-07 is a config line, half of T-04-03 is a source scan and half of T-04-04 is an `rg` absence check; `src/git/repo.rs` was outside the mutation pass; parity evidence is from git 2.56.0 only.
 
