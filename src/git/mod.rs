@@ -120,6 +120,11 @@ pub enum Error {
     /// `value`. gix ignores it and git honours it, so wsx's reads and its git
     /// children would use different object stores.
     ObjectStoreEnv { name: &'static str, value: PathBuf },
+    /// gix applies the ref namespace `namespace` (`refs/namespaces/<ns>/`),
+    /// set by `GIT_NAMESPACE` or `gitoxide.core.refsNamespace`, which git's
+    /// own reads ignore, so wsx would read every ref, and every replace ref,
+    /// from inside the namespace while git reads them outside it.
+    RefsNamespace { namespace: Vec<u8> },
     /// `GIT_DIR` is `git_dir` without `GIT_WORK_TREE`, and `reason` names
     /// what keeps wsx from deciding the worktree as git does (a setting in
     /// `config.worktree`, or a `core.bare` or `GIT_IMPLICIT_WORK_TREE` that
@@ -206,6 +211,18 @@ impl fmt::Display for Error {
                 "refusing {name}={value}: this version of wsx reads objects through gix, which ignores {name}, \
                  so it would not read the objects git reads; run wsx without {name}",
                 value = value.display()
+            ),
+            // The command line holds no byte field, so it is safe to paste.
+            Error::RefsNamespace { namespace } => write!(
+                f,
+                "refusing the ref namespace {namespace}: wsx reads refs through gix, which reads every ref \
+                 inside the namespace that GIT_NAMESPACE or gitoxide.core.refsNamespace sets, replace refs \
+                 included, while git's own reads of this repository, such as git show-ref, read them \
+                 outside it, so wsx would not read the refs git reads.\n\
+                 Run wsx without GIT_NAMESPACE, and remove gitoxide.core.refsNamespace from the config \
+                 file that sets it; this shows where it is set:\n\
+                 \tgit config --show-origin --get-all gitoxide.core.refsNamespace",
+                namespace = String::from_utf8_lossy(&c_quote(namespace))
             ),
             Error::ImplicitWorkTree { git_dir, reason } => write!(
                 f,
@@ -368,6 +385,23 @@ mod tests {
             message: "m".to_owned(),
         };
         assert_eq!(gix.to_string(), "resolve x: m");
+    }
+
+    #[test]
+    fn refs_namespace_message_names_it_and_the_fix() {
+        let namespace = Error::RefsNamespace {
+            namespace: b"refs/namespaces/foo/".to_vec(),
+        };
+        assert_eq!(
+            namespace.to_string(),
+            "refusing the ref namespace refs/namespaces/foo/: wsx reads refs through gix, which reads \
+             every ref inside the namespace that GIT_NAMESPACE or gitoxide.core.refsNamespace sets, \
+             replace refs included, while git's own reads of this repository, such as git show-ref, \
+             read them outside it, so wsx would not read the refs git reads.\n\
+             Run wsx without GIT_NAMESPACE, and remove gitoxide.core.refsNamespace from the config \
+             file that sets it; this shows where it is set:\n\
+             \tgit config --show-origin --get-all gitoxide.core.refsNamespace"
+        );
     }
 
     #[test]

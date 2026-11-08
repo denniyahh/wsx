@@ -590,6 +590,7 @@ mod tests {
     use gix::revision::plumbing::spec::parse::{Delegate, delegate};
     use gix::sec::trust::DefaultForLevel;
 
+    use super::super::refs::RefTarget;
     use super::super::spawn::Git;
     use super::super::testing::{
         self, Env, ForeignOwned, Scratch, T0, TICK, commit_all, git, git_ok, write,
@@ -3155,6 +3156,152 @@ mod tests {
         let run = object_run(&scratch, &repo, &other_head, &[]);
         assert_ne!(run.git.status.code(), Some(0), "{}", run.both());
         assert_eq!(run.result(), "unreadable", "{}", run.both());
+    }
+
+    /// `object_repo`'s `<root>/repo`, whose commit X is on `main`, plus a
+    /// commit Y (`side.txt`, on `side`) that only
+    /// `refs/namespaces/foo/refs/heads/main` holds; returns the repository,
+    /// X and Y.
+    fn namespaced_repo(scratch: &Scratch) -> (PathBuf, String, String) {
+        let (repo, x) = object_repo(scratch, "repo");
+        git_ok(scratch, &repo, ["switch", "-q", "-c", "side"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        write(&repo.join("side.txt"), b"side\n").unwrap_or_else(|err| panic!("{err}"));
+        commit_all(scratch, &repo, "side", T0 + TICK).unwrap_or_else(|err| panic!("{err}"));
+        let y = git_line(scratch, &repo, &["rev-parse", "HEAD"]);
+        git_ok(scratch, &repo, ["switch", "-q", "main"]).unwrap_or_else(|err| panic!("{err}"));
+        git_ok(
+            scratch,
+            &repo,
+            ["update-ref", "refs/namespaces/foo/refs/heads/main", &y],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_ne!(x, y, "the fixture's two commits are the same");
+        (repo, x, y)
+    }
+
+    /// The id `git show-ref --verify refs/heads/main` prints in `repo` with
+    /// `env`.
+    fn git_main_tip(env: &Env, repo: &Path) -> String {
+        let line = git_line_in(env, repo, &["show-ref", "--verify", "refs/heads/main"]);
+        line.split_whitespace()
+            .next()
+            .unwrap_or_else(|| panic!("git show-ref printed no id: {line:?}"))
+            .to_owned()
+    }
+
+    /// `gitoxide.core.refsNamespace` in the repository's config makes gix
+    /// read every ref inside `refs/namespaces/foo/`, while git reads
+    /// `refs/heads/main` outside it: `Repo::discover` refuses, naming the
+    /// namespace and how to find and remove the key.
+    #[test]
+    fn refs_namespace_in_config_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-namespace-config").expect("scratch");
+        let (repo, x, _y) = namespaced_repo(&scratch);
+        git_ok(
+            &scratch,
+            &repo,
+            ["config", "--local", "gitoxide.core.refsNamespace", "foo"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            git_main_tip(&scratch.env, &repo),
+            x,
+            "git reads inside the namespace"
+        );
+
+        match Repo::discover(&repo) {
+            Err(Error::RefsNamespace { namespace }) => {
+                assert_eq!(String::from_utf8_lossy(&namespace), "refs/namespaces/foo/");
+                let message = Error::RefsNamespace { namespace }.to_string();
+                for part in [
+                    "refs/namespaces/foo/",
+                    "GIT_NAMESPACE",
+                    "git config --show-origin --get-all gitoxide.core.refsNamespace",
+                ] {
+                    assert!(message.contains(part), "{part:?} not in {message:?}");
+                }
+            }
+            Err(other) => panic!("Repo::discover: expected RefsNamespace, got {other}"),
+            Ok(_) => {
+                panic!("Repo::discover opened a repository whose refs gix reads in a namespace")
+            }
+        }
+    }
+
+    /// Control: with no namespace, `find_ref` reads `refs/heads/main` as
+    /// git does; then, on the same handle, gix with the namespace `foo` set
+    /// reads Y under that same plain name, which is what the refusal stops.
+    #[test]
+    fn without_a_namespace_refs_read_as_git_reads() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-namespace-none").expect("scratch");
+        let (repo, x, y) = namespaced_repo(&scratch);
+        assert_eq!(git_main_tip(&scratch.env, &repo), x);
+
+        let mut found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        match found.find_ref(b"refs/heads/main") {
+            Ok(Some(RefTarget::Object(id))) => assert_eq!(id, ObjectId(x)),
+            other => panic!("find_ref(refs/heads/main): {other:?}"),
+        }
+
+        found
+            .repo
+            .set_namespace("foo")
+            .unwrap_or_else(|err| panic!("set_namespace(foo): {err}"));
+        let reference = found
+            .repo
+            .try_find_reference("refs/heads/main")
+            .unwrap_or_else(|err| panic!("read refs/heads/main in the namespace: {err}"))
+            .unwrap_or_else(|| panic!("no refs/heads/main in the namespace"));
+        assert_eq!(reference.name().as_bstr(), "refs/heads/main");
+        assert_eq!(
+            reference
+                .target()
+                .try_id()
+                .map(|id| id.to_hex().to_string()),
+            Some(y),
+            "gix in the namespace does not read Y under the plain name"
+        );
+    }
+
+    /// `GIT_NAMESPACE=foo` sets the same gix namespace, and git's own reads
+    /// ignore it: `git show-ref` still prints X, and `Repo::discover`
+    /// refuses.
+    #[test]
+    fn git_namespace_variable_is_refused() {
+        let scratch = Scratch::new("refs-namespace-env").expect("scratch");
+        let (repo, x, _y) = namespaced_repo(&scratch);
+        let mut env = scratch.env.clone();
+        env.push(("GIT_NAMESPACE".into(), "foo".into()));
+        assert_eq!(
+            git_main_tip(&env, &repo),
+            x,
+            "git reads inside the namespace"
+        );
+
+        let run = object_run(&scratch, &repo, &x, &[("GIT_NAMESPACE", Path::new("foo"))]);
+        assert_eq!(run.result(), "refused", "{}", run.both());
+        let error = fact(&run.child, "error");
+        assert!(error.contains("refs/namespaces/foo/"), "error: {error}");
+    }
+
+    /// Control for the variable: `GIT_NAMESPACE` set empty is no namespace
+    /// to gix, so the repository opens and reads X; the refusal reads gix's
+    /// resolved namespace, not whether the variable is set.
+    #[test]
+    fn empty_git_namespace_opens() {
+        let scratch = Scratch::new("refs-namespace-empty").expect("scratch");
+        let (repo, x, _y) = namespaced_repo(&scratch);
+        let run = object_run(&scratch, &repo, &x, &[("GIT_NAMESPACE", Path::new(""))]);
+        assert_eq!(run.result(), "opened", "{}", run.both());
+        assert_eq!(fact(&run.child, "commit"), x, "{}", run.both());
     }
 
     /// Prints what wsx reads of the object id in `REV_VAR` in the working
