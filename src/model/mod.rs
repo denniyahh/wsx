@@ -26,6 +26,13 @@ use manifest::{EntryKind, Manifest, ParseError, Problem, covers};
 /// The local config key that makes a repository configured (D-15).
 pub const SOURCE_BRANCH: &str = "wsx.sourceBranch";
 
+/// The local config key naming the remote shared branches are read from
+/// (D-02).
+pub const BASE_REMOTE: &str = "wsx.baseRemote";
+
+/// The local config key naming the remote PR branches are pushed to (D-02).
+pub const PUSH_REMOTE: &str = "wsx.pushRemote";
+
 /// The remote a base or push remote defaults to when its key is unset (D-02).
 pub const DEFAULT_REMOTE: &[u8] = b"origin";
 
@@ -418,7 +425,9 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+    use std::process::Output;
 
     use crate::git::Repo;
     use crate::git::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
@@ -426,7 +435,7 @@ mod tests {
     use crate::git;
 
     use super::manifest::{ParseError, Problem};
-    use super::{Error, Model, RepoModel, resolve};
+    use super::{BASE_REMOTE, Error, Integration, Model, PUSH_REMOTE, RepoModel, resolve};
 
     /// Fails the test with `err` when a fixture step fails.
     fn ok<T>(result: Result<T, String>) -> T {
@@ -970,17 +979,22 @@ mod tests {
         (output.status.code(), output.stdout)
     }
 
-    /// Runs `state_child` on `work` with the scratch environment and returns
-    /// its `state` marker, with its `error` marker when it printed one.
-    fn child_state(scratch: &Scratch, work: &Path) -> String {
+    /// Runs `state_child` on `work` with the scratch environment.
+    fn state_child_output(scratch: &Scratch, work: &Path) -> Output {
         let mut env = scratch.env.clone();
         env.push((START_VAR.into(), work.into()));
-        let child = ok(testing::reexec(
+        ok(testing::reexec(
             &child_path("state_child"),
             &env,
             &scratch.root,
             b"",
-        ));
+        ))
+    }
+
+    /// Runs `state_child` on `work` with the scratch environment and returns
+    /// its `state` marker, with its `error` marker when it printed one.
+    fn child_state(scratch: &Scratch, work: &Path) -> String {
+        let child = state_child_output(scratch, work);
         let state = ok(testing::marker(&child, "state"));
         match testing::marker(&child, "error") {
             Ok(error) => format!("{state}: {error}"),
@@ -1150,9 +1164,472 @@ mod tests {
         }
     }
 
-    /// Prints what `resolve` makes of the repository at `START_VAR`:
-    /// `state=configured`, `state=not-configured`, or `state=failed` with
-    /// `error`; a discovery failure is `state=failed` too.
+    /// `remote` as `state_child` prints it: the name, or `<none>`.
+    fn remote_marker(remote: Option<&[u8]>) -> String {
+        remote.map_or_else(
+            || "<none>".to_owned(),
+            |name| String::from_utf8_lossy(name).into_owned(),
+        )
+    }
+
+    /// Adds `upstream`, `<root>/fork-source`, to `work` and fetches it, and
+    /// returns `fork-source`'s path. `fork-source` is a clone of `source`
+    /// whose `develop` gains one commit of its own, so
+    /// `refs/remotes/upstream/develop` and `refs/remotes/origin/develop` hold
+    /// different commits, and both differ from `origin/main` and
+    /// `origin/next`: a test can tell which remote's and which rung's tip a
+    /// resolved base took. Asserts those four tips distinct before it
+    /// returns, the control that the fixture can tell them apart.
+    fn with_fork(scratch: &Scratch, work: &Path) -> PathBuf {
+        ok(git_ok(
+            scratch,
+            &scratch.root,
+            ["clone", "-q", "source", "fork-source"],
+        ));
+        let fork = scratch.root.join("fork-source");
+        ok(git_ok(
+            scratch,
+            &fork,
+            ["switch", "-q", "-c", "develop", "origin/develop"],
+        ));
+        ok(write(&fork.join("u.txt"), b"u\n"));
+        ok(commit_all(
+            scratch,
+            &fork,
+            "upstream develop",
+            T0 + 4 * TICK,
+        ));
+        ok(git_ok(scratch, &fork, ["switch", "-q", "main"]));
+        ok(git_ok(
+            scratch,
+            work,
+            [
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("upstream"),
+                fork.as_os_str(),
+            ],
+        ));
+        ok(git_ok(scratch, work, ["fetch", "-q", "upstream"]));
+
+        let refs = [
+            "refs/remotes/upstream/develop",
+            "refs/remotes/origin/develop",
+            "refs/remotes/origin/next",
+            "refs/remotes/origin/main",
+        ];
+        let tips = refs.map(|full| tip(scratch, work, full));
+        let distinct: BTreeSet<&String> = tips.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            tips.len(),
+            "the fork fixture's candidates share a commit: {refs:?} hold {tips:?}"
+        );
+        fork
+    }
+
+    /// Asserts `integration` is `develop` read from `full_ref`, its tip the
+    /// id `git show-ref --verify <full_ref>` prints and not the tip of any
+    /// ref in `rejected`, each of which must exist.
+    fn assert_integration(
+        scratch: &Scratch,
+        work: &Path,
+        integration: &Integration,
+        full_ref: &str,
+        rejected: &[&str],
+    ) {
+        assert_eq!(
+            integration.branch,
+            b"develop".to_vec(),
+            "integration branch"
+        );
+        assert_eq!(
+            integration.full_ref,
+            full_ref.as_bytes().to_vec(),
+            "integration ref"
+        );
+        let got = integration.tip.to_string();
+        assert_eq!(
+            got,
+            tip(scratch, work, full_ref),
+            "integration tip against git show-ref --verify {full_ref}"
+        );
+        for other in rejected {
+            assert_ne!(
+                got,
+                tip(scratch, work, other),
+                "integration tip is {other}'s"
+            );
+        }
+    }
+
+    /// A fork layout: the base from `upstream` and the push remote `origin`,
+    /// each from its own key (D-02, D-05), with the integration branch read
+    /// from `upstream`'s tracking ref, not `origin`'s.
+    #[test]
+    fn fork_layout_resolves_each_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-fork-layout").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, BASE_REMOTE, "upstream");
+        set_config(&scratch, &work, PUSH_REMOTE, "origin");
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, Some(b"upstream".to_vec()), "base remote");
+        assert_eq!(model.push_remote, Some(b"origin".to_vec()), "push remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/upstream/develop",
+            &["refs/remotes/origin/develop", "refs/remotes/upstream/main"],
+        );
+    }
+
+    /// `wsx.pushRemote` alone moves only the push remote: the base still
+    /// defaults to `origin`.
+    #[test]
+    fn push_remote_can_differ_from_a_default_base() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-push-only").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, PUSH_REMOTE, "upstream");
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, Some(b"origin".to_vec()), "base remote");
+        assert_eq!(model.push_remote, Some(b"upstream".to_vec()), "push remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/origin/develop",
+            &[
+                "refs/remotes/upstream/develop",
+                "refs/remotes/origin/next",
+                "refs/remotes/origin/main",
+            ],
+        );
+    }
+
+    /// With neither key set, both remotes are `origin` (D-02).
+    #[test]
+    fn remotes_default_to_origin() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-remote-defaults").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, Some(b"origin".to_vec()), "base remote");
+        assert_eq!(model.push_remote, Some(b"origin".to_vec()), "push remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/origin/develop",
+            &["refs/remotes/origin/next", "refs/remotes/origin/main"],
+        );
+    }
+
+    /// `remote.pushDefault` names where any `git push` goes, not where wsx
+    /// pushes a PR branch: set to `upstream` in local config, it leaves the
+    /// push remote `origin` (D-02).
+    #[test]
+    fn push_default_is_not_read() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-push-default").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, "remote.pushDefault", "upstream");
+        assert_eq!(
+            git_config(&scratch, &work, &["--local", "--get", "remote.pushDefault"]),
+            (Some(0), b"upstream\n".to_vec())
+        );
+
+        let model = configured(&work);
+        assert_eq!(model.push_remote, Some(b"origin".to_vec()), "push remote");
+        assert_eq!(model.base_remote, Some(b"origin".to_vec()), "base remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/origin/develop",
+            &["refs/remotes/upstream/develop"],
+        );
+    }
+
+    /// The `NoSuchRemote` key and remote `resolve` refuses the fixture with
+    /// once `key` names the remote `nope`, which it does not define; fails
+    /// the test on any other answer. The fixture defines `origin`, so a
+    /// fallback to it would resolve.
+    fn refused_remote(name: &str, key: &str) -> (&'static str, Vec<u8>) {
+        let scratch = Scratch::new(name).expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, key, "nope");
+        match resolved(&work) {
+            Err(Error::NoSuchRemote { key, remote }) => (key, remote),
+            other => panic!("resolve: expected Err(NoSuchRemote), got {other:?}"),
+        }
+    }
+
+    /// `wsx.baseRemote` naming a remote this repository does not define is
+    /// refused by key and name, with no fallback to `origin` (D-03).
+    #[test]
+    fn missing_base_remote_names_the_key_and_the_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        assert_eq!(
+            refused_remote("model-missing-base", BASE_REMOTE),
+            ("wsx.baseRemote", b"nope".to_vec())
+        );
+    }
+
+    /// The same for `wsx.pushRemote`.
+    #[test]
+    fn missing_push_remote_names_the_key_and_the_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        assert_eq!(
+            refused_remote("model-missing-push", PUSH_REMOTE),
+            ("wsx.pushRemote", b"nope".to_vec())
+        );
+    }
+
+    /// With no key and no `origin`, there is no base or push remote, though
+    /// the repository has a remote under another name (D-04), and the
+    /// integration branch comes from local refs (D-07).
+    #[test]
+    fn no_origin_means_no_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-no-origin").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(git_ok(
+            &scratch,
+            &work,
+            ["branch", "-q", "develop", "refs/remotes/origin/develop"],
+        ));
+        ok(git_ok(
+            &scratch,
+            &work,
+            ["remote", "rename", "origin", "upstream"],
+        ));
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        assert_eq!(
+            ok(git_ok(&scratch, &work, ["remote"])),
+            b"upstream\n".to_vec(),
+            "git remote, the control that another remote exists"
+        );
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, None, "base remote");
+        assert_eq!(model.push_remote, None, "push remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/heads/develop",
+            &["refs/heads/main"],
+        );
+    }
+
+    /// With `origin` and `upstream` and no key, the base is `origin` (D-05).
+    #[test]
+    fn upstream_is_preferred_nowhere() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-upstream-nowhere").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, Some(b"origin".to_vec()), "base remote");
+        assert_eq!(model.push_remote, Some(b"origin".to_vec()), "push remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/origin/develop",
+            &[
+                "refs/remotes/upstream/develop",
+                "refs/remotes/origin/next",
+                "refs/remotes/origin/main",
+            ],
+        );
+    }
+
+    /// When only `upstream` holds an integration branch and no key names it,
+    /// the refusal names `origin` and every ref tried is `origin`'s: wsx
+    /// never turns to another remote (D-05).
+    #[test]
+    fn upstream_is_not_auto_detected() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-upstream-not-detected").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        for full in ["refs/remotes/origin/develop", "refs/remotes/origin/next"] {
+            ok(git_ok(&scratch, &work, ["update-ref", "-d", full]));
+        }
+        ok(git_ok(
+            &scratch,
+            &work,
+            ["update-ref", "--no-deref", "-d", "refs/remotes/origin/HEAD"],
+        ));
+        // Controls: upstream's develop is there to be found, and deleting
+        // the symbolic HEAD left the branch it named.
+        tip(&scratch, &work, "refs/remotes/upstream/develop");
+        tip(&scratch, &work, "refs/remotes/origin/main");
+
+        match resolved(&work) {
+            Err(Error::NoIntegrationBranch { remote, tried }) => {
+                assert_eq!(remote, Some(b"origin".to_vec()), "remote");
+                assert!(!tried.is_empty(), "no ref tried");
+                for full in &tried {
+                    assert!(
+                        full.starts_with(b"refs/remotes/origin/"),
+                        "tried a ref that is not origin's: {}",
+                        String::from_utf8_lossy(full)
+                    );
+                }
+            }
+            other => panic!("resolve: expected Err(NoIntegrationBranch), got {other:?}"),
+        }
+    }
+
+    /// `wsx.baseRemote` set twice is refused with both values (D-18).
+    #[test]
+    fn repeated_base_remote_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-base-repeated").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        for value in ["origin", "nope"] {
+            ok(git_ok(
+                &scratch,
+                &work,
+                ["config", "--local", "--add", BASE_REMOTE, value],
+            ));
+        }
+        match resolved(&work) {
+            Err(Error::KeyRepeated { key, values }) => {
+                assert_eq!(key, "wsx.baseRemote");
+                assert_eq!(values, [b"origin".to_vec(), b"nope".to_vec()]);
+            }
+            other => panic!("resolve: expected Err(KeyRepeated), got {other:?}"),
+        }
+    }
+
+    /// `wsx.pushRemote=` is refused as empty (D-18), not read as unset.
+    #[test]
+    fn empty_push_remote_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-push-empty").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, PUSH_REMOTE, "");
+        match resolved(&work) {
+            Err(Error::KeyEmpty { key }) => assert_eq!(key, "wsx.pushRemote"),
+            other => panic!("resolve: expected Err(KeyEmpty), got {other:?}"),
+        }
+    }
+
+    /// A remote named `a/b` resolves its base from `refs/remotes/a/b/`.
+    #[test]
+    fn remote_name_with_a_slash_resolves() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-slash-remote").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let fork = with_fork(&scratch, &work);
+        ok(git_ok(
+            &scratch,
+            &work,
+            [
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("a/b"),
+                fork.as_os_str(),
+            ],
+        ));
+        ok(git_ok(&scratch, &work, ["fetch", "-q", "a/b"]));
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        set_config(&scratch, &work, BASE_REMOTE, "a/b");
+
+        let model = configured(&work);
+        assert_eq!(model.base_remote, Some(b"a/b".to_vec()), "base remote");
+        assert_integration(
+            &scratch,
+            &work,
+            &model.integration,
+            "refs/remotes/a/b/develop",
+            &["refs/remotes/origin/develop"],
+        );
+    }
+
+    /// A global `[remote "origin"]` section in a repository with no origin
+    /// does not make one: the base comes from local `develop` (D-04, A2)
+    /// rather than failing against a remote this repository lacks. Run in a
+    /// child, since the section is global config; `git remote` listing
+    /// `origin` is the control that the section is seen.
+    #[test]
+    fn global_origin_section_does_not_hide_local_branches() {
+        let scratch = Scratch::new("model-global-origin").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        ok(git_ok(
+            &scratch,
+            &work,
+            ["branch", "-q", "develop", "refs/remotes/origin/develop"],
+        ));
+        ok(git_ok(&scratch, &work, ["remote", "remove", "origin"]));
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(b"[remote \"origin\"]\n\tprune = true\n");
+        ok(write(&global, &config));
+        assert_eq!(
+            ok(git_ok(&scratch, &work, ["remote"])),
+            b"origin\n".to_vec(),
+            "git remote does not list the global section, so this test shows nothing"
+        );
+
+        let child = state_child_output(&scratch, &work);
+        let state = ok(testing::marker(&child, "state"));
+        assert_eq!(
+            state,
+            "configured",
+            "child error: {:?}",
+            testing::marker(&child, "error")
+        );
+        assert_eq!(ok(testing::marker(&child, "base_remote")), "<none>");
+        assert_eq!(ok(testing::marker(&child, "push_remote")), "<none>");
+    }
     #[test]
     #[ignore = "child half of the model config-source tests; runs only when re-executed"]
     fn state_child() {
@@ -1161,7 +1638,11 @@ mod tests {
             .map_err(Error::Git)
             .and_then(|repo| resolve(&repo, &BTreeSet::new()));
         match answer {
-            Ok(RepoModel::Configured(_)) => testing::child_print("state", "configured"),
+            Ok(RepoModel::Configured(model)) => {
+                testing::child_print("state", "configured");
+                testing::child_print("base_remote", remote_marker(model.base_remote.as_deref()));
+                testing::child_print("push_remote", remote_marker(model.push_remote.as_deref()));
+            }
             Ok(RepoModel::NotConfigured { .. }) => testing::child_print("state", "not-configured"),
             Err(err) => {
                 testing::child_print("state", "failed");
