@@ -102,7 +102,10 @@ impl RepoModel {
     ///
     /// A manifest that is missing, not a blob, unreadable or invalid on the
     /// inferred branch is `Error::NotConfigured` with that failure as its
-    /// reason, which renders the failure and says run `wsx init` (D-16).
+    /// reason, which renders the failure and says run `wsx init` (D-16). So
+    /// is a refusal of a replacement git and gix follow differently
+    /// (`git::Error::is_replacement_refusal`), which stops a configured
+    /// repository (D-22) and leaves one with no key not configured.
     /// Every other error passes through unchanged, so zero or several
     /// candidates stay the list `Error::WorkspaceCandidates` renders
     /// (D-21). Whether a repository is configured is read from the variant,
@@ -117,6 +120,9 @@ impl RepoModel {
                 | Error::ManifestUnreadable { .. }
                 | Error::ManifestInvalid { .. }) => Error::NotConfigured {
                     reason: Box::new(err),
+                },
+                Error::Git(inner) if inner.is_replacement_refusal() => Error::NotConfigured {
+                    reason: Box::new(Error::Git(inner)),
                 },
                 other => other,
             }),
@@ -458,7 +464,11 @@ fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
 /// A failure reading the tip's commit or its root tree is
 /// `Error::ManifestUnreadable`, since both are reads of the manifest; a
 /// failure of the `find_ref` that checks the branch exists is the ref store
-/// and stays `Error::Git`.
+/// and stays `Error::Git`. So does a refusal of a replacement git and gix
+/// follow differently, from `root_entry` before it reads anything
+/// (`git::Error::is_replacement_refusal`): it does not know whether the ref
+/// touches the manifest, so its message names the ref and does not say
+/// `.wsx.conf` cannot be read (D-22).
 fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let full = branch_ref(&branch);
     if repo.find_ref(&full)?.is_none() {
@@ -475,8 +485,13 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let workspace_tip = repo.ref_commit(&full).map_err(unreadable)?;
     let manifest = match repo
         .root_entry(&workspace_tip, MANIFEST_NAME)
-        .map_err(unreadable)?
-    {
+        .map_err(|source| {
+            if source.is_replacement_refusal() {
+                Error::Git(source)
+            } else {
+                unreadable(source)
+            }
+        })? {
         RootEntry::Absent => return Err(Error::ManifestMissing { branch }),
         RootEntry::NotABlob { kind } => return Err(Error::ManifestNotABlob { branch, kind }),
         RootEntry::Blob(bytes) => match manifest::parse(&bytes) {

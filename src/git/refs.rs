@@ -11,6 +11,9 @@
 //! parser; `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
 //! in `repo.rs` pins the ban).
 
+use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStringExt;
+
 use gix::bstr::ByteSlice;
 
 use super::repo::Repo;
@@ -42,6 +45,17 @@ pub enum RootEntry {
 /// 2.56.0: `git rev-parse --verify` resolves a ref four symbolic hops from a
 /// commit and refuses one five hops away.
 const SYMREF_MAX_DEPTH: usize = 5;
+
+/// The config key gix reads its replace base from; git does not read it.
+const REPLACE_BASE_KEY: &str = "gitoxide.objects.replaceRefBase";
+
+/// The variable git reads its replace base from, and gix maps onto
+/// `REPLACE_BASE_KEY`.
+const REPLACE_BASE_VAR: &str = "GIT_REPLACE_REF_BASE";
+
+/// The replace base when neither `REPLACE_BASE_VAR` nor `REPLACE_BASE_KEY`
+/// names one, in git and in gix.
+const DEFAULT_REPLACE_BASE: &[u8] = b"refs/replace/";
 
 /// Whether `name` is a valid branch name, as `git check-ref-format --branch`
 /// decides: `refs/heads/<name>` is a valid full ref name, and `name` is
@@ -196,7 +210,11 @@ impl Repo {
     /// git's lookup and a scan find the same entry or none. The check covers
     /// the root tree only, the one tree this read looks in, and refuses some
     /// disordered trees in which git would still reach `name`.
+    ///
+    /// Before any object is read, `refuse_unfollowable_replacements` refuses
+    /// the replace refs git and gix follow differently, repo-wide.
     pub fn root_entry(&self, commit: &ObjectId, name: &[u8]) -> Result<RootEntry, Error> {
+        self.refuse_unfollowable_replacements()?;
         let failed = |message: String| Error::Gix {
             what: format!("read {} in the root tree of {commit}", lossy(name)),
             message,
@@ -271,6 +289,114 @@ impl Repo {
         }
         names.sort();
         Ok(names)
+    }
+
+    /// Refuses, anywhere in the repository, a replace ref gix and git would
+    /// follow differently, so a read through gix's replacement map returns
+    /// the bytes git reads or nothing at all.
+    ///
+    /// git's replace base is `GIT_REPLACE_REF_BASE` from the process
+    /// environment, else `refs/replace/`; gix's is
+    /// `gitoxide.objects.replaceRefBase`, onto which gix maps that variable,
+    /// else `refs/replace/`. When they differ, which is the key set in
+    /// config with the variable unset, a ref whose name starts with either
+    /// base, at any depth, is `Error::ReplaceBaseDiffers`: gix applies refs
+    /// git ignores, or the reverse. With no such ref neither reader applies a
+    /// replacement, and this returns `Ok`. Any depth counts because gix lists
+    /// a base with `prefixed`, which matches a base with no trailing `/` as a
+    /// partial name.
+    ///
+    /// When the bases are equal, the refs directly under it are refused when
+    /// two names are equal once lower-cased (`ReplacementRefDuplicate`: git
+    /// stops with `duplicate replace ref` and gix applies one), or when a ref
+    /// is symbolic or holds an object another replace ref replaces
+    /// (`ReplacementRef`: git follows a symbolic replace ref and a chain to
+    /// its end, gix ignores the first and follows one hop, and a cycle makes
+    /// git fail while gix reads). Names are compared lower-cased because both
+    /// accept uppercase hex.
+    ///
+    /// A chain among objects the manifest read never touches stops the model
+    /// too (D-22), so the error names the ref and never says `.wsx.conf`
+    /// cannot be read. It over-refuses where neither reader follows a
+    /// replacement: a non-hex name, two non-hex names differing in case,
+    /// `core.useReplaceRefs=false`, `GIT_NO_REPLACE_OBJECTS`, and a differing
+    /// base whose only refs are nested or non-hex names. That is the safe side
+    /// to be wrong on, and reading the switches would take more code for a
+    /// repository that has both a chain and replacements turned off.
+    ///
+    /// gix loads its replacement map when the `Repo` is opened, and this
+    /// lists the refs later, so a replace ref added or removed in between,
+    /// during one run, can make the map the reads use and the refs checked
+    /// here disagree. Only a replacement changed during one run does this,
+    /// and git has no snapshot to read against.
+    fn refuse_unfollowable_replacements(&self) -> Result<(), Error> {
+        let git_base = std::env::var_os(REPLACE_BASE_VAR)
+            .map_or_else(|| DEFAULT_REPLACE_BASE.to_vec(), OsStringExt::into_vec);
+        let gix_base = self
+            .repo
+            .config_snapshot()
+            .string(REPLACE_BASE_KEY)
+            .map_or_else(|| DEFAULT_REPLACE_BASE.to_vec(), |value| value.to_vec());
+        if gix_base != git_base {
+            if self.any_ref_starts_with(&gix_base)? || self.any_ref_starts_with(&git_base)? {
+                return Err(Error::ReplaceBaseDiffers {
+                    value: gix_base,
+                    git_base,
+                });
+            }
+            return Ok(());
+        }
+        let names = self.refs_directly_under(&git_base)?;
+        let mut keyed: BTreeMap<Vec<u8>, &Vec<u8>> = BTreeMap::new();
+        for full in &names {
+            let name = full.strip_prefix(git_base.as_slice()).unwrap_or(full);
+            let key = name.to_ascii_lowercase();
+            if let Some(first) = keyed.insert(key, full) {
+                return Err(Error::ReplacementRefDuplicate {
+                    first: first.clone(),
+                    second: full.clone(),
+                });
+            }
+        }
+        for full in &names {
+            let refused = match self.find_ref(full)? {
+                Some(RefTarget::Symbolic(target)) => Some(target),
+                Some(RefTarget::Object(id)) if keyed.contains_key(id.to_string().as_bytes()) => {
+                    Some(id.to_string().into_bytes())
+                }
+                _ => None,
+            };
+            if let Some(target) = refused {
+                return Err(Error::ReplacementRef {
+                    name: full.clone(),
+                    target,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether any ref's name starts with `base`, listed as gix lists a
+    /// replace base when it opens a repository. A listing or a ref that fails
+    /// to read is `Error::Gix` naming `base`.
+    fn any_ref_starts_with(&self, base: &[u8]) -> Result<bool, Error> {
+        let failed = |message: String| Error::Gix {
+            what: format!("list the refs under {}", lossy(base)),
+            message,
+        };
+        let platform = self
+            .repo
+            .references()
+            .map_err(|err| failed(err.to_string()))?;
+        let mut refs = platform
+            .prefixed(base.as_bstr())
+            .map_err(|err| failed(err.to_string()))?;
+        match refs.next() {
+            None => Ok(false),
+            Some(reference) => reference
+                .map(|_| true)
+                .map_err(|err| failed(err.to_string())),
+        }
     }
 }
 

@@ -165,7 +165,12 @@ impl Error {
     /// `ReplaceBaseDiffers`. Every caller that treats those apart from other
     /// failures reads this one list.
     pub fn is_replacement_refusal(&self) -> bool {
-        false
+        matches!(
+            self,
+            Error::ReplacementRef { .. }
+                | Error::ReplacementRefDuplicate { .. }
+                | Error::ReplaceBaseDiffers { .. }
+        )
     }
 }
 
