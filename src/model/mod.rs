@@ -1253,9 +1253,24 @@ mod tests {
         full_ref: &str,
         rejected: &[&str],
     ) {
+        assert_resolved(scratch, work, integration, "develop", full_ref, rejected);
+    }
+
+    /// Asserts `integration` is `branch` read from `full_ref`, its tip the
+    /// id `git show-ref --verify <full_ref>` prints and not the tip of any
+    /// ref in `rejected`, each of which must exist: the candidates the chain
+    /// passed over or must ignore, so a right label on a wrong tip fails.
+    fn assert_resolved(
+        scratch: &Scratch,
+        work: &Path,
+        integration: &Integration,
+        branch: &str,
+        full_ref: &str,
+        rejected: &[&str],
+    ) {
         assert_eq!(
             integration.branch,
-            b"develop".to_vec(),
+            branch.as_bytes().to_vec(),
             "integration branch"
         );
         assert_eq!(
@@ -1645,6 +1660,646 @@ mod tests {
         assert_eq!(ok(testing::marker(&child, "base_remote")), "<none>");
         assert_eq!(ok(testing::marker(&child, "push_remote")), "<none>");
     }
+
+    /// `repo_with_remote` with `wsx.sourceBranch=workspace/dev`, so the
+    /// repository is configured and resolving it reaches the chain.
+    fn chain_repo(scratch: &Scratch) -> PathBuf {
+        let work = repo_with_remote(scratch);
+        set_config(scratch, &work, "wsx.sourceBranch", "workspace/dev");
+        work
+    }
+
+    /// `git <args>` in `work`; fails the test when git fails.
+    fn run(scratch: &Scratch, work: &Path, args: &[&str]) -> Vec<u8> {
+        ok(git_ok(scratch, work, args))
+    }
+
+    /// `git <args>` in `work`: its exit code, whatever it is.
+    fn exit_code(scratch: &Scratch, work: &Path, args: &[&str]) -> Option<i32> {
+        ok(testing::git(scratch, work, args)).status.code()
+    }
+
+    /// Deletes each direct ref in `fulls` from `work`.
+    fn delete_refs(scratch: &Scratch, work: &Path, fulls: &[&str]) {
+        for full in fulls {
+            run(scratch, work, &["update-ref", "-d", full]);
+        }
+    }
+
+    /// The integration branch `resolve` gives for `work`.
+    fn integration_of(work: &Path) -> Integration {
+        configured(work).integration
+    }
+
+    /// The error `resolve` refuses `work` with; fails the test when it
+    /// resolves.
+    fn refusal(work: &Path) -> Error {
+        match resolved(work) {
+            Err(err) => err,
+            Ok(answer) => panic!("resolve: expected an error, got {answer:?}"),
+        }
+    }
+
+    /// The `remote` and `tried` of `err`, which must be
+    /// `Error::NoIntegrationBranch`.
+    fn no_integration(err: &Error) -> (Option<&[u8]>, Vec<String>) {
+        match err {
+            Error::NoIntegrationBranch { remote, tried } => (
+                remote.as_deref(),
+                tried
+                    .iter()
+                    .map(|full| String::from_utf8_lossy(full).into_owned())
+                    .collect(),
+            ),
+            other => panic!("resolve: expected Err(NoIntegrationBranch), got {other:?}"),
+        }
+    }
+
+    /// Asserts `err` is `Error::IntegrationRefSymbolic` naming `full_ref`
+    /// and its `target`.
+    fn assert_symbolic(err: &Error, full_ref: &str, target: &str) {
+        match err {
+            Error::IntegrationRefSymbolic {
+                full_ref: got_ref,
+                target: got_target,
+            } => {
+                assert_eq!(
+                    String::from_utf8_lossy(got_ref),
+                    full_ref,
+                    "the symbolic ref named"
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(got_target),
+                    target,
+                    "the target named"
+                );
+            }
+            other => panic!("resolve: expected Err(IntegrationRefSymbolic), got {other:?}"),
+        }
+    }
+
+    const ORIGIN_DEVELOP: &str = "refs/remotes/origin/develop";
+    const ORIGIN_NEXT: &str = "refs/remotes/origin/next";
+    const ORIGIN_MAIN: &str = "refs/remotes/origin/main";
+    const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
+    const ORIGIN_ALIAS: &str = "refs/remotes/origin/alias";
+    const WORKSPACE: &str = "refs/heads/workspace/dev";
+
+    /// D-06: `develop` on the base remote wins over the remote default,
+    /// which `git symbolic-ref` shows names `origin/main`.
+    #[test]
+    fn develop_beats_the_remote_default() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-develop").expect("create scratch");
+        let work = chain_repo(&scratch);
+        assert_eq!(
+            run(&scratch, &work, &["symbolic-ref", ORIGIN_HEAD]),
+            b"refs/remotes/origin/main\n".to_vec(),
+            "git symbolic-ref {ORIGIN_HEAD}"
+        );
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "develop",
+            ORIGIN_DEVELOP,
+            &[ORIGIN_NEXT, ORIGIN_MAIN],
+        );
+    }
+
+    /// D-06: with no `develop` tracking ref, `next` is the next rung.
+    #[test]
+    fn next_follows_develop() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-next").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP]);
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "next",
+            ORIGIN_NEXT,
+            &[ORIGIN_MAIN],
+        );
+    }
+
+    /// D-06: with neither, the branch `<remote>/HEAD` names, read from its
+    /// own tracking ref; the control that an ordinary remote default
+    /// resolves.
+    #[test]
+    fn remote_default_follows_next() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-default").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "main",
+            ORIGIN_MAIN,
+            &[WORKSPACE],
+        );
+    }
+
+    /// D-06: a local `develop` does not stand in for a missing tracking ref
+    /// while a base remote exists; neither its label nor its commit is used.
+    #[test]
+    fn local_develop_does_not_redirect_a_remote_base() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-local-develop").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["branch", "develop", ORIGIN_DEVELOP]);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP]);
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "next",
+            ORIGIN_NEXT,
+            &["refs/heads/develop", ORIGIN_MAIN],
+        );
+    }
+
+    /// D-07, the control for the test above: with no remote, the same local
+    /// `develop` is the integration branch.
+    #[test]
+    fn local_branches_count_only_without_a_base_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-local-only").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["branch", "develop", ORIGIN_DEVELOP]);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        let model = configured(&work);
+        assert_eq!(model.base_remote, None, "base remote");
+        assert_resolved(
+            &scratch,
+            &work,
+            &model.integration,
+            "develop",
+            "refs/heads/develop",
+            &["refs/heads/main"],
+        );
+    }
+
+    /// D-07: with no remote and no local `develop`, the local `next`.
+    #[test]
+    fn local_next_follows_local_develop() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-local-next").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["branch", "next", ORIGIN_NEXT]);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "next",
+            "refs/heads/next",
+            &["refs/heads/main"],
+        );
+    }
+
+    /// D-09: with no rung present, the error lists the three refs tried, in
+    /// order, and names both fixes.
+    #[test]
+    fn no_integration_branch_lists_the_refs_tried() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-none").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "--no-deref", "-d", ORIGIN_HEAD],
+        );
+
+        let err = refusal(&work);
+        let (remote, tried) = no_integration(&err);
+        assert_eq!(remote, Some(&b"origin"[..]), "remote");
+        assert_eq!(tried, [ORIGIN_DEVELOP, ORIGIN_NEXT, ORIGIN_HEAD], "tried");
+        let rendered = err.to_string();
+        for fix in ["git remote set-head origin --auto", "wsx.baseRef"] {
+            assert!(rendered.contains(fix), "{rendered:?} does not name {fix:?}");
+        }
+    }
+
+    /// D-09: an existing `origin/main` is never guessed as the default.
+    #[test]
+    fn main_is_never_guessed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-no-main").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "--no-deref", "-d", ORIGIN_HEAD],
+        );
+        tip(&scratch, &work, ORIGIN_MAIN);
+        tip(&scratch, &work, "refs/heads/main");
+
+        let (_, tried) = no_integration(&refusal(&work));
+        assert!(
+            !tried.iter().any(|full| full.ends_with("/main")),
+            "tried main: {tried:?}"
+        );
+    }
+
+    /// D-09: with no remote, an existing local `main` is not guessed either.
+    #[test]
+    fn local_main_is_never_guessed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-no-local-main").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        tip(&scratch, &work, "refs/heads/main");
+
+        let err = refusal(&work);
+        let (remote, tried) = no_integration(&err);
+        assert_eq!(remote, None, "remote");
+        assert_eq!(tried, ["refs/heads/develop", "refs/heads/next"], "tried");
+    }
+
+    /// D-09: a `<remote>/HEAD` naming a deleted branch, which git cannot
+    /// resolve, is no default.
+    #[test]
+    fn dangling_remote_head_is_not_a_default() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-dangling-head").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_HEAD, "refs/remotes/origin/gone"],
+        );
+        assert_ne!(
+            exit_code(&scratch, &work, &["rev-parse", "--verify", ORIGIN_HEAD]),
+            Some(0),
+            "git rev-parse --verify {ORIGIN_HEAD} resolved the dangling HEAD"
+        );
+
+        let (_, tried) = no_integration(&refusal(&work));
+        assert!(
+            tried.iter().any(|full| full == ORIGIN_HEAD),
+            "tried {tried:?}"
+        );
+    }
+
+    /// D-09: a `<remote>/HEAD` holding an object id names no branch.
+    #[test]
+    fn object_remote_head_is_not_a_default() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-object-head").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        let main = tip(&scratch, &work, ORIGIN_MAIN);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "--no-deref", ORIGIN_HEAD, main.as_str()],
+        );
+        assert_ne!(
+            exit_code(&scratch, &work, &["symbolic-ref", "-q", ORIGIN_HEAD]),
+            Some(0),
+            "git symbolic-ref {ORIGIN_HEAD}: HEAD is still symbolic"
+        );
+        assert_eq!(tip(&scratch, &work, ORIGIN_HEAD), main, "HEAD's id");
+
+        let (_, tried) = no_integration(&refusal(&work));
+        assert!(
+            tried.iter().any(|full| full == ORIGIN_HEAD),
+            "tried {tried:?}"
+        );
+    }
+
+    /// D-09: a `<remote>/HEAD` naming a local branch is no default, and the
+    /// error says none of the refs names an integration branch, never that
+    /// this existing `HEAD` does not exist.
+    #[test]
+    fn remote_head_outside_the_remote_is_not_a_default() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-outside-head").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_HEAD, "refs/heads/main"],
+        );
+        assert_eq!(
+            run(&scratch, &work, &["symbolic-ref", ORIGIN_HEAD]),
+            b"refs/heads/main\n".to_vec(),
+            "git symbolic-ref {ORIGIN_HEAD}, the control that HEAD exists"
+        );
+
+        let err = refusal(&work);
+        let (_, tried) = no_integration(&err);
+        assert!(
+            tried.iter().any(|full| full == ORIGIN_HEAD),
+            "tried {tried:?}"
+        );
+        let rendered = err.to_string();
+        assert!(rendered.contains(ORIGIN_HEAD), "{rendered:?}");
+        assert!(
+            rendered.contains("names an integration branch"),
+            "{rendered:?}"
+        );
+        assert!(
+            !rendered.contains("exist"),
+            "{rendered:?} says a ref that exists does not"
+        );
+    }
+
+    /// D-10: a stale `<remote>/HEAD` is used as is. The source renamed its
+    /// default to `trunk` and nothing was fetched, so `HEAD` still names
+    /// `origin/main`, whose tracking ref exists.
+    #[test]
+    fn stale_remote_head_is_accepted() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-stale-head").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let source = scratch.root.join("source");
+        run(&scratch, &source, &["branch", "-m", "main", "trunk"]);
+        assert_eq!(
+            run(&scratch, &source, &["symbolic-ref", "HEAD"]),
+            b"refs/heads/trunk\n".to_vec(),
+            "the source's default"
+        );
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        assert_eq!(
+            run(&scratch, &work, &["symbolic-ref", ORIGIN_HEAD]),
+            b"refs/remotes/origin/main\n".to_vec(),
+            "git symbolic-ref {ORIGIN_HEAD} after the rename"
+        );
+
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "main",
+            ORIGIN_MAIN,
+            &[WORKSPACE],
+        );
+    }
+
+    /// D-09: resolution reads only local refs: with the remote's directory
+    /// deleted, the remote default resolves to the same answer, tip
+    /// included.
+    #[test]
+    fn resolution_needs_no_remote_to_be_reachable() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-unreachable").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        let before = integration_of(&work);
+        let source = scratch.root.join("source");
+        std::fs::remove_dir_all(&source)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", source.display()));
+        assert!(!source.exists(), "the remote's directory is still there");
+
+        let after = integration_of(&work);
+        assert_eq!(after, before, "the answer before and after the deletion");
+        assert_resolved(&scratch, &work, &after, "main", ORIGIN_MAIN, &[WORKSPACE]);
+    }
+
+    /// A rung holding a blob, which git cannot peel to a commit, fails
+    /// closed: no fall-through to `next`.
+    #[test]
+    fn integration_ref_holding_a_blob_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-blob").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let blob = ok(testing::object_id(&scratch, &work, "refs/heads/main:a.txt"));
+        run(
+            &scratch,
+            &work,
+            &["update-ref", ORIGIN_DEVELOP, blob.to_string().as_str()],
+        );
+        let peel = format!("{ORIGIN_DEVELOP}^{{commit}}");
+        assert_ne!(
+            exit_code(&scratch, &work, &["rev-parse", "--verify", peel.as_str()]),
+            Some(0),
+            "git peeled {ORIGIN_DEVELOP}, holding a blob, to a commit"
+        );
+        tip(&scratch, &work, ORIGIN_NEXT);
+
+        match refusal(&work) {
+            Error::Git(_) => {}
+            other => panic!("resolve: expected Err(Git), got {other:?}"),
+        }
+    }
+
+    /// D-06: `HEAD -> alias -> refs/heads/workspace/dev` is refused at
+    /// `alias`. `git rev-parse` following the chain to the workspace tip is
+    /// the control that it does reach a local commit.
+    #[test]
+    fn remote_head_chain_into_a_local_branch_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-head-alias-local").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(&scratch, &work, &["symbolic-ref", ORIGIN_ALIAS, WORKSPACE]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_HEAD, ORIGIN_ALIAS],
+        );
+        let workspace = tip(&scratch, &work, WORKSPACE);
+        assert_eq!(
+            ok(testing::object_id(&scratch, &work, ORIGIN_ALIAS)).to_string(),
+            workspace,
+            "git rev-parse --verify {ORIGIN_ALIAS}"
+        );
+
+        let err = refusal(&work);
+        assert_symbolic(&err, ORIGIN_ALIAS, WORKSPACE);
+        let rendered = err.to_string();
+        for fix in [
+            "git update-ref --no-deref -d refs/remotes/origin/alias",
+            "wsx.baseRef",
+        ] {
+            assert!(rendered.contains(fix), "{rendered:?} does not name {fix:?}");
+        }
+    }
+
+    /// D-06: a chain that never leaves the remote is refused too.
+    #[test]
+    fn remote_head_chain_inside_the_remote_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-head-alias-remote").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_ALIAS, ORIGIN_MAIN],
+        );
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_HEAD, ORIGIN_ALIAS],
+        );
+
+        assert_symbolic(&refusal(&work), ORIGIN_ALIAS, ORIGIN_MAIN);
+    }
+
+    /// D-06: a cycle, which git cannot resolve, is refused at `alias`.
+    #[test]
+    fn remote_head_cycle_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-head-cycle").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_ALIAS, ORIGIN_HEAD],
+        );
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_HEAD, ORIGIN_ALIAS],
+        );
+        assert_ne!(
+            exit_code(&scratch, &work, &["rev-parse", "--verify", ORIGIN_HEAD]),
+            Some(0),
+            "git rev-parse --verify {ORIGIN_HEAD} resolved the cycle"
+        );
+
+        assert_symbolic(&refusal(&work), ORIGIN_ALIAS, ORIGIN_HEAD);
+    }
+
+    /// D-06: a symbolic `develop` is refused, with no fall-through to the
+    /// `next` that is present.
+    #[test]
+    fn symbolic_develop_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-symbolic-develop").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_DEVELOP, WORKSPACE],
+        );
+        tip(&scratch, &work, ORIGIN_NEXT);
+
+        assert_symbolic(&refusal(&work), ORIGIN_DEVELOP, WORKSPACE);
+    }
+
+    /// D-06: a symbolic `next` is refused, with no fall-through to the
+    /// remote default, which is still usable.
+    #[test]
+    fn symbolic_next_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-symbolic-next").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        run(&scratch, &work, &["symbolic-ref", ORIGIN_NEXT, WORKSPACE]);
+        assert_eq!(
+            run(&scratch, &work, &["symbolic-ref", ORIGIN_HEAD]),
+            b"refs/remotes/origin/main\n".to_vec(),
+            "git symbolic-ref {ORIGIN_HEAD}"
+        );
+        tip(&scratch, &work, ORIGIN_MAIN);
+
+        assert_symbolic(&refusal(&work), ORIGIN_NEXT, WORKSPACE);
+    }
+
+    /// D-07: the rule holds on local rungs: a local `develop` aliased to
+    /// `main` is refused.
+    #[test]
+    fn symbolic_local_develop_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-symbolic-local").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", "refs/heads/develop", "refs/heads/main"],
+        );
+
+        assert_symbolic(&refusal(&work), "refs/heads/develop", "refs/heads/main");
+    }
+
+    /// The loose file `.git/heads/refs/remotes/origin/develop`, a path gix
+    /// tries for that full name and git does not, cannot stand in for the
+    /// deleted tracking ref.
+    #[test]
+    fn ref_under_another_path_does_not_satisfy_a_rung() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-other-path").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP]);
+        let workspace = tip(&scratch, &work, WORKSPACE);
+        ok(write(
+            &work.join(".git/heads").join(ORIGIN_DEVELOP),
+            format!("{workspace}\n").as_bytes(),
+        ));
+        assert_ne!(
+            exit_code(&scratch, &work, &["show-ref", "--verify", ORIGIN_DEVELOP]),
+            Some(0),
+            "git show-ref --verify {ORIGIN_DEVELOP} found the file under .git/heads/"
+        );
+
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "next",
+            ORIGIN_NEXT,
+            &[WORKSPACE, ORIGIN_MAIN],
+        );
+    }
+
     #[test]
     #[ignore = "child half of the model config-source tests; runs only when re-executed"]
     fn state_child() {

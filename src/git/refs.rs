@@ -783,6 +783,134 @@ mod tests {
         }
     }
 
+    /// A full name reads only that ref: `refs/remotes/origin/ghost` is
+    /// absent for `find_ref` and `ref_commit`, as for `git show-ref --verify`,
+    /// while `refs/heads/refs/remotes/origin/ghost` (a longer name ending in
+    /// it) exists and the loose file `.git/heads/refs/remotes/origin/ghost`,
+    /// a path gix tries for that full name, holds a commit id. The longer
+    /// name, read by its own full name, is the control that the ref is there.
+    #[test]
+    fn full_name_read_is_exact() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("full-name-exact").expect("create scratch");
+        let work = cloned_repo(&scratch);
+        let ghost = "refs/remotes/origin/ghost";
+        let longer = "refs/heads/refs/remotes/origin/ghost";
+        git_ok(&scratch, &work, ["update-ref", longer, "HEAD"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        let head = show_ref(&scratch, &work, "refs/heads/main")
+            .expect("git show-ref finds refs/heads/main");
+        write(
+            &work.join(".git/heads").join(ghost),
+            format!("{head}\n").as_bytes(),
+        )
+        .expect("write .git/heads/refs/remotes/origin/ghost");
+        assert_eq!(
+            show_ref(&scratch, &work, longer).as_deref(),
+            Some(head.as_str()),
+            "git show-ref --verify {longer}"
+        );
+        assert_eq!(
+            show_ref(&scratch, &work, ghost),
+            None,
+            "git show-ref --verify {ghost}"
+        );
+        let repo = Repo::discover(&work).expect("discover the clone");
+        let raw = repo
+            .repo
+            .try_find_reference(ghost)
+            .unwrap_or_else(|err| panic!("try_find_reference({ghost}): {err}"))
+            .map(|found| found.name().as_bstr().to_string());
+        assert!(
+            raw.as_deref().is_some_and(|name| name != ghost),
+            "gix's raw lookup of {ghost} gave {raw:?}, not a ref under another name, \
+             so this test shows nothing about find_ref's name check"
+        );
+
+        assert_eq!(
+            read(&repo, longer),
+            Some(RefTarget::Object(ObjectId(head.clone()))),
+            "find_ref({longer})"
+        );
+        assert_eq!(read(&repo, ghost), None, "find_ref({ghost})");
+        let commit = repo.ref_commit(ghost.as_bytes());
+        assert!(commit.is_err(), "ref_commit({ghost}) gave {commit:?}");
+    }
+
+    /// A tag never satisfies a branch's full name: neither `refs/tags/develop`
+    /// for `refs/heads/develop` nor `refs/tags/refs/heads/ghost2` for
+    /// `refs/heads/ghost2`, agreeing with `git show-ref --verify`. Each tag,
+    /// read by its own full name, is the control that it exists.
+    #[test]
+    fn tag_does_not_satisfy_a_branch_name() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("tag-not-branch").expect("create scratch");
+        let work = cloned_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["tag", "develop"]);
+        ok(&["update-ref", "refs/tags/refs/heads/ghost2", "HEAD"]);
+        let repo = Repo::discover(&work).expect("discover the clone");
+
+        for (tag, branch) in [
+            ("refs/tags/develop", "refs/heads/develop"),
+            ("refs/tags/refs/heads/ghost2", "refs/heads/ghost2"),
+        ] {
+            let tagged = show_ref(&scratch, &work, tag)
+                .unwrap_or_else(|| panic!("git show-ref --verify {tag} finds no tag"));
+            assert_eq!(
+                read(&repo, tag),
+                Some(RefTarget::Object(ObjectId(tagged))),
+                "find_ref({tag})"
+            );
+            assert_eq!(
+                show_ref(&scratch, &work, branch),
+                None,
+                "git show-ref --verify {branch}"
+            );
+            assert_eq!(read(&repo, branch), None, "find_ref({branch})");
+            let commit = repo.ref_commit(branch.as_bytes());
+            assert!(commit.is_err(), "ref_commit({branch}) gave {commit:?}");
+        }
+    }
+
+    /// `ref_commit` gives the commit `git show-ref --verify` prints for a
+    /// local branch, a tracking ref and the symbolic `<remote>/HEAD`. The
+    /// branches hold different commits, so a read of the wrong one shows.
+    #[test]
+    fn ref_commit_matches_show_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("ref-commit-show-ref").expect("create scratch");
+        let work = cloned_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
+        ok(&["switch", "-q", "-c", "other"]);
+        write(&work.join("b.txt"), b"b\n").expect("write b.txt");
+        commit_all(&scratch, &work, "other", T0 + TICK).expect("commit");
+        ok(&["switch", "-q", "main"]);
+        let repo = Repo::discover(&work).expect("discover the clone");
+
+        let mut seen = Vec::new();
+        for full in [
+            "refs/heads/main",
+            "refs/heads/other",
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/HEAD",
+        ] {
+            let from_git = show_ref(&scratch, &work, full)
+                .unwrap_or_else(|| panic!("git show-ref --verify {full} finds no ref"));
+            assert_eq!(commit_of(&repo, full), from_git, "ref_commit({full})");
+            seen.push(from_git);
+        }
+        assert_ne!(seen[0], seen[1], "main and other hold the same commit");
+    }
+
     #[test]
     fn ref_commit_reads_the_commit_a_describe_shaped_ref_holds() {
         if testing::rerun_scrubbed() {
