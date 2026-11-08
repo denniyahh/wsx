@@ -53,15 +53,21 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
+    use gix::bstr::ByteSlice;
+
     use super::super::testing::{self, Env, Scratch, T0, commit_all, git_ok, write};
     use super::Repo;
 
     /// The key every test here reads.
     const KEY: &str = "wsx.sourceBranch";
 
-    /// The variable a parent hands `count_child`: the directory it discovers
-    /// from.
+    /// The variable a parent hands `count_child` and `remote_child`: the
+    /// directory it discovers from.
     const START_VAR: &str = "WSX_TEST_START";
+
+    /// The variable a parent hands `remote_child`: the remote name it asks
+    /// `remote_configured` about.
+    const REMOTE_VAR: &str = "WSX_TEST_REMOTE";
 
     /// The full libtest path of a child half in this module.
     fn child_path(name: &str) -> String {
@@ -458,6 +464,231 @@ mod tests {
         let git_values = printed_values("git config --local --get wsx.sub.sourceBranch", &sub);
         assert_eq!(git_values, [b"x".to_vec()]);
         assert_eq!(local_values(&repo, "wsx.sub.sourceBranch"), git_values);
+    }
+
+    /// Asserts `git <args>` in `repo` exits `code`.
+    fn assert_git_exits(scratch: &Scratch, repo: &Path, args: &[&str], code: i32) {
+        let output = git(scratch, repo, args);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}",
+            testing::failed_run(&format!("git {}", args.join(" ")), &output)
+        );
+    }
+
+    /// The names `git remote` lists in `repo`.
+    fn git_remotes(scratch: &Scratch, repo: &Path) -> Vec<Vec<u8>> {
+        let output = git(scratch, repo, &["remote"]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git remote", &output)
+        );
+        output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    }
+
+    /// `remote_configured(name)` on `Repo::discover(repo)`.
+    fn configured(repo: &Path, name: &[u8]) -> bool {
+        Repo::discover(repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()))
+            .remote_configured(name)
+    }
+
+    /// Whether gix's own `remote_names()` lists `name`: the control that a
+    /// section gix counts as a remote is one `remote_configured` refuses.
+    fn gix_lists_remote(repo: &Path, name: &[u8]) -> bool {
+        let found =
+            Repo::discover(repo).unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        found
+            .repo
+            .remote_names()
+            .iter()
+            .any(|remote| remote.as_bytes() == name)
+    }
+
+    /// Runs `remote_child` on `repo` for the remote `name` with the scratch
+    /// environment and returns its `configured` marker.
+    fn child_configured(scratch: &Scratch, repo: &Path, name: &str) -> String {
+        let mut env = child_env(scratch, repo);
+        env.push((REMOTE_VAR.into(), name.into()));
+        let child = testing::reexec(&child_path("remote_child"), &env, &scratch.root, b"")
+            .unwrap_or_else(|err| panic!("{err}"));
+        testing::marker(&child, "configured").unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// A remote section in global config is not a remote of this
+    /// repository: `git remote` lists it, but `git remote add` treats the
+    /// name as free, and a child with the scratch environment does not count
+    /// it. The child then counts the section `git remote add` wrote, the
+    /// control that it can answer `true` for the same name.
+    #[test]
+    fn global_remote_section_is_not_a_remote() {
+        let scratch = Scratch::new("config-remote-global").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(b"[remote \"x\"]\n\tprune = true\n");
+        write(&global, &config).expect("append remote.x.prune");
+
+        assert!(
+            git_remotes(&scratch, &repo).contains(&b"x".to_vec()),
+            "git remote does not list the global section, so this test shows nothing"
+        );
+        assert_eq!(child_configured(&scratch, &repo, "x"), "false");
+        // Last: it writes the repository's config.
+        assert_git_exits(&scratch, &repo, &["remote", "add", "x", "/y"], 0);
+        assert_eq!(child_configured(&scratch, &repo, "x"), "true");
+    }
+
+    /// A local `[remote "empty"]` with no keys is not a remote: gix lists it,
+    /// `git remote add` treats the name as free.
+    #[test]
+    fn keyless_local_remote_section_is_not_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-keyless").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        append_config(&repo, b"[remote \"empty\"]\n");
+
+        assert!(
+            gix_lists_remote(&repo, b"empty"),
+            "gix does not list the keyless section, so this test shows nothing"
+        );
+        assert!(
+            !configured(&repo, b"empty"),
+            "remote_configured counts a local remote section with no keys"
+        );
+        // Last: it writes the repository's config.
+        assert_git_exits(&scratch, &repo, &["remote", "add", "empty", "/y"], 0);
+    }
+
+    /// A remote `git remote add` wrote is a remote, and a second
+    /// `git remote add` of the name refuses with exit 3.
+    #[test]
+    fn local_remote_is_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-local").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        git_ok(&scratch, &repo, ["remote", "add", "origin", "/x"])
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        assert!(configured(&repo, b"origin"));
+        assert_git_exits(&scratch, &repo, &["remote", "add", "origin", "/y"], 3);
+    }
+
+    /// A local remote section with a key but no `url` is a remote, and
+    /// `git remote` lists it.
+    #[test]
+    fn local_remote_without_a_url_is_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-no-url").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        append_config(&repo, b"[remote \"bare\"]\n\tprune = true\n");
+
+        assert!(configured(&repo, b"bare"));
+        assert!(
+            git_remotes(&scratch, &repo).contains(&b"bare".to_vec()),
+            "git remote does not list the section"
+        );
+    }
+
+    /// A remote section from an `include.path` file is a remote:
+    /// `git remote add` refuses the name with exit 3, though
+    /// `git config --local` without `--includes` does not see its url.
+    #[test]
+    fn included_remote_is_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-include").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        write(
+            &repo.join(".git/extra.conf"),
+            b"[remote \"inc\"]\n\turl = /x\n",
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        append_config(&repo, b"[include]\n\tpath = extra.conf\n");
+
+        assert_git_finds_nothing(
+            &scratch,
+            &repo,
+            &["config", "--local", "--get", "remote.inc.url"],
+        );
+        assert!(configured(&repo, b"inc"));
+        assert_git_exits(&scratch, &repo, &["remote", "add", "inc", "/y"], 3);
+    }
+
+    /// A remote section in `config.worktree` is a remote: `git remote add`
+    /// refuses the name with exit 3.
+    #[test]
+    fn worktree_config_remote_is_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-worktree").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        for args in [
+            ["config", "core.repositoryformatversion", "1"].as_slice(),
+            &["config", "extensions.worktreeConfig", "true"],
+            &["config", "--worktree", "remote.wt.url", "/x"],
+        ] {
+            git_ok(&scratch, &repo, args).unwrap_or_else(|err| panic!("{err}"));
+        }
+
+        assert_git_finds_nothing(
+            &scratch,
+            &repo,
+            &["config", "--local", "--get", "remote.wt.url"],
+        );
+        assert!(configured(&repo, b"wt"));
+        assert_git_exits(&scratch, &repo, &["remote", "add", "wt", "/y"], 3);
+    }
+
+    /// A name no section defines is not a remote, in a repository that has
+    /// another remote, which is.
+    #[test]
+    fn undefined_remote_is_not_a_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-remote-undefined").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        git_ok(&scratch, &repo, ["remote", "add", "origin", "/x"])
+            .unwrap_or_else(|err| panic!("{err}"));
+
+        assert!(!configured(&repo, b"nope"));
+        assert!(configured(&repo, b"origin"), "the control remote");
+    }
+
+    /// Prints `configured`, what `remote_configured` answers for the name in
+    /// `REMOTE_VAR` on `Repo::discover` of the directory in `START_VAR`; or
+    /// `error` when discovery fails.
+    #[test]
+    #[ignore = "child half of the remote definition tests; runs only when re-executed"]
+    fn remote_child() {
+        let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
+        let name = std::env::var_os(REMOTE_VAR).expect("the parent set the remote name");
+        match Repo::discover(Path::new(&start)) {
+            Ok(found) => {
+                testing::child_print(
+                    "configured",
+                    found.remote_configured(name.as_encoded_bytes()),
+                );
+            }
+            Err(err) => testing::child_print("error", err.to_string().replace('\n', "\\n")),
+        }
     }
 
     /// Prints what `Repo::discover` of the directory in `START_VAR` reads
