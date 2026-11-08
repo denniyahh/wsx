@@ -181,6 +181,8 @@ impl Repo {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
@@ -188,7 +190,7 @@ mod tests {
 
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, ObjectId};
-    use super::{RefTarget, Repo};
+    use super::{RefTarget, Repo, is_branch_name};
 
     /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
     /// annotated tag `v1` of that commit, `v1nest` of `v1` and `vtree` of
@@ -781,6 +783,69 @@ mod tests {
                 "ref_commit({exact}), {packing}"
             );
         }
+    }
+
+    /// `is_branch_name` agrees with `git check-ref-format --branch` on each
+    /// name in the table, which git accepts some of and refuses others of,
+    /// so a check that always answers one way fails.
+    #[test]
+    fn branch_names_agree_with_git() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("branch-names").expect("create scratch");
+        let repo_dir = tagged_repo(&scratch);
+        let names: [&[u8]; 13] = [
+            b"develop",
+            b"workspace/dev",
+            b"a/b",
+            b"HEAD",
+            b"-x",
+            b"a..b",
+            b"a b",
+            b"a.lock",
+            b".a",
+            b"a/",
+            b"",
+            b"\xE9",
+            b"refs/heads/x",
+        ];
+        let (mut accepted, mut refused) = (0, 0);
+        for name in names {
+            let output = testing::git(
+                &scratch,
+                &repo_dir,
+                [
+                    OsStr::new("check-ref-format"),
+                    OsStr::new("--branch"),
+                    OsStr::from_bytes(name),
+                ],
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+            let shown = BStr::new(name);
+            let git_accepts = match output.status.code() {
+                Some(0) => true,
+                Some(128) => false,
+                other => panic!(
+                    "git check-ref-format --branch {shown:?} exited {other:?}: {}",
+                    String::from_utf8_lossy(&output.stderr).trim_end()
+                ),
+            };
+            assert_eq!(
+                is_branch_name(name),
+                git_accepts,
+                "is_branch_name({shown:?}) against git check-ref-format --branch"
+            );
+            if git_accepts {
+                accepted += 1;
+            } else {
+                refused += 1;
+            }
+        }
+        assert!(
+            accepted > 0 && refused > 0,
+            "git accepted {accepted} and refused {refused} of the table"
+        );
     }
 
     /// A full name reads only that ref: `refs/remotes/origin/ghost` is

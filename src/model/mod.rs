@@ -33,6 +33,10 @@ pub const BASE_REMOTE: &str = "wsx.baseRemote";
 /// The local config key naming the remote PR branches are pushed to (D-02).
 pub const PUSH_REMOTE: &str = "wsx.pushRemote";
 
+/// The local config key naming the integration branch outright, a bare
+/// branch name on the base remote, with no fallback to the chain (D-08).
+pub const BASE_REF: &str = "wsx.baseRef";
+
 /// The remote a base or push remote defaults to when its key is unset (D-02).
 pub const DEFAULT_REMOTE: &[u8] = b"origin";
 
@@ -487,7 +491,9 @@ mod tests {
     use crate::git;
 
     use super::manifest::{ParseError, Problem};
-    use super::{BASE_REMOTE, Error, Integration, Model, PUSH_REMOTE, RepoModel, resolve};
+    use super::{
+        BASE_REF, BASE_REMOTE, Error, Integration, Model, PUSH_REMOTE, RepoModel, resolve,
+    };
 
     /// Fails the test with `err` when a fixture step fails.
     fn ok<T>(result: Result<T, String>) -> T {
@@ -2303,6 +2309,185 @@ mod tests {
         );
 
         assert_symbolic(&refusal(&work), "refs/heads/develop", "refs/heads/main");
+    }
+
+    /// D-08: `wsx.baseRef` selects `main` though the chain would take
+    /// `develop`, from the base remote's tracking ref.
+    #[test]
+    fn base_ref_overrides_the_chain() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-overrides").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, BASE_REF, "main");
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "main",
+            ORIGIN_MAIN,
+            &[ORIGIN_DEVELOP, ORIGIN_NEXT],
+        );
+    }
+
+    /// D-08: a `wsx.baseRef` with no ref is refused naming the ref tried,
+    /// with no fallback to the `develop` that exists.
+    #[test]
+    fn missing_base_ref_names_the_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-missing").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, BASE_REF, "nope");
+        tip(&scratch, &work, ORIGIN_DEVELOP);
+
+        match refusal(&work) {
+            Error::BaseRefMissing { value, tried } => {
+                assert_eq!(String::from_utf8_lossy(&value), "nope", "value");
+                assert_eq!(
+                    String::from_utf8_lossy(&tried),
+                    "refs/remotes/origin/nope",
+                    "tried"
+                );
+            }
+            other => panic!("resolve: expected Err(BaseRefMissing), got {other:?}"),
+        }
+    }
+
+    /// D-08: `upstream/next` is a branch literally named that on the base
+    /// remote `upstream`, not `upstream`'s `next`, which exists.
+    #[test]
+    fn base_ref_with_a_slash_is_a_literal_branch_name() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-slash").expect("create scratch");
+        let work = chain_repo(&scratch);
+        with_fork(&scratch, &work);
+        set_config(&scratch, &work, BASE_REMOTE, "upstream");
+        set_config(&scratch, &work, BASE_REF, "upstream/next");
+        tip(&scratch, &work, "refs/remotes/upstream/next");
+
+        let err = refusal(&work);
+        match &err {
+            Error::BaseRefMissing { value, tried } => {
+                assert_eq!(String::from_utf8_lossy(value), "upstream/next", "value");
+                assert_eq!(
+                    String::from_utf8_lossy(tried),
+                    "refs/remotes/upstream/upstream/next",
+                    "tried"
+                );
+            }
+            other => panic!("resolve: expected Err(BaseRefMissing), got {other:?}"),
+        }
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("bare branch name"),
+            "{rendered:?} does not say wsx.baseRef is a bare branch name"
+        );
+    }
+
+    /// D-08: with no remote, `wsx.baseRef` reads `refs/heads/<value>`, over
+    /// the local `develop` the chain would take.
+    #[test]
+    fn base_ref_resolves_locally_without_a_base_remote() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-local").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["branch", "trunk", ORIGIN_NEXT]);
+        run(&scratch, &work, &["branch", "develop", ORIGIN_DEVELOP]);
+        run(&scratch, &work, &["remote", "remove", "origin"]);
+        set_config(&scratch, &work, BASE_REF, "trunk");
+        assert_resolved(
+            &scratch,
+            &work,
+            &integration_of(&work),
+            "trunk",
+            "refs/heads/trunk",
+            &["refs/heads/develop", "refs/heads/main"],
+        );
+    }
+
+    /// A5: a value `git check-ref-format --branch` refuses is not a branch
+    /// name.
+    #[test]
+    fn invalid_base_ref_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-invalid").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, BASE_REF, "-x");
+
+        match refusal(&work) {
+            Error::NotABranchName { key, value } => {
+                assert_eq!(key, "wsx.baseRef", "key");
+                assert_eq!(value, b"-x".to_vec(), "value");
+            }
+            other => panic!("resolve: expected Err(NotABranchName), got {other:?}"),
+        }
+    }
+
+    /// D-18: `wsx.baseRef` set twice is refused with both values.
+    #[test]
+    fn repeated_base_ref_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-repeated").expect("create scratch");
+        let work = chain_repo(&scratch);
+        for value in ["main", "next"] {
+            run(
+                &scratch,
+                &work,
+                &["config", "--local", "--add", BASE_REF, value],
+            );
+        }
+
+        match refusal(&work) {
+            Error::KeyRepeated { key, values } => {
+                assert_eq!(key, "wsx.baseRef", "key");
+                assert_eq!(values, [b"main".to_vec(), b"next".to_vec()], "values");
+            }
+            other => panic!("resolve: expected Err(KeyRepeated), got {other:?}"),
+        }
+    }
+
+    /// D-18: `wsx.baseRef=` is refused as empty, not read as unset.
+    #[test]
+    fn empty_base_ref_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-empty").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, BASE_REF, "");
+
+        match refusal(&work) {
+            Error::KeyEmpty { key } => assert_eq!(key, "wsx.baseRef", "key"),
+            other => panic!("resolve: expected Err(KeyEmpty), got {other:?}"),
+        }
+    }
+
+    /// D-06, D-08: a `wsx.baseRef` naming a symbolic ref is refused like
+    /// every other rung, neither reported missing nor replaced by the
+    /// `develop` that exists.
+    #[test]
+    fn symbolic_base_ref_is_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("base-ref-symbolic").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(&scratch, &work, &["symbolic-ref", ORIGIN_ALIAS, WORKSPACE]);
+        set_config(&scratch, &work, BASE_REF, "alias");
+        tip(&scratch, &work, ORIGIN_DEVELOP);
+
+        assert_symbolic(&refusal(&work), ORIGIN_ALIAS, WORKSPACE);
     }
 
     /// The loose file `.git/heads/refs/remotes/origin/develop`, a path gix
