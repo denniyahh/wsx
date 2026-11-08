@@ -281,7 +281,7 @@ impl std::error::Error for Error {}
 /// `Err` means exactly that the repository is configured and the model
 /// fails closed; a repository that is not configured is a value.
 pub fn resolve(repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
-    match single(repo, SOURCE_BRANCH) {
+    match single(repo, SOURCE_BRANCH)? {
         Some(branch) => {
             // 03.1 D-04: after this check the branch is read only as the one
             // full ref `refs/heads/<branch>`, never through a DWIM ladder.
@@ -301,9 +301,25 @@ pub fn resolve(repo: &Repo, _recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, 
     }
 }
 
-/// The value of `key` in local config: the last one, or `None` when unset.
-fn single(repo: &Repo, key: &'static str) -> Option<Vec<u8>> {
-    repo.local_config_values(key).pop()
+/// The one value of `key` in this repository's own config, or `None` when
+/// it is unset. A key set more than once is `Error::KeyRepeated` with every
+/// value, not git's last-one-wins, and a single empty value (`key =`, or a
+/// key line with no `=`) is `Error::KeyEmpty` (D-18). Only `key` is read:
+/// another `wsx.*` key, empty or repeated, is not this read's concern
+/// (GUARD-05 turns a guard off with an empty `wsx.protectedBranches`).
+fn single(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
+    let mut values = repo.local_config_values(key);
+    match values.len() {
+        0 => Ok(None),
+        1 => {
+            let value = values.remove(0);
+            if value.is_empty() {
+                return Err(Error::KeyEmpty { key });
+            }
+            Ok(Some(value))
+        }
+        _ => Err(Error::KeyRepeated { key, values }),
+    }
 }
 
 /// `refs/heads/<branch>`.
