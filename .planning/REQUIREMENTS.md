@@ -18,6 +18,13 @@ ship approval and versioning. Three rules follow:
 2. devflow uses wsx for repo operations (through IF-01) rather than reimplementing them.
 3. Neither tool implements a capability the other owns.
 
+**Amendment (owner decision, 2026-11-15): agent hooks are wsx's.** Hooks run by coding-agent harnesses are a
+wsx capability, not a devflow one. Rule 1 and IF-02 therefore gain one exception, for the harness hook
+configuration wsx installs into and the hook payloads it receives. wsx still has no knowledge of GSD, devflow,
+phases or agent sessions, and is still fully useful in a repo with no agent at all. No requirement IDs exist for
+this yet: the scope is under research (`research/AGENT-HOOKS-UNIFICATION-BRIEF.md`), and IF-02's wording, its
+source-scan test and STAT-02 must be revised in the same change that adds them.
+
 **The model.** Each repo has an **integration branch** (e.g. `develop`, `next`, `main`) and one
 personal **workspace branch** (e.g. `workspace/<handle>`), which is the integration branch plus
 tracked personal files: planning, agent config, tooling. Work happens in worktrees branched
@@ -159,12 +166,12 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 ### Status and doctor
 
 - [ ] **STAT-01**: `wsx status` shows the resolved integration, workspace, base remote and push remote; the workspace branch's ahead/behind against the integration branch; the divergence result; and each worktree with its branch and whether it has been cut and landed
-- [ ] **STAT-02**: `wsx doctor` reports repo-level problems only: missing or non-executable hooks, git < 2.54, an unfetched base ref, undeclared divergence. Checking GSD or agent config is devflow's job
+- [ ] **STAT-02**: `wsx doctor` reports repo-level problems only: missing or non-executable hooks, git < 2.54, an unfetched base ref, undeclared divergence. Checking GSD or agent config is devflow's job (agent hooks excepted once built, see the 2026-11-15 amendment under Boundary)
 
 ### Interface and boundary
 
 - [ ] **IF-01**: Every command has `--json` output with a versioned, documented schema, plus documented, stable exit codes, so an orchestrator (devflow) can drive wsx without parsing prose. A contract test pins the schema
-- [ ] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings. A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
+- [ ] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings (exception pending, see the 2026-11-15 amendment under Boundary: agent hook configuration). A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
 
 ### Development setup (adopted from devflow, owner decision 2026-10-19)
 

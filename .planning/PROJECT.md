@@ -19,7 +19,13 @@ itself, and it is useful in any dev repo, with or without AI agents.
 devflow manages AI agents and GSD: phases, ROADMAP/STATE, GSD config, agent sessions, gates, ship
 approval and versioning. devflow drives wsx through its JSON interface for repo operations
 instead of reimplementing them. wsx knows nothing about GSD, devflow or agent runtimes
-(REQUIREMENTS.md: Boundary, IF-01, IF-02).
+(REQUIREMENTS.md: Boundary, IF-01, IF-02), with one exception.
+
+**Agent hooks are wsx's (owner decision, 2026-11-15).** Hooks that coding-agent harnesses run (before and
+after a tool call, at session start and stop) belong to wsx, not devflow: wsx is where one definition of a hook
+is installed into each harness and where `wsx hook <name>` receives the call. This is the only agent-runtime
+knowledge wsx holds. Phases, GSD, agent sessions and gates stay with devflow. Nothing is built yet; the scope is
+being researched (`research/AGENT-HOOKS-UNIFICATION-BRIEF.md`).
 
 wsx 0.1.0 (Python, a copy-sync model) is frozen. See Key Decisions.
 
@@ -112,7 +118,8 @@ cut that silently drops code, is the unacceptable failure.
 | New `.wsx.conf` grammar (`only`/`modified`); legacy formats only inside `wsx migrate` | Little legacy support, easy upgrades. Owner decision 2026-10-19 | — Pending |
 | Hooks as git config-based hooks (≥ 2.54) | Run alongside `core.hooksPath` and global hooks, and get the real pushed refs (tested 2026-10-19) | — Pending |
 | No GSD-generated `.claude/CLAUDE.md` | A preview was 286 lines describing the dropped copy-sync design; devflow removed project `.claude/` configs too. Root CLAUDE.md is rewritten for Rust in phase 1. Owner decision 2026-10-19 | — Pending |
-| wsx manages the repo; devflow manages agents and GSD; no overlap; wsx is standalone | Owner intent 2026-10-19. wsx has no GSD/agent knowledge (IF-02); devflow drives wsx via `--json` (IF-01); phase concepts, agent integrations, ship/versioning stay in devflow | — Pending |
+| wsx manages the repo; devflow manages agents and GSD; no overlap; wsx is standalone | Owner intent 2026-10-19. wsx has no GSD/agent knowledge (IF-02); devflow drives wsx via `--json` (IF-01); phase concepts, agent integrations, ship/versioning stay in devflow | Revised 2026-11-15: agent hooks moved to wsx (next row) |
+| wsx owns agent hooks across coding-agent harnesses; devflow does not | Owner decision 2026-11-15: hooks are central to the owner's multi-agent workflow and wsx already owns git hooks and the `wsx hook <name>` entry point. Narrows the 2026-10-19 boundary and IF-02 for hook configuration only; the exact carve-out and its test come from the research | — Pending (research brief) |
 | Improve over prior art; never inherit worse behaviour to match devflow or 0.1.0 | Owner mandate 2026-10-20. The oracle is a floor on safety outcomes, not a spec. First applications: cut in a temporary worktree, sync from any worktree, commit-coverage fidelity, protected-branch commit refusal in M1 (reviews/m1-prior-art) | — Pending |
 | No public library crate in milestone 1; `--json` is the only interface for callers | wsx's hooks run the `wsx` binary, so callers install it anyway; the git adapter lives in the binary crate, so a library would expose only the pure planner. Revisit when devflow's code adopts wsx. Owner agreed 2026-10-20 | — Pending |
 | Tracked `.gitconfig` is copied into local config from a key allowlist, never `include.path`d | An include is read live from whatever branch is checked out, so a branch could set a key that runs a program on `git status` (proven by test). Owner decision 2026-10-24; UDE owns the practice for all projects (UDE backlog 999.2), `scripts/setup-repo.sh` stands in | Phase 1 (DEV-05 amended) |
