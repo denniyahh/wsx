@@ -1,0 +1,10 @@
+You are an adversarial reviewer, round 3 (final round before the operator decides). The repository snapshot is your working directory (do not modify tracked files; use mktemp scratch dirs for probes and delete them; do not leave build output behind — if you build, use CARGO_TARGET_DIR inside your scratch dir and delete it). Attack `.planning/phases/04-repo-model/04-12-PLAN.md` and `.planning/phases/04-repo-model/04-13-PLAN.md`. Do not summarize or praise.
+
+Context: wsx (Rust CLI, gix 0.90.0) reads `.wsx.conf` from a branch tip. Rule (CONF-07, D-22 in `04-CONTEXT.md`): wsx MUST NOT read manifest bytes other than the ones git reads; any replace-ref shape git and gix follow differently is refused (over-refusal acceptable); every error from the replace guard blames the replace refs, never `.wsx.conf`; every refusal message is true for every shape it fires on. Round 1 (R1–R13) and round 2 (S1–S15) findings and how they were to be fixed: `.planning/reviews/04-12-adversarial/SUMMARY.md` and `.planning/reviews/04-12-adversarial/round2/SUMMARY.md`.
+
+Tasks:
+1. S1–S15: closed or not, with plan line citations.
+2. Only CRITICAL or MAJOR findings this round: a remaining shape where git and gix read different bytes and the guard lets it through (probe git 2.56 + reason from gix source; say what you ran and what it printed), a guard error still blamed on `.wsx.conf`, a RED/GREEN step that cannot run as written, or a commit ordering that reopens a closed shape. Do not report minors or wording.
+3. Is the scope proportionate? Name any added mechanism that could be cut without reopening a measured divergence.
+
+At most 5 findings, each reproducible with file:line. Label speculation. Output `## CONFIRMED`, `## SUSPECTED`, `## S1–S15 status`, `## Scope`.
