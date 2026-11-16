@@ -1,0 +1,11 @@
+You are an adversarial reviewer. Repository snapshot = current directory (wsx, Rust CLI on gix 0.90.0; git 2.56.1 on host). Target: .planning/phases/04-repo-model/04-12-PLAN.md (phase 4 gap closure), plus the D-22 amendment at .planning/phases/04-repo-model/04-CONTEXT.md around line 105-115.
+
+Background: three earlier review rounds (.planning/reviews/04-12-adversarial/) found git/gix divergences in replace-ref handling (nested names, symlinks, special files, unsorted/duplicate packed-refs, tag/tree targets, CRLF packed records, missing originals replaced by a tag). The operator then chose to collapse the guard: in a configured repo, the model refuses whenever replace refs are in use at all (any entry under <common>/refs/replace, any packed-refs bytes holding refs/replace/, or a non-default replace base), before any object read. Over-refusal is acceptable; a silent case where wsx reads different .wsx.conf bytes than git, or an error that blames .wsx.conf instead of the replace refs, is not. An unconfigured repo stays "not configured" (D-16).
+
+Find, with file:line or quoted text:
+1. Any repo state where git (2.56.1) applies a replacement to an object the manifest read touches, yet the planned guard admits the repo. Measure it: build scratch repos under mktemp -d, run git, and where useful a small gix probe; report the commands and outputs. Include a control that makes the guard trip.
+2. Any guard failure path that would still be reported as a .wsx.conf problem.
+3. Error texts that would be false in some state (e.g. with GIT_NO_REPLACE_OBJECTS or core.useReplaceRefs=false).
+4. Steps, tests, commands or symbols in the plan that do not exist or cannot run against this code (check the cited paths/symbols/line numbers).
+5. Tests without a negative control or that cannot fail.
+Do not repeat already-fixed findings unless they reopen. Label speculation. Prefer few sharp, reproduced findings. Output sections: ## CONFIRMED, ## SUSPECTED, ## Scope. Do not modify tracked files; delete your scratch dirs.
