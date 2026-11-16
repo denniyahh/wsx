@@ -186,7 +186,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: 11/13 plans executed
+**Plans**: 11/12 plans executed
 **Wave 1**
 - [x] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [x] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
@@ -215,10 +215,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 04-10-PLAN.md — Mutation pass over the parser and resolver; phase gate (`all`, `deps`, container); obligations on phases 5, 6, 8 and 12 in STATE.md
 
 **Wave 9** *(gap closure, blocked on Wave 8 completion)*
-- [ ] 04-12-PLAN.md — Gap CR-01, names: a replace ref git applies and gix ignores (nested, or with bytes after its id) is refused at any depth; a replace base without a trailing `/` is refused; the guard runs before any object read
-
-**Wave 10** *(gap closure, blocked on Wave 9 completion)*
-- [ ] 04-13-PLAN.md — Gap CR-01, on disk: a symlinked replace ref or one with an invalid name, which gix's listing skips, is refused; fresh mutation pass checked by mutant identity, coverage and phase gate on the new tip
+- [ ] 04-12-PLAN.md — Gap CR-01 (D-22 as amended 2026-11-16): any replace ref, loose or packed, or a replace base other than `refs/replace/`, stops the model before any object read; fresh mutation pass checked by mutant identity, coverage and phase gate on the new tip
 
 ### Phase 5: Divergence check and command contract
 
@@ -379,7 +376,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
-| 4. Repo model | 11/13 | In Progress | - |
+| 4. Repo model | 11/12 | In Progress | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |

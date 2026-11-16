@@ -109,6 +109,15 @@ The owner decided this at plan review, after the planner raised the refusal's co
   at fault rather than saying `.wsx.conf` cannot be read. A loud stop in a very rare case costs little,
   and a silent mismatch with git is the worse failure. A repo with no `wsx.sourceBranch` stays not
   configured (D-16).
+  Amended 2026-11-16 by operator: when replace refs are in use at all, the model refuses, whatever
+  their shape. In a configured repo, any entry under `refs/replace/` in the common dir's loose refs,
+  any `packed-refs` record naming that base (found by a raw byte scan, not a parser), or a replace
+  base other than `refs/replace/` stops the model before any object is read, also where
+  `core.useReplaceRefs=false` or `GIT_NO_REPLACE_OBJECTS` turns replace refs off. Three review rounds
+  of plan 04-12 each found a new way git and gix read replace refs differently, so refusing only the
+  chained or symbolic ones above is replaced by refusing them all. The error blames the replace refs
+  and names the remedy: remove them, or make the replaced history permanent with `git filter-repo`.
+  D-16 is unchanged.
 
 </decisions>
 
