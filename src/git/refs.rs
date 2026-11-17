@@ -11,8 +11,8 @@
 //! parser; `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
 //! in `repo.rs` pins the ban).
 
-use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
+use std::path::Path;
 
 use gix::bstr::ByteSlice;
 
@@ -211,10 +211,10 @@ impl Repo {
     /// the root tree only, the one tree this read looks in, and refuses some
     /// disordered trees in which git would still reach `name`.
     ///
-    /// Before any object is read, `refuse_unfollowable_replacements` refuses
-    /// the replace refs git and gix follow differently, repo-wide.
+    /// Before any object is read, `refuse_replace_refs` refuses every
+    /// replace ref, whatever its shape, repo-wide.
     pub fn root_entry(&self, commit: &ObjectId, name: &[u8]) -> Result<RootEntry, Error> {
-        self.refuse_unfollowable_replacements()?;
+        self.refuse_replace_refs()?;
         let failed = |message: String| Error::Gix {
             what: format!("read {} in the root tree of {commit}", lossy(name)),
             message,
@@ -291,112 +291,120 @@ impl Repo {
         Ok(names)
     }
 
-    /// Refuses, anywhere in the repository, a replace ref gix and git would
-    /// follow differently, so a read through gix's replacement map returns
-    /// the bytes git reads or nothing at all.
+    /// Refuses every replace ref, whatever its shape, and every replace base
+    /// other than `refs/replace/`, so no object is read through gix's
+    /// replacement map while git could apply a replacement differently.
     ///
-    /// git's replace base is `GIT_REPLACE_REF_BASE` from the process
-    /// environment, else `refs/replace/`; gix's is
-    /// `gitoxide.objects.replaceRefBase`, onto which gix maps that variable,
-    /// else `refs/replace/`. When they differ, which is the key set in
-    /// config with the variable unset, a ref whose name starts with either
-    /// base, at any depth, is `Error::ReplaceBaseDiffers`: gix applies refs
-    /// git ignores, or the reverse. With no such ref neither reader applies a
-    /// replacement, and this returns `Ok`. Any depth counts because gix lists
-    /// a base with `prefixed`, which matches a base with no trailing `/` as a
-    /// partial name.
+    /// Checked in this order, each reading only what it names:
+    /// 1. `GIT_REPLACE_REF_BASE` in the process environment set to anything
+    ///    but `refs/replace/` is `Error::ReplaceBaseSet`
+    ///    (`refuse_replace_base_env`, which `Repo::discover` also runs before
+    ///    gix opens the repository).
+    /// 2. `gitoxide.objects.replaceRefBase` in gix's config snapshot, onto
+    ///    which gix also maps that variable, set to anything but
+    ///    `refs/replace/` is `Error::ReplaceBaseSet`, whether or not any ref
+    ///    is under it. After these two steps both readers' base is
+    ///    `refs/replace/`.
+    /// 3. Any entry in the common dir's `refs/replace` directory is
+    ///    `Error::ReplaceRefsPresent` naming the directory.
+    /// 4. The text `refs/replace/` anywhere in the common dir's
+    ///    `packed-refs` is `Error::ReplaceRefsPresent` naming the file.
     ///
-    /// When the bases are equal, the refs directly under it are refused when
-    /// two names are equal once lower-cased (`ReplacementRefDuplicate`: git
-    /// stops with `duplicate replace ref` and gix applies one), or when a ref
-    /// is symbolic or holds an object another replace ref replaces
-    /// (`ReplacementRef`: git follows a symbolic replace ref and a chain to
-    /// its end, gix ignores the first and follows one hop, and a cycle makes
-    /// git fail while gix reads). Names are compared lower-cased because both
-    /// accept uppercase hex.
+    /// No ref name is parsed and no `packed-refs` record is decoded: presence
+    /// alone refuses, so no difference in how git and gix name, sort, follow
+    /// or decode replace refs can change the bytes a read returns. A store
+    /// that is missing holds nothing; any other failure to read one is
+    /// `Error::ReplaceRefsUnreadable`. Every error returned here is one of the
+    /// three refusals `Error::is_replacement_refusal` lists.
     ///
-    /// A chain among objects the manifest read never touches stops the model
-    /// too (D-22), so the error names the ref and never says `.wsx.conf`
-    /// cannot be read. It over-refuses where neither reader follows a
-    /// replacement: a non-hex name, two non-hex names differing in case,
-    /// `core.useReplaceRefs=false`, `GIT_NO_REPLACE_OBJECTS`, and a differing
-    /// base whose only refs are nested or non-hex names. That is the safe side
-    /// to be wrong on, and reading the switches would take more code for a
-    /// repository that has both a chain and replacements turned off.
+    /// Only the common dir is read: replace refs are shared refs, and git's
+    /// only per-worktree refs are `refs/worktree/`, `refs/bisect/` and
+    /// `refs/rewritten/`, so neither reader takes a `refs/replace/` from a
+    /// linked worktree's own git dir.
     ///
-    /// gix loads its replacement map when the `Repo` is opened, and this
-    /// lists the refs later, so a replace ref added or removed in between,
-    /// during one run, can make the map the reads use and the refs checked
-    /// here disagree. Only a replacement changed during one run does this,
-    /// and git has no snapshot to read against.
-    fn refuse_unfollowable_replacements(&self) -> Result<(), Error> {
-        let git_base = std::env::var_os(REPLACE_BASE_VAR)
-            .map_or_else(|| DEFAULT_REPLACE_BASE.to_vec(), OsStringExt::into_vec);
-        let gix_base = self
-            .repo
-            .config_snapshot()
-            .string(REPLACE_BASE_KEY)
-            .map_or_else(|| DEFAULT_REPLACE_BASE.to_vec(), |value| value.to_vec());
-        if gix_base != git_base {
-            if self.any_ref_starts_with(&gix_base)? || self.any_ref_starts_with(&git_base)? {
-                return Err(Error::ReplaceBaseDiffers {
-                    value: gix_base,
-                    git_base,
-                });
-            }
-            return Ok(());
+    /// It over-refuses where neither reader would apply a replacement:
+    /// replace refs turned off by `core.useReplaceRefs=false` or
+    /// `GIT_NO_REPLACE_OBJECTS`; entries git skips, such as a `.lock` file, a
+    /// name git calls bad, a dangling symlink, a fifo or an empty
+    /// subdirectory; a ref outside the base whose name holds `refs/replace/`
+    /// past its start; and `gitoxide.objects.replaceRefBase` set with nothing
+    /// under it.
+    ///
+    /// gix loads its replacement map when the `Repo` is opened, and the
+    /// stores are read later, so a replace ref added or removed in between,
+    /// during one run, can make the map the reads use and the stores checked
+    /// here disagree.
+    pub fn refuse_replace_refs(&self) -> Result<(), Error> {
+        refuse_replace_base_env()?;
+        if let Some(value) = self.repo.config_snapshot().string(REPLACE_BASE_KEY)
+            && value.as_bytes() != DEFAULT_REPLACE_BASE
+        {
+            return Err(Error::ReplaceBaseSet {
+                name: REPLACE_BASE_KEY,
+                value: value.to_vec(),
+            });
         }
-        let names = self.refs_directly_under(&git_base)?;
-        let mut keyed: BTreeMap<Vec<u8>, &Vec<u8>> = BTreeMap::new();
-        for full in &names {
-            let name = full.strip_prefix(git_base.as_slice()).unwrap_or(full);
-            let key = name.to_ascii_lowercase();
-            if let Some(first) = keyed.insert(key, full) {
-                return Err(Error::ReplacementRefDuplicate {
-                    first: first.clone(),
-                    second: full.clone(),
-                });
-            }
+        let replace_dir = self.common_dir().join("refs/replace");
+        if holds_an_entry(&replace_dir)? {
+            return Err(Error::ReplaceRefsPresent {
+                path: replace_dir,
+                packed: false,
+            });
         }
-        for full in &names {
-            let refused = match self.find_ref(full)? {
-                Some(RefTarget::Symbolic(target)) => Some(target),
-                Some(RefTarget::Object(id)) if keyed.contains_key(id.to_string().as_bytes()) => {
-                    Some(id.to_string().into_bytes())
-                }
-                _ => None,
-            };
-            if let Some(target) = refused {
-                return Err(Error::ReplacementRef {
-                    name: full.clone(),
-                    target,
-                });
-            }
+        let packed_refs = self.common_dir().join("packed-refs");
+        if packed_refs_name_the_base(&packed_refs)? {
+            return Err(Error::ReplaceRefsPresent {
+                path: packed_refs,
+                packed: true,
+            });
         }
         Ok(())
     }
+}
 
-    /// Whether any ref's name starts with `base`, listed as gix lists a
-    /// replace base when it opens a repository. A listing or a ref that fails
-    /// to read is `Error::Gix` naming `base`.
-    fn any_ref_starts_with(&self, base: &[u8]) -> Result<bool, Error> {
-        let failed = |message: String| Error::Gix {
-            what: format!("list the refs under {}", lossy(base)),
-            message,
-        };
-        let platform = self
-            .repo
-            .references()
-            .map_err(|err| failed(err.to_string()))?;
-        let mut refs = platform
-            .prefixed(base.as_bstr())
-            .map_err(|err| failed(err.to_string()))?;
-        match refs.next() {
+/// Refuses `GIT_REPLACE_REF_BASE` in the process environment set to anything
+/// but `refs/replace/`, git's default, as `Error::ReplaceBaseSet` naming the
+/// variable and its value: git takes replace refs from under it, and gix's
+/// open fails on some values before any ref is read.
+pub fn refuse_replace_base_env() -> Result<(), Error> {
+    match std::env::var_os(REPLACE_BASE_VAR).map(OsStringExt::into_vec) {
+        Some(value) if value != DEFAULT_REPLACE_BASE => Err(Error::ReplaceBaseSet {
+            name: REPLACE_BASE_VAR,
+            value,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the directory `dir` holds any entry, of any kind. A missing `dir`
+/// holds none; any other failure to list it, a `dir` that is not a directory
+/// included, is `Error::ReplaceRefsUnreadable` naming it.
+fn holds_an_entry(dir: &Path) -> Result<bool, Error> {
+    let unreadable = |source| Error::ReplaceRefsUnreadable {
+        path: dir.to_path_buf(),
+        source,
+    };
+    match std::fs::read_dir(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(unreadable(err)),
+        Ok(mut entries) => match entries.next() {
             None => Ok(false),
-            Some(reference) => reference
-                .map(|_| true)
-                .map_err(|err| failed(err.to_string())),
-        }
+            Some(entry) => entry.map(|_| true).map_err(unreadable),
+        },
+    }
+}
+
+/// Whether the file `path` holds the text `refs/replace/` anywhere, found by
+/// a byte search rather than a record parser. A missing `path` holds nothing;
+/// any other failure to read it is `Error::ReplaceRefsUnreadable` naming it.
+fn packed_refs_name_the_base(path: &Path) -> Result<bool, Error> {
+    match std::fs::read(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::ReplaceRefsUnreadable {
+            path: path.to_path_buf(),
+            source,
+        }),
+        Ok(bytes) => Ok(bytes.find(DEFAULT_REPLACE_BASE).is_some()),
     }
 }
 
@@ -412,7 +420,7 @@ mod tests {
 
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, ObjectId};
-    use super::{RefTarget, Repo, RootEntry, is_branch_name};
+    use super::{RefTarget, Repo, RootEntry, is_branch_name, packed_refs_name_the_base};
 
     /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
     /// annotated tag `v1` of that commit, `v1nest` of `v1` and `vtree` of
@@ -2039,5 +2047,18 @@ mod tests {
             RootEntry::Blob(bytes),
             "the manifest of the first tip, read after the branch moved"
         );
+    }
+
+    /// A `packed-refs` that is a directory fails to read, and is refused as
+    /// unreadable replace refs naming it, never read as holding none.
+    #[test]
+    fn packed_refs_that_fail_to_read_are_unreadable() {
+        let scratch = Scratch::new("packed-refs-unreadable").expect("create scratch");
+        match packed_refs_name_the_base(&scratch.root) {
+            Err(Error::ReplaceRefsUnreadable { path, .. }) => {
+                assert_eq!(path, scratch.root, "the path the refusal names");
+            }
+            other => panic!("expected Err(ReplaceRefsUnreadable), got {other:?}"),
+        }
     }
 }

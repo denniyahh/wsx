@@ -103,9 +103,9 @@ impl RepoModel {
     /// A manifest that is missing, not a blob, unreadable or invalid on the
     /// inferred branch is `Error::NotConfigured` with that failure as its
     /// reason, which renders the failure and says run `wsx init` (D-16). So
-    /// is a refusal of a replacement git and gix follow differently
-    /// (`git::Error::is_replacement_refusal`), which stops a configured
-    /// repository (D-22) and leaves one with no key not configured.
+    /// is a refusal of the replace refs (`git::Error::is_replacement_refusal`),
+    /// which stops a configured repository (D-22) and leaves one with no key
+    /// not configured.
     /// Every other error passes through unchanged, so zero or several
     /// candidates stay the list `Error::WorkspaceCandidates` renders
     /// (D-21). Whether a repository is configured is read from the variant,
@@ -464,16 +464,17 @@ fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
 /// A failure reading the tip's commit or its root tree is
 /// `Error::ManifestUnreadable`, since both are reads of the manifest; a
 /// failure of the `find_ref` that checks the branch exists is the ref store
-/// and stays `Error::Git`. So does a refusal of a replacement git and gix
-/// follow differently, from `root_entry` before it reads anything
-/// (`git::Error::is_replacement_refusal`): it does not know whether the ref
-/// touches the manifest, so its message names the ref and does not say
-/// `.wsx.conf` cannot be read (D-22).
+/// and stays `Error::Git`. So does a refusal of the replace refs
+/// (`git::Error::is_replacement_refusal`), from the guard `build` runs before
+/// it reads any object, and which `root_entry` runs again: it does not know
+/// whether a replace ref touches the manifest, so its message blames the
+/// replace refs and does not say `.wsx.conf` cannot be read (D-22).
 fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
     let full = branch_ref(&branch);
     if repo.find_ref(&full)?.is_none() {
         return Err(Error::WorkspaceBranchMissing { branch });
     }
+    repo.refuse_replace_refs()?;
     let base_remote = remote(repo, BASE_REMOTE)?;
     let push_remote = remote(repo, PUSH_REMOTE)?;
     let integration = integration(repo, base_remote.as_deref())?;

@@ -28,8 +28,11 @@ impl Repo {
     /// process environment. A relative repository-path variable is refused
     /// below the worktree root (see `refuse_relative_repo_env`), and a
     /// `GIT_DIR` without `GIT_WORK_TREE` gets the worktree git gives it (see
-    /// `apply_implicit_worktree`).
+    /// `apply_implicit_worktree`). A `GIT_REPLACE_REF_BASE` other than
+    /// `refs/replace/` is refused before gix opens the repository (see
+    /// `refuse_replace_base_env`), since gix's open fails on some values.
     pub fn discover(start: &Path) -> Result<Repo, Error> {
+        super::refs::refuse_replace_base_env()?;
         let mut repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
         refuse_object_store_env()?;
