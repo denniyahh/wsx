@@ -1,7 +1,8 @@
 # Phase 4: Repo model - Context
 
 **Gathered:** 2026-11-01
-**Status:** Ready for planning
+**Updated:** 2026-11-17 (D-23 to D-28: model inputs through the git binary)
+**Status:** Spike, then replan 04-13
 
 <domain>
 ## Phase Boundary
@@ -119,6 +120,52 @@ The owner decided this at plan review, after the planner raised the refusal's co
   and names the remedy: remove them, or make the replaced history permanent with `git filter-repo`.
   D-16 is unchanged.
 
+### Model inputs through the git binary
+The operator decided the pivot on 2026-11-17, after round 2 of 04-13's Tier A review. The owner then
+left D-24 to D-28 to Claude ("you decide on all of these").
+
+- **D-23 (operator, 2026-11-17):** The model reads its inputs through the `git` binary with the
+  existing spawn helper (`src/git/spawn.rs` `Git::run`): ref resolution (`wsx.sourceBranch`, the
+  integration chain, `wsx.baseRef`), the workspace-candidate listing, the `.wsx.conf` blob at the tip
+  with its type, the `wsx.*` keys, and the remote list. gix keeps object work by commit id (merge-base,
+  walks, tree diffs) for later phases. This amends Phase 3's "reads through gix" (`03-CONTEXT.md`
+  § Phase Boundary, and Established Patterns below) for these inputs only. Writes stay with the
+  binary. Four review rounds each found another way gix's ref layer differs from git's, and CONF-07
+  requires the bytes git reads, so these inputs match git by construction, not by refusing shapes one
+  by one. `04-13-PLAN.md` as written (4e79ac6) is superseded and must not be executed.
+- **D-24:** D-22 as amended on 2026-11-16 stays in force, unchanged. With git reading the manifest it
+  no longer guards those bytes, but it still guards the gix object reads by id that later phases make,
+  where gix and git can apply replacements differently. The spike checks whether today's detection
+  misses a replace ref that either git or gix applies, including a linked worktree's own
+  `refs/replace/` (CR-01 of `04-REVIEW.md`). A miss is a gap for the replan.
+- **D-25:** Code whose only job is to make a gix ref or config read agree with git (the linked-worktree,
+  symlink, alias and listing checks planned in 04-13, and any 04-11/04-12 code that serves only the
+  manifest read) is deleted once its read moves to git, not kept as a backstop. Refusals that state a
+  product rule stay: D-22's replace-ref stop, the refs-namespace refusal (04-05) and D-18. The replan
+  lists each item and the side it falls on.
+- **D-26:** One `resolve` spawns a small fixed number of git children whatever the repo's size: batched
+  reads (one config read, one ref read covering the chain and the candidates, one object read for the
+  blob and its type), never one child per ref. Provisional budget, Claude's call with no measurement
+  behind it yet: at most 4 children, and `resolve` p95 under 100 ms on the four R3 repos as the spike
+  measures it. A miss goes to the operator before the replan.
+- **D-27:** The D-01 to D-21 behaviour tests are the contract and stay unchanged: they pass before and
+  after the swap. Every shape from 04-13's two review rounds (replace refs, worktree-private stores,
+  symlinked refs, `main-worktree/` aliases, a symlinked `HEAD` with `includeIf.onbranch`, dangling
+  symrefs) becomes a regression test that asserts git's answer first and then that wsx gives the same
+  one, with a control that changes git's answer and must change wsx's.
+- **D-28:** Order: the spike (every D-27 shape with negative controls, D-26's child count and latency,
+  and the open checks below), then the 04-13 replan under Tier A, since it moves a fail-closed
+  boundary.
+
+Open checks for the spike (unmeasured facts, not decisions):
+- Whether `git config --local` gives D-01's meaning: it skips `include.*` by default and leaves out
+  `config.worktree`; compare with what 04-05 does today in both cases.
+- Whether gix honours `core.useReplaceRefs` and `GIT_NO_REPLACE_OBJECTS` for object reads.
+- Whether gix reading `HEAD` at open (round 2, codex 2) still changes anything gix does for object
+  reads once config comes from git.
+- A fifo loose ref hangs both git and gix (round 2, pi): parity, but the spike reports whether the guard
+  then hangs a push.
+
 </decisions>
 
 <canonical_refs>
@@ -142,6 +189,11 @@ The owner decided this at plan review, after the planner raised the refusal's co
   with a stripped trailing `/`, `BASE_REMOTE`/`BASE_BRANCH` handling
 - `.workspace-divergence` — the current manifest, with comments and `only`/`modified` lines
 
+### The git-binary pivot
+- `.planning/reviews/04-13-adversarial/round2/SUMMARY.md` — the shapes D-27 must cover and the operator decision
+- `.planning/phases/04-repo-model/04-REVIEW.md` — post-04-12 review (CR-01, WR-01, IN-01, IN-02)
+- `.planning/phases/04-repo-model/04-13-PLAN.md` — superseded (D-23); read for its test shapes only
+
 ### Prior phase
 - `.planning/phases/03-git-adapter/03-CONTEXT.md` — git-layer boundaries; config and blob reads were
   deferred to this phase
@@ -163,7 +215,8 @@ The owner decided this at plan review, after the planner raised the refusal's co
 ### Established Patterns
 - gix types never leave `src/git/`: callers get wsx's own types, and paths are raw bytes.
 - Reads go through gix and writes through the `git` binary, with differential tests against git for
-  each read and a control that must change the answer.
+  each read and a control that must change the answer. Amended by D-23: the model's inputs (refs,
+  listings, manifest blob, config) are read through the `git` binary; gix reads objects by id.
 - Tests are unit tests in the binary crate, built on real temporary repos, because there is no
   library crate.
 - `src/git/mod.rs` carries a `dead_code` expectation until Phase 5, and new Phase 4 code has no
@@ -206,6 +259,8 @@ The owner decided this at plan review, after the planner raised the refusal's co
 - **Re-check Dependabot after first merge to main:** repo tooling, matched on keywords only.
 - **Replace oracle-observed exit 128 under IF-01:** needs Phase 5's exit codes and is applied in
   Phases 7 and 9.
+- **Re-verify Phases 1-3 before milestone audit** and **Shell-quote the path in ForeignOwner's printed
+  fix command:** reviewed 2026-11-17, not folded; neither touches the pivot.
 
 </deferred>
 

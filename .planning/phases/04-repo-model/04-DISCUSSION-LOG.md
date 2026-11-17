@@ -129,3 +129,30 @@ Stated to the owner before they moved on; see D-18 to D-21 in CONTEXT.md.
 - `workflow.research_before_questions` is on, but the search ran only after the questions, so answers
   were given without it. Apart from the correction above, it changed nothing.
 - The todo match, the MemPalace recall and the spike check also ran late, after the four areas.
+
+
+---
+
+# Update 2026-11-17: model inputs through the git binary
+
+Recorded the operator's pivot of 2026-11-17 (`.planning/reviews/04-13-adversarial/round2/SUMMARY.md`) as D-23.
+
+## Areas presented
+| Area | Question |
+|---|---|
+| Replace-ref policy | Retire D-22, keep it, or move it to gix object reads? |
+| Fate of 04-11/04-12 guards | Delete or keep as backstop? |
+| Spawn budget & batching | Children per resolve and latency ceiling |
+| Test model after pivot | What proves parity once git is the reader |
+
+**User's choice:** "you decide on all of these". Claude's calls are D-24 to D-28 in CONTEXT.md: keep D-22 unchanged
+(it now guards gix object reads), delete parity-only code and keep the refusals that state a product rule, at most 4 batched
+children with p95 under 100 ms (provisional), D-01 to D-21 tests unchanged plus every review shape as a git-first
+regression test, then spike before the Tier A replan.
+
+## Todos
+Two new keyword matches (re-verify phases 1-3, ForeignOwner quoting) were reviewed and not folded (operator's choice).
+
+## Process notes
+- MemPalace recall (MCP) returned only the 04-11/04-12 plan and summary drawers already read; nothing new.
+- Phase 3's CONTEXT.md was not edited; D-23 records the amendment of its "reads through gix" here.
