@@ -2536,6 +2536,48 @@ mod tests {
         }
     }
 
+    /// Research G6: batching the object reads keeps the error order. A rung
+    /// holding a blob is reported before an invalid `wsx.worktreeDir`, as
+    /// when the rung was peeled on its own; the control puts the rung back
+    /// at its commit, and the worktree directory is then the refusal.
+    #[test]
+    fn blob_rung_is_reported_before_an_invalid_worktree_dir() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-order-blob-rung").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let develop = tip(&scratch, &work, ORIGIN_DEVELOP);
+        let blob = ok(testing::object_id(&scratch, &work, "refs/heads/main:a.txt"));
+        run(
+            &scratch,
+            &work,
+            &["update-ref", ORIGIN_DEVELOP, blob.to_string().as_str()],
+        );
+        set_config(&scratch, &work, WORKTREE_DIR, "/abs");
+        let peel = format!("{ORIGIN_DEVELOP}^{{commit}}");
+        assert_ne!(
+            exit_code(&scratch, &work, &["rev-parse", "--verify", peel.as_str()]),
+            Some(0),
+            "git peeled {ORIGIN_DEVELOP}, holding a blob, to a commit"
+        );
+
+        match refusal(&work) {
+            Error::Git(_) => {}
+            other => panic!("resolve: expected Err(Git) from the rung, got {other:?}"),
+        }
+
+        run(
+            &scratch,
+            &work,
+            &["update-ref", ORIGIN_DEVELOP, develop.as_str()],
+        );
+        match refusal(&work) {
+            Error::WorktreeDirInvalid { .. } => {}
+            other => panic!("resolve: expected Err(WorktreeDirInvalid), got {other:?}"),
+        }
+    }
+
     /// D-34: `HEAD -> alias -> refs/heads/workspace/dev` ends outside the
     /// remote, as git's `%(symref)` shows, so it names no default. `git
     /// rev-parse` following the chain to the workspace tip is the control
@@ -4071,6 +4113,91 @@ mod tests {
             "workspace/dev",
             "resolve's refusal"
         );
+    }
+
+    /// D-09, research G3: in a `--filter=blob:none` partial clone the
+    /// manifest blob is not local, and resolving fails closed as
+    /// `ManifestUnreadable` without fetching it, so resolving never reaches
+    /// the network. Git first: with lazy fetch off it cannot read the blob
+    /// either. The control, last: a plain `git cat-file -p` fetches it, and
+    /// the same repository then resolves.
+    #[test]
+    fn partial_clone_manifest_is_unreadable_without_a_fetch() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-partial-clone").expect("create scratch");
+        let source = scratch.root.join("source");
+        std::fs::create_dir_all(&source)
+            .unwrap_or_else(|err| panic!("create {}: {err}", source.display()));
+        run(&scratch, &source, &["init", "-q", "-b", "main"]);
+        ok(write(&source.join("a.txt"), b"a\n"));
+        ok(commit_all(&scratch, &source, "main", T0));
+        run(&scratch, &source, &["branch", "develop"]);
+        run(&scratch, &source, &["switch", "-q", "-c", "workspace/dev"]);
+        ok(write(&source.join(".wsx.conf"), b"only .planning\n"));
+        ok(commit_all(&scratch, &source, "manifest", T0 + TICK));
+        run(&scratch, &source, &["switch", "-q", "main"]);
+        set_config(&scratch, &source, "uploadpack.allowFilter", "true");
+        let url = format!("file://{}", source.display());
+        run(
+            &scratch,
+            &scratch.root,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                "--filter=blob:none",
+                &url,
+                "pc",
+            ],
+        );
+        let pc = scratch
+            .root
+            .join("pc")
+            .canonicalize()
+            .expect("canonicalize pc");
+        run(
+            &scratch,
+            &pc,
+            &["branch", "workspace/dev", "origin/workspace/dev"],
+        );
+        set_config(&scratch, &pc, "wsx.sourceBranch", "workspace/dev");
+        let local = |when: &str| {
+            assert_ne!(
+                exit_code(
+                    &scratch,
+                    &pc,
+                    &[
+                        "--no-lazy-fetch",
+                        "cat-file",
+                        "-e",
+                        "workspace/dev:.wsx.conf"
+                    ]
+                ),
+                Some(0),
+                "git --no-lazy-fetch cat-file -e workspace/dev:.wsx.conf {when}"
+            );
+        };
+        local("before resolve");
+
+        assert_eq!(
+            unreadable_branch(&refusal(&pc)),
+            "workspace/dev",
+            "resolve's refusal"
+        );
+        local("after resolve");
+
+        assert_eq!(
+            run(
+                &scratch,
+                &pc,
+                &["cat-file", "-p", "workspace/dev:.wsx.conf"]
+            ),
+            b"only .planning\n",
+            "git cat-file -p, which fetches the blob"
+        );
+        assert_lists(&pc, ".planning");
     }
 
     /// The tip commit's loose object gone: the ref still holds its id, and
