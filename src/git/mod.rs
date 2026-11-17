@@ -157,6 +157,21 @@ pub enum Error {
     /// refs from under `value` while git, which does not read the key, takes
     /// them from under `git_base`.
     ReplaceBaseDiffers { value: Vec<u8>, git_base: Vec<u8> },
+    /// Something is stored where git keeps replace refs: `path` is the
+    /// common dir's `refs/replace` directory, which holds an entry, or, when
+    /// `packed`, its `packed-refs` file, which holds the text
+    /// `refs/replace/`. wsx reads no object while it is there.
+    ReplaceRefsPresent { path: PathBuf, packed: bool },
+    /// The replace base setting `name`, the variable `GIT_REPLACE_REF_BASE`
+    /// or the key `gitoxide.objects.replaceRefBase`, is `value`, not git's
+    /// default `refs/replace/`. wsx reads no object while it is set so.
+    ReplaceBaseSet { name: &'static str, value: Vec<u8> },
+    /// Reading `path`, where git keeps replace refs, failed with `source`,
+    /// so wsx cannot tell whether replace refs exist and reads no object.
+    ReplaceRefsUnreadable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl Error {
@@ -170,6 +185,9 @@ impl Error {
             Error::ReplacementRef { .. }
                 | Error::ReplacementRefDuplicate { .. }
                 | Error::ReplaceBaseDiffers { .. }
+                | Error::ReplaceRefsPresent { .. }
+                | Error::ReplaceBaseSet { .. }
+                | Error::ReplaceRefsUnreadable { .. }
         )
     }
 }
@@ -315,6 +333,49 @@ impl fmt::Display for Error {
                  \tgit config --local --unset gitoxide.objects.replaceRefBase",
                 value = shown(value),
                 git_base = shown(git_base)
+            ),
+            Error::ReplaceRefsPresent { path, packed } => {
+                if *packed {
+                    write!(
+                        f,
+                        "refusing the replace refs: {} holds the text refs/replace/, git's \
+                         replace base, and while it does, wsx reads no object, whether or not \
+                         git would apply a replace ref there.",
+                        path.display()
+                    )?;
+                } else {
+                    write!(
+                        f,
+                        "refusing the replace refs: {} is not empty, and while anything is under \
+                         git's replace base refs/replace/, wsx reads no object, whether or not \
+                         git would apply it.",
+                        path.display()
+                    )?;
+                }
+                f.write_str(
+                    "\nTo go on, remove them: git replace -l lists them, git replace -d <object> \
+                     removes one, and anything else under refs/replace/ or naming it in \
+                     packed-refs goes by hand. To keep the history they give instead, rewrite it \
+                     with git filter-repo, which makes replacements permanent, and then remove \
+                     any that remain.",
+                )
+            }
+            Error::ReplaceBaseSet { name, value } => write!(
+                f,
+                "refusing {name}={}: wsx looks for replace refs only under git's default base \
+                 refs/replace/, so it refuses another base rather than compare how git and wsx's \
+                 reader each read replace refs under it.\n\
+                 Run wsx with GIT_REPLACE_REF_BASE unset, and remove \
+                 gitoxide.objects.replaceRefBase from the config file that sets it; this shows \
+                 where it is set:\n\
+                 \tgit config --show-origin --get-all gitoxide.objects.replaceRefBase",
+                shown(value)
+            ),
+            Error::ReplaceRefsUnreadable { path, source } => write!(
+                f,
+                "refusing the replace refs: wsx failed to read {}, so it cannot tell whether \
+                 replace refs exist, and reads no object: {source}",
+                path.display()
             ),
         }
     }
@@ -640,6 +701,18 @@ mod tests {
                 value: b"refs/other/".to_vec(),
                 git_base: b"refs/replace/".to_vec(),
             },
+            Error::ReplaceRefsPresent {
+                path: PathBuf::from(LOOSE_REPLACE_REFS),
+                packed: false,
+            },
+            Error::ReplaceBaseSet {
+                name: "GIT_REPLACE_REF_BASE",
+                value: b"refs/other/".to_vec(),
+            },
+            Error::ReplaceRefsUnreadable {
+                path: PathBuf::from(LOOSE_REPLACE_REFS),
+                source: io::Error::other("gone"),
+            },
         ];
         for refusal in &refusals {
             assert!(refusal.is_replacement_refusal(), "{refusal:?}");
@@ -649,6 +722,83 @@ mod tests {
             message: "m".to_owned(),
         };
         assert!(!gix.is_replacement_refusal(), "{gix:?}");
+        let io_failure = Error::Io {
+            what: "read x".to_owned(),
+            source: io::Error::other("gone"),
+        };
+        assert!(!io_failure.is_replacement_refusal(), "{io_failure:?}");
+    }
+
+    /// The common dir's replace-ref stores in a repository at `/r`.
+    const LOOSE_REPLACE_REFS: &str = "/r/.git/refs/replace";
+    const PACKED_REFS: &str = "/r/.git/packed-refs";
+
+    /// The second line of both `ReplaceRefsPresent` messages.
+    const REPLACE_REFS_REMEDY: &str = "To go on, remove them: git replace -l lists them, git \
+         replace -d <object> removes one, and anything else under refs/replace/ or naming it in \
+         packed-refs goes by hand. To keep the history they give instead, rewrite it with git \
+         filter-repo, which makes replacements permanent, and then remove any that remain.";
+
+    #[test]
+    fn loose_replace_refs_message_names_the_directory_and_the_fix() {
+        let present = Error::ReplaceRefsPresent {
+            path: PathBuf::from(LOOSE_REPLACE_REFS),
+            packed: false,
+        };
+        assert_eq!(
+            present.to_string(),
+            format!(
+                "refusing the replace refs: /r/.git/refs/replace is not empty, and while anything \
+                 is under git's replace base refs/replace/, wsx reads no object, whether or not \
+                 git would apply it.\n{REPLACE_REFS_REMEDY}"
+            )
+        );
+    }
+
+    #[test]
+    fn packed_replace_refs_message_names_the_file_and_the_fix() {
+        let present = Error::ReplaceRefsPresent {
+            path: PathBuf::from(PACKED_REFS),
+            packed: true,
+        };
+        assert_eq!(
+            present.to_string(),
+            format!(
+                "refusing the replace refs: /r/.git/packed-refs holds the text refs/replace/, \
+                 git's replace base, and while it does, wsx reads no object, whether or not git \
+                 would apply a replace ref there.\n{REPLACE_REFS_REMEDY}"
+            )
+        );
+    }
+
+    #[test]
+    fn replace_base_set_message_names_the_setting_and_the_fix() {
+        let set = Error::ReplaceBaseSet {
+            name: "GIT_REPLACE_REF_BASE",
+            value: b"refs/other/".to_vec(),
+        };
+        assert_eq!(
+            set.to_string(),
+            "refusing GIT_REPLACE_REF_BASE=refs/other/: wsx looks for replace refs only under \
+             git's default base refs/replace/, so it refuses another base rather than compare how \
+             git and wsx's reader each read replace refs under it.\n\
+             Run wsx with GIT_REPLACE_REF_BASE unset, and remove gitoxide.objects.replaceRefBase \
+             from the config file that sets it; this shows where it is set:\n\
+             \tgit config --show-origin --get-all gitoxide.objects.replaceRefBase"
+        );
+    }
+
+    #[test]
+    fn unreadable_replace_refs_message_names_the_store() {
+        let unreadable = Error::ReplaceRefsUnreadable {
+            path: PathBuf::from(LOOSE_REPLACE_REFS),
+            source: io::Error::other("gone"),
+        };
+        assert_eq!(
+            unreadable.to_string(),
+            "refusing the replace refs: wsx failed to read /r/.git/refs/replace, so it cannot \
+             tell whether replace refs exist, and reads no object: gone"
+        );
     }
 
     #[test]
