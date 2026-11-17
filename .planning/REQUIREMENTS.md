@@ -77,7 +77,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 - [ ] **CONF-04**: The base remote (where the integration branch lives) and the push remote (where PR branches go) are configured separately, so fork layouts work (gsd-core: `upstream/next` base, `origin` push). Both default to `origin`
 - [ ] **CONF-05**: The workspace branch is resolved from `wsx.sourceBranch`, which `wsx init`/`wsx migrate` write. With no config, wsx falls back to the only local `workspace/*` or `personal/*` branch, ignoring branches recorded as made by `wsx new`. Zero or several candidates is an error that lists them (gsd-core has `personal/workspace` and `personal/workspace-backup`)
 - [ ] **CONF-06**: Branch names are chosen by the caller: a human, or an orchestrator such as devflow. wsx reads no phase concept or branch template from any other tool. Worktrees live under `wsx.worktreeDir` (default `.worktrees/`), named after the branch
-- [ ] **CONF-07**: The authoritative manifest is `<workspace-branch tip>:.wsx.conf`, read from the object database, never the working tree. Guard, cut, check and status use it from any checkout, including clean PR branches that don't carry it. A repo is "configured" when local git config has `wsx.sourceBranch`. Once configured, a missing or invalid manifest object fails closed
+- [x] **CONF-07**: The authoritative manifest is `<workspace-branch tip>:.wsx.conf`, read from the object database, never the working tree. Guard, cut, check and status use it from any checkout, including clean PR branches that don't carry it. A repo is "configured" when local git config has `wsx.sourceBranch`. Once configured, a missing or invalid manifest object fails closed
 
 ### Workspace sync
 
@@ -242,7 +242,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | CONF-04 | Phase 4 | Gaps Found |
 | CONF-05 | Phase 4 | Gaps Found |
 | CONF-06 | Phase 8 | Pending |
-| CONF-07 | Phase 4 | Gaps Found |
+| CONF-07 | Phase 4 | Complete |
 | WSYNC-01 | Phase 7 | Pending |
 | WSYNC-02 | Phase 7 | Pending |
 | WSYNC-03 | Phase 7 | Pending |

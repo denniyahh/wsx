@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
-status: executing
-stopped_at: Completed 04-10-PLAN.md
-last_updated: "2026-11-17T02:23:44.307Z"
+status: verifying
+stopped_at: Completed 04-12-PLAN.md
+last_updated: "2026-11-17T02:47:32.024Z"
 last_activity: 2026-11-16
 last_activity_desc: Phase 04 execution started
-state_head: 9fe2955c44fc61fb923ceaecb8bf86e3ca382c23
+state_head: ed4f8550530341c248d53bc099282d53beceb69b
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 48
-  completed_plans: 47
+  completed_plans: 48
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 
 Phase: 04 (Repo model) — EXECUTING
 Plan: 12 of 12
-Status: Executing Phase 04
+Status: Phase complete — ready for verification
 Last activity: 2026-11-16 — Phase 04 execution started
 
 Progress: [███░░░░░░░] 25%
@@ -105,6 +105,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P09 | 13 min | 3 tasks | 4 files |
 | Phase 04 P11 | 12 min | 1 tasks | 3 files |
 | Phase 04 P10 | 64min | 2 tasks | 3 files |
+| Phase 04 P12 | 32 min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -212,6 +213,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-11: gix's replace base is read with config_snapshot().string, which takes reduced-trust values gix's own open filters out; that difference over-refuses, the safe side
 - [Phase 04]: 04-10: the model's test modules render bytes through crate::git::c_quote, not gix::bstr, so rg -qF 'gix::' src/model exits 1 and every gix use stays in src/git
 - [Phase 04]: 04-10: final cargo-mutants 27.1.0 fresh pass over the six core files: 177 mutants, 154 caught, 0 missed, 23 unviable, 0 timeout; no equivalent mutants; the local integration-rung order has its own test (local_develop_beats_local_next)
+- [Phase 04]: Any replace ref, of any shape, or a replace base other than refs/replace/ stops the model in a configured repo before any object read; GIT_REPLACE_REF_BASE is refused in Repo::discover before gix opens (04-12, D-22 amended 2026-11-16)
 
 ### Pending Todos
 
@@ -236,6 +238,7 @@ Recent decisions affecting current work:
 - Phase 5: git::Error::ReplaceRefsPresent has no model::Error variant of its own, nor have ReplaceBaseSet and ReplaceRefsUnreadable (D-22, amended 2026-11-16 by the operator: any replace ref refuses): resolve returns each inside Error::Git, and require inside NotConfigured's boxed reason, except that Repo::discover returns ReplaceBaseSet for GIT_REPLACE_REF_BASE before any model exists, so a separate exit code for them needs git::Error::is_replacement_refusal checked inside both, or they take whatever code Git and NotConfigured get
 - Phase 5: every wsx command gets its model from model::resolve or require before any other Repo read, and later phases keep that order; model::build runs refuse_replace_refs before its first object read, and root_entry runs it too, but a Repo read made before resolve (merge_base and the rest, from phase 3) can return other bytes than git while a replace ref exists, with no error
 - Phase 6: the guard must decide how a Repo::discover refusal is treated in a repository it cannot classify as configured or not configured, because the refusal comes before any model exists and D-16's exit 0 for a not-configured repository is never reached: RefsNamespace (04-05) refuses in every repository on the machine while gitoxide.core.refsNamespace is in global config or GIT_NAMESPACE is exported, phase 3's ObjectStoreEnv refuses wherever GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES or GIT_COMMON_DIR is set, a receive-pack quarantine included, and ReplaceBaseSet (04-12) refuses wherever GIT_REPLACE_REF_BASE is set to anything but refs/replace/
+- Phase 4: scripts/check.sh deps fails on RUSTSEC-2026-0486 (rustix 1.1.5, via gix-index and tempfile); fix is cargo update -p rustix to >=1.1.6, which needs the operator and then a re-run of 04-12 mutation pass (see 04-repo-model/deferred-items.md)
 
 ### Roadmap Evolution
 
@@ -252,6 +255,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T18:45:40.185Z
-Stopped at: Completed 04-10-PLAN.md
+Last session: 2026-11-17T02:47:31.687Z
+Stopped at: Completed 04-12-PLAN.md
 Resume file: None
