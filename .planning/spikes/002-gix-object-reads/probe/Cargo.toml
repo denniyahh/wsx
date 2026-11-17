@@ -1,0 +1,11 @@
+[package]
+name = "gix-object-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Throwaway spike crate: same gix pin and features as wsx (Cargo.toml).
+[dependencies]
+gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256", "revision"] }
+
+[workspace]
