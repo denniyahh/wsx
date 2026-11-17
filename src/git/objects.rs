@@ -7,7 +7,6 @@
 
 use std::ffi::OsString;
 
-use super::refs::RootEntry;
 use super::repo::Repo;
 use super::{Error, Git, NO_LAZY_FETCH, ObjectId};
 
@@ -19,6 +18,18 @@ const BATCH_FORMAT: &str = "--batch=%(objectname) %(objecttype) %(objectsize) %(
 /// The tree entry mode of a gitlink, whose commit is rarely in this
 /// repository, so git usually answers `missing` for it.
 const GITLINK_MODE: &[u8] = b"160000";
+
+/// What a commit's root tree holds under one name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootEntry {
+    /// The root tree has no entry of that name.
+    Absent,
+    /// The entry is a blob with these bytes.
+    Blob(Vec<u8>),
+    /// The entry is not a regular or executable file: `kind` is `symlink`,
+    /// `directory` or `submodule`. Its bytes are never used.
+    NotABlob { kind: &'static str },
+}
 
 /// What one `read_tips` batch answered, each part on its own, so the caller
 /// raises them in its own order.
@@ -286,8 +297,11 @@ impl Repo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ObjectId;
-    use super::{BatchAnswer, parse_batch, root_tree_mode};
+    use std::path::{Path, PathBuf};
+
+    use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
+    use super::super::{Error, Git, ObjectId, Repo};
+    use super::{BatchAnswer, RootEntry, parse_batch, root_tree_mode};
 
     /// A commit id, a blob id and a request git cannot answer.
     const COMMIT: &str = "1111111111111111111111111111111111111111";
@@ -366,6 +380,333 @@ mod tests {
         assert!(
             root_tree_mode(truncated, 20, b"x").is_err(),
             "a truncated id must be Err"
+        );
+    }
+
+    /// `<root>/repo`: a SHA-1 repository with `a.txt` committed on `main`
+    /// at `T0`, for a test to commit a `.wsx.conf` shape on; canonical.
+    fn manifest_repo(scratch: &Scratch) -> PathBuf {
+        let repo_dir = scratch.root.join("repo");
+        let repo_arg = repo_dir.to_str().expect("UTF-8 scratch path");
+        git_ok(
+            scratch,
+            &scratch.root,
+            ["init", "-q", "-b", "main", "--object-format=sha1", repo_arg],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        write(&repo_dir.join("a.txt"), b"a\n").expect("write a.txt");
+        commit_all(scratch, &repo_dir, "first", T0).expect("commit");
+        repo_dir
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", repo_dir.display()))
+    }
+
+    /// The id git prints for `rev` in `dir`.
+    fn rev(scratch: &Scratch, dir: &Path, rev: &str) -> ObjectId {
+        testing::object_id(scratch, dir, rev).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// The line `git ls-tree <rev> -- <path>` prints in `dir`, newline
+    /// trimmed; empty when `rev`'s tree has no such entry.
+    fn ls_tree(scratch: &Scratch, dir: &Path, rev: &str, path: &str) -> String {
+        let stdout = git_ok(scratch, dir, ["ls-tree", rev, "--", path])
+            .unwrap_or_else(|err| panic!("{err}"));
+        String::from_utf8_lossy(&stdout).trim_end().to_owned()
+    }
+
+    /// Fails the test unless `git ls-tree HEAD -- .wsx.conf` in `dir` prints
+    /// a line starting with `mode_and_type`, such as `120000 blob `.
+    fn assert_head_mode(scratch: &Scratch, dir: &Path, mode_and_type: &str) {
+        let line = ls_tree(scratch, dir, "HEAD", ".wsx.conf");
+        assert!(
+            line.starts_with(mode_and_type),
+            "git ls-tree HEAD -- .wsx.conf printed {line:?}, not {mode_and_type:?}"
+        );
+    }
+
+    /// What `git cat-file blob <rev>:.wsx.conf` prints in `dir`; fails the
+    /// test unless git exits 0.
+    fn git_manifest(scratch: &Scratch, dir: &Path, rev: &str) -> Vec<u8> {
+        let object = format!("{rev}:.wsx.conf");
+        git_ok(scratch, dir, ["cat-file", "blob", object.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// The `manifest` part of `read_tips(commit, .wsx.conf, commit)` in
+    /// `dir`, on a fresh `Repo` and a helper with the scratch environment.
+    fn manifest_of(scratch: &Scratch, dir: &Path, commit: &ObjectId) -> Result<RootEntry, Error> {
+        let repo = Repo::discover(dir).expect("discover the fixture");
+        let git = Git::for_repo(scratch.env.clone(), &repo);
+        repo.read_tips(&git, commit, b".wsx.conf", commit)
+            .unwrap_or_else(|err| panic!("read_tips({commit}): {err}"))
+            .manifest
+    }
+
+    /// `manifest_of(HEAD)` in `dir`; fails the test on an error.
+    fn head_manifest(scratch: &Scratch, dir: &Path) -> RootEntry {
+        let head = rev(scratch, dir, "HEAD");
+        manifest_of(scratch, dir, &head).unwrap_or_else(|err| panic!("manifest of {head}: {err}"))
+    }
+
+    #[test]
+    fn regular_file_entry_is_read_as_git_reads_it() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-regular").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        write(&repo_dir.join(".wsx.conf"), b"only .planning\n").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "manifest", T0 + TICK).expect("commit");
+        assert_head_mode(&scratch, &repo_dir, "100644 blob ");
+        let bytes = git_manifest(&scratch, &repo_dir, "HEAD");
+        assert_eq!(
+            bytes, b"only .planning\n",
+            "git cat-file blob HEAD:.wsx.conf"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::Blob(bytes),
+            "the batch's manifest against git cat-file blob"
+        );
+    }
+
+    #[test]
+    fn executable_file_entry_is_read_as_git_reads_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-executable").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        let path = repo_dir.join(".wsx.conf");
+        write(&path, b"only .planning\n").expect("write .wsx.conf");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|err| panic!("chmod 0755 {}: {err}", path.display()));
+        commit_all(&scratch, &repo_dir, "manifest", T0 + TICK).expect("commit");
+        assert_head_mode(&scratch, &repo_dir, "100755 blob ");
+        let bytes = git_manifest(&scratch, &repo_dir, "HEAD");
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::Blob(bytes),
+            "the batch's manifest against git cat-file blob"
+        );
+    }
+
+    #[test]
+    fn empty_file_entry_is_an_empty_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-empty").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        write(&repo_dir.join(".wsx.conf"), b"").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "manifest", T0 + TICK).expect("commit");
+        assert_head_mode(&scratch, &repo_dir, "100644 blob ");
+        assert_eq!(
+            git_manifest(&scratch, &repo_dir, "HEAD"),
+            b"",
+            "git cat-file blob HEAD:.wsx.conf"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::Blob(vec![]),
+            "the batch's manifest of an empty file"
+        );
+    }
+
+    /// RESEARCH Pitfall 8, G2: a symlink's blob holds its link text, which
+    /// reads as text, so only the entry's mode can tell it apart.
+    #[test]
+    fn symlink_entry_is_not_a_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-symlink").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        std::os::unix::fs::symlink("a.txt", repo_dir.join(".wsx.conf"))
+            .unwrap_or_else(|err| panic!("symlink .wsx.conf: {err}"));
+        commit_all(&scratch, &repo_dir, "symlink", T0 + TICK).expect("commit");
+        assert_head_mode(&scratch, &repo_dir, "120000 blob ");
+        assert_eq!(
+            git_manifest(&scratch, &repo_dir, "HEAD"),
+            b"a.txt",
+            "git cat-file blob HEAD:.wsx.conf, the link text"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::NotABlob { kind: "symlink" },
+            "the batch's manifest of a symlink"
+        );
+    }
+
+    #[test]
+    fn directory_entry_is_not_a_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-directory").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        write(&repo_dir.join(".wsx.conf/x"), b"x\n").expect("write .wsx.conf/x");
+        commit_all(&scratch, &repo_dir, "directory", T0 + TICK).expect("commit");
+        assert_head_mode(&scratch, &repo_dir, "040000 tree ");
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::NotABlob { kind: "directory" },
+            "the batch's manifest of a directory"
+        );
+    }
+
+    /// A real gitlink: the index entry is added with mode 160000 and
+    /// committed without `git add --all`, which would re-read the working
+    /// tree.
+    #[test]
+    fn submodule_entry_is_not_a_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-submodule").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        let head = rev(&scratch, &repo_dir, "HEAD");
+        let cacheinfo = format!("160000,{head},.wsx.conf");
+        ok(&["update-index", "--add", "--cacheinfo", cacheinfo.as_str()]);
+        ok(&["commit", "-q", "-m", "gitlink"]);
+        assert_head_mode(&scratch, &repo_dir, "160000 commit ");
+        let kind = ok(&["cat-file", "-t", "HEAD:.wsx.conf"]);
+        assert_eq!(
+            String::from_utf8_lossy(&kind).trim_end(),
+            "commit",
+            "git cat-file -t HEAD:.wsx.conf"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::NotABlob { kind: "submodule" },
+            "the batch's manifest of a gitlink"
+        );
+    }
+
+    #[test]
+    fn missing_entry_is_absent() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-absent").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        assert_eq!(
+            ls_tree(&scratch, &repo_dir, "HEAD", ".wsx.conf"),
+            "",
+            "git ls-tree HEAD -- .wsx.conf"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::Absent,
+            "the batch's manifest with no .wsx.conf"
+        );
+    }
+
+    #[test]
+    fn nested_file_is_not_at_the_root() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-nested").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        write(&repo_dir.join("sub/.wsx.conf"), b"only .planning\n").expect("write");
+        commit_all(&scratch, &repo_dir, "nested", T0 + TICK).expect("commit");
+        assert_eq!(
+            ls_tree(&scratch, &repo_dir, "HEAD", ".wsx.conf"),
+            "",
+            "git ls-tree HEAD -- .wsx.conf"
+        );
+        assert!(
+            ls_tree(&scratch, &repo_dir, "HEAD", "sub/.wsx.conf").starts_with("100644 blob "),
+            "git ls-tree HEAD -- sub/.wsx.conf lists the nested file"
+        );
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::Absent,
+            "the batch's manifest with only sub/.wsx.conf"
+        );
+    }
+
+    /// T-04-31: the manifest is read from the id `read_tips` is given, not
+    /// from the branch, so a branch moved between the listing and the batch,
+    /// on one `Repo`, cannot pair the tip with another commit's manifest.
+    /// The second listing is the control that the handle sees the update
+    /// (RESEARCH Pitfall 9).
+    #[test]
+    fn tip_read_stays_on_the_id_it_was_given() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-moved-branch").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        write(&repo_dir.join(".wsx.conf"), b"only first\n").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "first", T0 + TICK).expect("commit");
+        ok(&["branch", "workspace/dev"]);
+        write(&repo_dir.join(".wsx.conf"), b"only second\n").expect("write .wsx.conf");
+        commit_all(&scratch, &repo_dir, "second", T0 + 2 * TICK).expect("commit");
+        let second = rev(&scratch, &repo_dir, "HEAD");
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+        let git = Git::for_repo(scratch.env.clone(), &repo);
+        let tip = |when: &str| {
+            repo.list_refs(&git, &[b"refs/heads/workspace/dev".to_vec()])
+                .unwrap_or_else(|err| panic!("list_refs {when}: {err}"))
+                .into_iter()
+                .find(|record| record.name == b"refs/heads/workspace/dev")
+                .unwrap_or_else(|| panic!("list_refs {when} did not list refs/heads/workspace/dev"))
+                .id
+        };
+
+        let first = tip("before the move");
+        assert_eq!(
+            first,
+            rev(&scratch, &repo_dir, "refs/heads/workspace/dev"),
+            "the first tip against git rev-parse"
+        );
+        assert_ne!(first, second, "the fixture's two commits");
+        ok(&[
+            "update-ref",
+            "refs/heads/workspace/dev",
+            &second.to_string(),
+        ]);
+        assert_eq!(
+            tip("after the move"),
+            second,
+            "the same handle reads the moved branch"
+        );
+
+        let bytes = git_manifest(&scratch, &repo_dir, &first.to_string());
+        assert_eq!(
+            bytes, b"only first\n",
+            "git cat-file blob <first>:.wsx.conf"
+        );
+        let tips = repo
+            .read_tips(&git, &first, b".wsx.conf", &first)
+            .unwrap_or_else(|err| panic!("read_tips({first}): {err}"));
+        assert_eq!(
+            tips.workspace_tip
+                .unwrap_or_else(|err| panic!("the tip: {err}")),
+            first,
+            "the tip read after the branch moved"
+        );
+        assert_eq!(
+            tips.manifest
+                .unwrap_or_else(|err| panic!("the manifest: {err}")),
+            RootEntry::Blob(bytes),
+            "the manifest of the first tip, read after the branch moved"
         );
     }
 }
