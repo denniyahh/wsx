@@ -186,7 +186,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: 12/12 plans executed
+**Plans**: 12/13 plans executed
 **Wave 1**
 - [x] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [x] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
@@ -216,6 +216,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Wave 9** *(gap closure, blocked on Wave 8 completion)*
 - [x] 04-12-PLAN.md — Gap CR-01 (D-22 as amended 2026-11-16): any replace ref, loose or packed, or a replace base other than `refs/replace/`, stops the model before any object read; fresh mutation pass checked by mutant identity, coverage and phase gate on the new tip
+
+**Wave 10** *(gap closure, blocked on Wave 9 completion)*
+- [ ] 04-13-PLAN.md — Gaps CR-01, WR-01, IN-01, IN-02 of the post-04-12 review: a linked worktree's own refs that git does not read stop the model before any object read and stop candidate listing (D-16 kept); `ReplaceBaseSet` remedy per setting; fresh mutation pass and phase gate on the new tip
 
 ### Phase 5: Divergence check and command contract
 
