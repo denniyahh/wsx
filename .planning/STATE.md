@@ -5,9 +5,9 @@ current_phase: 04
 current_phase_name: Repo model
 status: executing
 stopped_at: Completed 04-12-PLAN.md
-last_updated: "2026-11-17T12:53:16.339Z"
+last_updated: "2026-11-17T14:03:27.145Z"
 last_activity: 2026-11-17
-state_head: ffb43c16091a57e99794f7b6774ea1195a170673
+state_head: d0546ea821c19e3aada650a8d10ef3cff813af54
 progress:
   total_phases: 16
   completed_phases: 4
@@ -237,6 +237,7 @@ Recent decisions affecting current work:
 - Phase 5: git::Error::ReplaceRefsPresent has no model::Error variant of its own, nor have ReplaceBaseSet and ReplaceRefsUnreadable (D-22, amended 2026-11-16 by the operator: any replace ref refuses): resolve returns each inside Error::Git, and require inside NotConfigured's boxed reason, except that Repo::discover returns ReplaceBaseSet for GIT_REPLACE_REF_BASE before any model exists, so a separate exit code for them needs git::Error::is_replacement_refusal checked inside both, or they take whatever code Git and NotConfigured get
 - Phase 5: every wsx command gets its model from model::resolve or require before any other Repo read, and later phases keep that order; model::build runs refuse_replace_refs before its first object read, and root_entry runs it too, but a Repo read made before resolve (merge_base and the rest, from phase 3) can return other bytes than git while a replace ref exists, with no error
 - Phase 6: the guard must decide how a Repo::discover refusal is treated in a repository it cannot classify as configured or not configured, because the refusal comes before any model exists and D-16's exit 0 for a not-configured repository is never reached: RefsNamespace (04-05) refuses in every repository on the machine while gitoxide.core.refsNamespace is in global config or GIT_NAMESPACE is exported, phase 3's ObjectStoreEnv refuses wherever GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES or GIT_COMMON_DIR is set, a receive-pack quarantine included, and ReplaceBaseSet (04-12) refuses wherever GIT_REPLACE_REF_BASE is set to anything but refs/replace/
+- Do not execute 04-13-PLAN.md: superseded by the 2026-11-17 operator pivot (repo-model refs, listings, manifest and config read through the git binary; gix keeps object work by id). Next: /gsd-discuss-phase 04 to record the decision, then a spike over every shape from .planning/reviews/04-13-adversarial/round2/SUMMARY.md with negative controls and latency, then replan 04-13.
 
 ### Roadmap Evolution
 
