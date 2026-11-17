@@ -23,6 +23,7 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
 
 mod config;
+mod objects;
 mod quote;
 mod reads;
 mod refs;
@@ -32,6 +33,7 @@ mod spawn;
 pub(crate) mod testing;
 
 pub use config::ConfigRead;
+pub use objects::TipObjects;
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
 pub use refs::{RefRecord, RootEntry, check_full_ref_name, is_branch_name};
@@ -170,6 +172,9 @@ pub enum Error {
     /// order, so git's lookup by name can miss an entry a scan finds; git
     /// fsck reports such a tree as `treeNotSorted`.
     TreeNotSorted { commit: ObjectId, tree: ObjectId },
+    /// `git cat-file --batch` answered `missing` for `request`: the object
+    /// is not in this repository, or does not peel to the type asked for.
+    ObjectMissing { request: Vec<u8> },
     /// Something is stored where git keeps replace refs: `path` is the
     /// common dir's `refs/replace` directory or a linked worktree's own
     /// `refs/replace` directory, either holding an entry, or, when `packed`,
@@ -314,6 +319,12 @@ impl fmt::Display for Error {
                  git fsck reports it as treeNotSorted.\n\
                  Write the tree again with git, which sorts it, and commit that tree:\n\
                  \tgit ls-tree -z {commit} | git mktree -z"
+            ),
+            Error::ObjectMissing { request } => write!(
+                f,
+                "git cat-file --batch has no object for {}: it is not in this repository, \
+                 or does not peel to the type asked for, and wsx does not fetch it",
+                shown(request)
             ),
             Error::ReplaceRefsPresent { path, packed } => {
                 if *packed {
@@ -549,6 +560,18 @@ mod tests {
              git fsck reports it as treeNotSorted.\n\
              Write the tree again with git, which sorts it, and commit that tree:\n\
              \tgit ls-tree -z c0ffee | git mktree -z"
+        );
+    }
+
+    #[test]
+    fn object_missing_message_names_the_request() {
+        let missing = Error::ObjectMissing {
+            request: b"abc:.wsx.conf".to_vec(),
+        };
+        assert_eq!(
+            missing.to_string(),
+            "git cat-file --batch has no object for abc:.wsx.conf: it is not in this repository, \
+             or does not peel to the type asked for, and wsx does not fetch it"
         );
     }
 

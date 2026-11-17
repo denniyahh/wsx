@@ -292,6 +292,21 @@ impl Git {
         let command = self.command(worktree, &argv)?;
         finish(command, argv, worktree)
     }
+
+    /// Runs `git <args>` in `worktree` with `input` on its stdin.
+    pub fn run_with_input<I, S>(
+        &self,
+        worktree: &Path,
+        args: I,
+        input: &[u8],
+    ) -> Result<Vec<u8>, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let _ = input;
+        self.run(worktree, args)
+    }
 }
 
 #[cfg(test)]
@@ -761,6 +776,69 @@ mod tests {
         let stdout = Git::from_process(&repo)
             .run(worktree, ["hash-object", "--stdin"])
             .expect("git hash-object --stdin through the helper");
+        testing::child_print("stdin_blob", String::from_utf8_lossy(&stdout).trim());
+    }
+
+    /// The buffer `input_child` hands `run_with_input`.
+    const INPUT: &[u8] = b"wsx-input\n";
+
+    /// How long `input_child` may run: a child left waiting on an open stdin
+    /// is killed, so a hang fails the test instead of the suite.
+    const INPUT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// The id `git hash-object` prints for a file `<root>/<name>` holding
+    /// `bytes`.
+    fn hash_of(scratch: &Scratch, name: &str, bytes: &[u8]) -> String {
+        let file = scratch.root.join(name);
+        testing::write(&file, bytes).expect("write the file to hash");
+        let id = testing::git_ok(
+            scratch,
+            &scratch.root,
+            [OsString::from("hash-object"), file.into()],
+        )
+        .expect("git hash-object <file>");
+        String::from_utf8_lossy(&id).trim().to_owned()
+    }
+
+    #[test]
+    fn run_with_input_feeds_exactly_the_buffer_then_eof() {
+        let scratch = Scratch::new("input-stdin").expect("scratch");
+        let repo = init_repo(&scratch);
+        let expected = hash_of(&scratch, "input", INPUT);
+        assert_ne!(
+            expected, EMPTY_BLOB,
+            "the input's id against the empty blob"
+        );
+        assert_ne!(
+            expected,
+            hash_of(&scratch, "stdin-marker", STDIN_MARKER),
+            "the input's id against the parent's own stdin"
+        );
+
+        let output = testing::reexec_within(
+            "git::spawn::tests::input_child",
+            &scratch.env,
+            &repo,
+            STDIN_MARKER,
+            INPUT_LIMIT,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            child_fact(&output, "stdin_blob"),
+            expected,
+            "the blob git hashed from run_with_input's stdin"
+        );
+    }
+
+    #[test]
+    #[ignore = "child half of run_with_input_feeds_exactly_the_buffer_then_eof; runs only when re-executed"]
+    fn input_child() {
+        let cwd = std::env::current_dir().expect("read the working directory");
+        let repo = Repo::discover(&cwd).expect("discover the child's repository");
+        let worktree = repo.worktree().expect("the repository has a worktree");
+        let stdout = Git::from_process(&repo)
+            .run_with_input(worktree, ["hash-object", "--stdin"], INPUT)
+            .expect("git hash-object --stdin through run_with_input");
         testing::child_print("stdin_blob", String::from_utf8_lossy(&stdout).trim());
     }
 

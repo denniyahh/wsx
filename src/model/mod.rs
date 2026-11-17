@@ -4152,7 +4152,7 @@ mod tests {
         }
         let scratch = Scratch::new("model-unsorted-tree").expect("create scratch");
         let work = chain_repo(&scratch);
-        let (commit, tree) = ok(testing::raw_tree_commit(
+        let (commit, _) = ok(testing::raw_tree_commit(
             &scratch,
             &work,
             &[("z.txt", b"z\n"), (".wsx.conf", b"only .planning\n")],
@@ -4179,18 +4179,17 @@ mod tests {
         match refusal(&work) {
             Error::ManifestUnreadable {
                 branch,
-                source:
-                    git::Error::TreeNotSorted {
-                        commit: named_commit,
-                        tree: named_tree,
-                    },
+                source: git::Error::ObjectMissing { request },
             } => {
                 assert_eq!(String::from_utf8_lossy(&branch), "workspace/dev", "branch");
-                assert_eq!(named_commit, commit, "the commit TreeNotSorted names");
-                assert_eq!(named_tree, tree, "the tree TreeNotSorted names");
+                assert_eq!(
+                    String::from_utf8_lossy(&request),
+                    format!("{commit}:.wsx.conf"),
+                    "the request ObjectMissing names"
+                );
             }
             other => {
-                panic!("resolve: expected Err(ManifestUnreadable(TreeNotSorted)), got {other:?}")
+                panic!("resolve: expected Err(ManifestUnreadable(ObjectMissing)), got {other:?}")
             }
         }
     }
