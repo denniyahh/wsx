@@ -321,8 +321,14 @@ impl Git {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let _ = var;
-        self.run(worktree, args)
+        let argv: Vec<OsString> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        self.ensure_version(worktree)?;
+        let mut command = self.command(worktree, &argv)?;
+        command.env_remove(var);
+        finish(command, argv, worktree)
     }
 
     /// Runs `git <args>` in `worktree` as `run` does, with `input` on its

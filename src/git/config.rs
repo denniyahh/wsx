@@ -62,9 +62,15 @@ impl Repo {
     /// not parse is `Error::GitBadOutput`, never fewer keys (CONF-07). The
     /// read is as fresh as the call: unlike gix's config snapshot, frozen when
     /// `Repo::discover` opened the repository, a value set later is seen.
+    ///
+    /// The child runs without `GIT_CONFIG` even in wsx's own worktree:
+    /// `git config` alone honours it and then reads only that file, as scope
+    /// `command`, so a configured repository would read as not configured
+    /// while `git push`, `git remote add` and every other command read the
+    /// repository's config (04-17, the operator).
     pub fn read_config(&self, git: &Git) -> Result<ConfigRead, Error> {
         let cwd = self.worktree().unwrap_or(self.git_dir());
-        let stdout = match git.run(cwd, READ_ARGS) {
+        let stdout = match git.run_without_var(cwd, READ_ARGS, "GIT_CONFIG") {
             Ok(stdout) => stdout,
             Err(Error::GitFailed {
                 status: Some(1),
