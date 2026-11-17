@@ -186,7 +186,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: 12/13 plans executed
+**Plans**: 12/18 plans executed
 **Wave 1**
 - [x] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [x] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
@@ -217,8 +217,23 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Wave 9** *(gap closure, blocked on Wave 8 completion)*
 - [x] 04-12-PLAN.md — Gap CR-01 (D-22 as amended 2026-11-16): any replace ref, loose or packed, or a replace base other than `refs/replace/`, stops the model before any object read; fresh mutation pass checked by mutant identity, coverage and phase gate on the new tip
 
-**Wave 10** *(gap closure, blocked on Wave 9 completion)*
-- [ ] 04-13-PLAN.md — Gaps CR-01, WR-01, IN-01, IN-02 of the post-04-12 review: a linked worktree's own refs that git does not read, and symlinked loose refs, stop the model before any object read and stop candidate listing (D-16 kept); `ReplaceBaseSet` remedy per setting; fresh mutation pass and phase gate on the new tip
+**Wave 10** *(gap closure, git-binary pivot D-23 to D-36, blocked on Wave 9 completion)*
+- [ ] 04-13-PLAN.md — Gap CR-01 (D-32): a linked worktree's own `refs/replace` stops the model before any object read; `ReplaceBaseSet` remedy per setting (IN-02); `resolve` doc (IN-01)
+
+**Wave 11** *(blocked on Wave 10 completion)*
+- [ ] 04-14-PLAN.md — Config through one `git config -z --show-scope --show-origin` child (D-01, D-36); `resolve(repo, git, recorded)`; `local_config_values` and `remote_configured` deleted, their tests ported
+
+**Wave 12** *(blocked on Wave 11 completion)*
+- [ ] 04-15-PLAN.md — Refs through one `git for-each-ref` listing (D-29, D-30, D-34, D-35), exact-name filter, review shapes as regression tests; `find_ref`, `ref_commit`, `refs_directly_under` deleted
+
+**Wave 13** *(blocked on Wave 12 completion)*
+- [ ] 04-16-PLAN.md — Tips and `.wsx.conf` through one `git --no-lazy-fetch cat-file --batch` fed by `Git::run_with_input` (D-33); `root_entry` and `TreeNotSorted` deleted; child count pinned at 4 (D-26, D-31)
+
+**Wave 14** *(blocked on Wave 13 completion; operator decision)*
+- [ ] 04-17-PLAN.md — `GIT_CONFIG` makes `git config` read only that file: drop, refuse or accept (checkpoint), then implement the answer
+
+**Wave 15** *(blocked on Wave 14 completion)*
+- [ ] 04-18-PLAN.md — D-25 inventory check, STATE obligations (read order, exit codes, gix grafts and shallow), latency on the R3 repos (D-26), fresh mutation pass and phase gate
 
 ### Phase 5: Divergence check and command contract
 
@@ -379,7 +394,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
-| 4. Repo model | 12/12 | In Progress | - |
+| 4. Repo model | 12/18 | In Progress | - |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |
