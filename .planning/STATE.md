@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 04
 current_phase_name: Repo model
 status: executing
-stopped_at: Completed 04-14-PLAN.md
-last_updated: "2026-11-17T22:40:43.412Z"
+stopped_at: Completed 04-15-PLAN.md
+last_updated: "2026-11-17T23:07:18.475Z"
 last_activity: 2026-11-17
 last_activity_desc: Phase 04 execution started
-state_head: cbb182f417ce9ee85e413ddd923ab5652b0bfc60
+state_head: 882ef7c478ab39b7038e002a40fb8d58cbd6bbd0
 progress:
   total_phases: 16
   completed_phases: 4
   total_plans: 54
-  completed_plans: 50
+  completed_plans: 51
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-04)
 ## Current Position
 
 Phase: 04 (Repo model) — EXECUTING
-Plan: 15 of 18
+Plan: 16 of 18
 Status: Ready to execute
 Last activity: 2026-11-17 — Phase 04 execution started
 
@@ -108,6 +108,7 @@ Progress: [███░░░░░░░] 25%
 | Phase 04 P12 | 32 min | 3 tasks | 5 files |
 | Phase 04 P13 | 7 min | 2 tasks | 3 files |
 | Phase 04 P14 | 12 min | 2 tasks | 5 files |
+| Phase 04 P15 | 25 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -219,6 +220,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-17: GIT_CONFIG in wsx's environment: drop, per the operator on 2026-11-17
 - [Phase 04]: 04-13: ReplaceBaseSet's remedy branches on refs::REPLACE_BASE_VAR (pub(super)); a linked worktree's private refs/replace is checked loose-only, its packed-refs not scanned (spike 002 B2b)
 - [Phase 04]: 04-14: wsx keys and remotes come from one git config child (read_config); parse_config_z keeps only two-part wsx keys from the own file at scope local, remotes from local/worktree records
+- [Phase 04]: 04-15: require_passes_a_git_failure_through keeps its assertion with a rung-holding-a-blob fixture, since D-35 makes a corrupt candidate a skipped ref
+- [Phase 04]: 04-15: an error reading wsx.baseRemote or wsx.baseRef lists no rung; build raises it at its turn, so error order is unchanged
 
 ### Pending Todos
 
@@ -259,6 +262,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-17T22:40:42.838Z
-Stopped at: Completed 04-14-PLAN.md
+Last session: 2026-11-17T23:07:17.767Z
+Stopped at: Completed 04-15-PLAN.md
 Resume file: None
