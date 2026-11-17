@@ -14,3 +14,12 @@
 - **Resolved:** the operator approved the bump. `cargo update -p rustix` moved only rustix 1.1.5 -> 1.1.6
   (`e6881d1`); `scripts/check.sh deps` exits 0 there, and the mutation pass and the other gates were
   re-run on that tip (see 04-12-SUMMARY.md).
+
+## GSD tooling: `ui.safety-gate` wave-post gate cannot run (orchestrator, 2026-11-16)
+
+- `loop render-hooks execute:wave:post` lists the `ui` capability's gate with `check.query: ui.safety-gate`
+  and `onError: halt`, but gsd-core 1.21.0 has no such verb: `query ui.safety-gate` answers
+  `Unknown command: ui` and `ui safety-gate` answers the same. This is a GSD defect, not a wsx one.
+- Bypass: wsx has no frontend files, so the gate has nothing to check; the orchestrator skipped it and
+  continued. The schema-drift gate passed; the non-blocking codebase-drift gate warned that the codebase
+  map under `.planning/codebase/` is stale.
