@@ -5302,6 +5302,23 @@ mod tests {
         );
     }
 
+    /// `GIT_REPLACE_REF_BASE` set to git's default, `refs/replace/`, names
+    /// the base wsx already reads, so it stops nothing.
+    #[test]
+    fn replace_base_variable_set_to_the_default_resolves() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-env-default").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let default_base = "refs/replace/";
+        assert_eq!(
+            child_state_with(&scratch, &work, &[(REPLACE_BASE_VAR, default_base)]),
+            "configured",
+            "the child under {REPLACE_BASE_VAR}={default_base}"
+        );
+    }
+
     /// A `GIT_REPLACE_REF_BASE` gix cannot open a repository with, an
     /// absolute path, is refused as a replace base, not reported as no
     /// repository, while git reads the original manifest.
