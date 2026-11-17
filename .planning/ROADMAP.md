@@ -218,7 +218,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 04-12-PLAN.md — Gap CR-01 (D-22 as amended 2026-11-16): any replace ref, loose or packed, or a replace base other than `refs/replace/`, stops the model before any object read; fresh mutation pass checked by mutant identity, coverage and phase gate on the new tip
 
 **Wave 10** *(gap closure, blocked on Wave 9 completion)*
-- [ ] 04-13-PLAN.md — Gaps CR-01, WR-01, IN-01, IN-02 of the post-04-12 review: a linked worktree's own refs that git does not read stop the model before any object read and stop candidate listing (D-16 kept); `ReplaceBaseSet` remedy per setting; fresh mutation pass and phase gate on the new tip
+- [ ] 04-13-PLAN.md — Gaps CR-01, WR-01, IN-01, IN-02 of the post-04-12 review: a linked worktree's own refs that git does not read, and symlinked loose refs, stop the model before any object read and stop candidate listing (D-16 kept); `ReplaceBaseSet` remedy per setting; fresh mutation pass and phase gate on the new tip
 
 ### Phase 5: Divergence check and command contract
 
