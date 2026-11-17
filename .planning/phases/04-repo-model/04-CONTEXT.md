@@ -205,6 +205,10 @@ Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`
 - **Tier A diff review (D-28):** after the last plan's gates pass, the orchestrator runs the external-review diff
   lanes (at least two, in parallel) on the final tip, up to three rounds until no critical finding remains (then the operator decides), before
   the phase is verified.
+- **D-38 (operator, 2026-11-17):** When `GIT_CONFIG` is set, the config read drops it for that one child, so
+  `git config` reads the repository's own config as every other git command does. This amends Phase 3's rule that a
+  child aimed at wsx's own worktree gets the whole environment, for `GIT_CONFIG` on the config child only. Chosen
+  over refusing to run while it is set, and over accepting that a configured repo then reads as not configured.
 
 </decisions>
 

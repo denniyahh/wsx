@@ -5,10 +5,10 @@ current_phase: 04
 current_phase_name: Repo model
 status: executing
 stopped_at: Phase 4 context updated (git-binary pivot, D-23 to D-28)
-last_updated: "2026-11-17T22:09:03.572Z"
+last_updated: "2026-11-17T22:14:17.669Z"
 last_activity: 2026-11-17
 last_activity_desc: Phase 04 planning complete
-state_head: ce767f8d57741c17188b0e0133328f506a0539f0
+state_head: 8f1f994039336d6034e3fcad62d27b1a8c133d18
 progress:
   total_phases: 16
   completed_phases: 4
@@ -214,6 +214,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-10: the model's test modules render bytes through crate::git::c_quote, not gix::bstr, so rg -qF 'gix::' src/model exits 1 and every gix use stays in src/git
 - [Phase 04]: 04-10: final cargo-mutants 27.1.0 fresh pass over the six core files: 177 mutants, 154 caught, 0 missed, 23 unviable, 0 timeout; no equivalent mutants; the local integration-rung order has its own test (local_develop_beats_local_next)
 - [Phase 04]: Any replace ref, of any shape, or a replace base other than refs/replace/ stops the model in a configured repo before any object read; GIT_REPLACE_REF_BASE is refused in Repo::discover before gix opens (04-12, D-22 amended 2026-11-16)
+- [Phase 04]: 04-17: GIT_CONFIG in wsx's environment: drop, per the operator on 2026-11-17
 
 ### Pending Todos
 
