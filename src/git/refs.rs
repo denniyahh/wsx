@@ -1,15 +1,18 @@
-//! Exact ref reads, the root-tree entry of a commit, and peeling object ids
-//! to the commits git names for them; callers never hold a gix type.
+//! The model's refs, listed through git, the root-tree entry of a commit,
+//! and peeling object ids to the commits git names for them; callers never
+//! hold a gix type.
 //!
-//! A ref is read only by its exact full name (`find_ref`), the way
-//! `git show-ref --verify` reads it, and a ref's commit is the id that read
-//! returned, peeled (`ref_commit`). An id is peeled by decoding its hex
-//! (`peel_commit`), and `root_entry` takes the commit id the caller already
-//! holds. So no read here resolves a name through git's DWIM ladder or passes
-//! a name or an id to gix's revspec parser, which reads a name shaped like
-//! `describe` output as the object its hex prefixes (`clippy.toml` bans that
-//! parser; `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
-//! in `repo.rs` pins the ban).
+//! Model refs are listed through `git for-each-ref` (`list_refs`), never
+//! read by name, and each caller compares a record's exact name with the ref
+//! it wants. An id is peeled by decoding its hex (`peel_commit`), for the
+//! object work later phases do, and `root_entry` takes the commit id the
+//! caller already holds. So no read here resolves a name through git's DWIM
+//! ladder or passes a name or an id to gix's revspec parser, which reads a
+//! name shaped like `describe` output as the object its hex prefixes
+//! (`clippy.toml` bans that parser;
+//! `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
+//! in `repo.rs` pins the ban). `refuse_replace_refs` guards gix's object
+//! reads.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -19,15 +22,6 @@ use gix::bstr::ByteSlice;
 
 use super::repo::Repo;
 use super::{Error, Git, NO_LAZY_FETCH, ObjectId, shown};
-
-/// What a ref holds, read without following it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RefTarget {
-    /// The ref holds this object id.
-    Object(ObjectId),
-    /// The ref is symbolic: it names this other full ref.
-    Symbolic(Vec<u8>),
-}
 
 /// One ref git listed: its full name, the object it ends at, and, for a
 /// symbolic ref, the full ref its chain ends at.
@@ -53,12 +47,6 @@ pub enum RootEntry {
     /// `directory` or `submodule`. Its object is never read.
     NotABlob { kind: &'static str },
 }
-
-/// The most refs `Repo::ref_commit` reads for one name, the first included,
-/// so four symbolic hops resolve and a fifth is refused. Measured on git
-/// 2.56.0: `git rev-parse --verify` resolves a ref four symbolic hops from a
-/// commit and refuses one five hops away.
-const SYMREF_MAX_DEPTH: usize = 5;
 
 /// The config key gix reads its replace base from; git does not read it.
 const REPLACE_BASE_KEY: &str = "gitoxide.objects.replaceRefBase";
@@ -96,7 +84,7 @@ fn lossy(bytes: &[u8]) -> String {
 }
 
 /// Refuses `full` unless it is a valid full ref name, with gix's check, the
-/// one `find_ref` applied first. The error is `Error::Gix` with `what`
+/// one gix applies to a ref name it reads. The error is `Error::Gix` with `what`
 /// `read <full>`, so a name that cannot be a ref fails where it is read.
 pub fn check_full_ref_name(full: &[u8]) -> Result<(), Error> {
     gix::refs::FullName::try_from(full.as_bstr())
@@ -202,86 +190,6 @@ impl Repo {
             })
     }
 
-    /// The ref named exactly `full`, read without following it, or `None`
-    /// when git has no ref of that name.
-    ///
-    /// For a full name gix also tries the loose files `.git/heads/<full>`,
-    /// `.git/tags/<full>`, `.git/remotes/<full>` and
-    /// `.git/remotes/<full>/HEAD` when `<full>` itself is absent, and git
-    /// reads none of them (measured on gix 0.90.0 and git 2.56.0). Such a ref
-    /// comes back under another name, so a ref whose name differs from `full`
-    /// reads as `None`.
-    ///
-    /// The comparison cannot see a ref namespace: under one, gix reads
-    /// `refs/namespaces/<ns>/<full>` and reports the name `<full>`.
-    /// `Repo::discover` refuses any namespace gix would apply, so no `Repo`
-    /// it returns reaches this read with one. A `Repo` from `Repo::siblings`
-    /// is not built by `discover`, a limit recorded where that refusal lives.
-    pub fn find_ref(&self, full: &[u8]) -> Result<Option<RefTarget>, Error> {
-        let failed = |message: String| Error::Gix {
-            what: format!("read {}", lossy(full)),
-            message,
-        };
-        let name =
-            gix::refs::FullName::try_from(full.as_bstr()).map_err(|err| failed(err.to_string()))?;
-        let found = self
-            .repo
-            .try_find_reference(name.as_ref())
-            .map_err(|err| failed(err.to_string()))?;
-        let Some(found) = found else {
-            return Ok(None);
-        };
-        let found_name: &[u8] = found.name().as_bstr();
-        if found_name != full {
-            return Ok(None);
-        }
-        Ok(Some(match found.target() {
-            gix::refs::TargetRef::Object(id) => RefTarget::Object(ObjectId::from_gix(id)),
-            gix::refs::TargetRef::Symbolic(target) => {
-                RefTarget::Symbolic(target.as_bstr().to_vec())
-            }
-        }))
-    }
-
-    /// The commit the ref named exactly `full` holds, following symbolic
-    /// refs as git does, to at most `SYMREF_MAX_DEPTH` refs in all.
-    ///
-    /// Each ref on the way is read once, through `find_ref`, and the commit
-    /// is the id that read returned, peeled with `peel_commit`; the name is
-    /// never resolved again. Resolving it again would let a ref changed
-    /// between the two reads hand back a commit the checked read never saw,
-    /// and resolving a name through gix's revspec parser reads a name shaped
-    /// like `describe` output as another object. The read-once property has
-    /// no runtime test: placing a change between two reads needs a seam
-    /// here that exists for no other reason, so that race is accepted
-    /// (T-04-37), and the source check on this function's shape is a lint,
-    /// not evidence for it.
-    ///
-    /// A missing ref is `Error::Gix` naming the ref read last; a chain
-    /// deeper than git follows, a cycle included, is `Error::Gix` naming
-    /// `full`.
-    pub fn ref_commit(&self, full: &[u8]) -> Result<ObjectId, Error> {
-        let mut name = full.to_vec();
-        for _ in 0..SYMREF_MAX_DEPTH {
-            match self.find_ref(&name)? {
-                None => {
-                    return Err(Error::Gix {
-                        what: format!("read {}", lossy(&name)),
-                        message: "no such ref".to_owned(),
-                    });
-                }
-                Some(RefTarget::Object(id)) => return self.peel_commit(&id),
-                Some(RefTarget::Symbolic(target)) => name = target,
-            }
-        }
-        Err(Error::Gix {
-            what: format!("read {}", lossy(full)),
-            message: format!(
-                "its symbolic refs go deeper than the {SYMREF_MAX_DEPTH} refs git follows"
-            ),
-        })
-    }
-
     /// The entry `name` in the root tree of `commit`, read from the object
     /// database, never from a working tree. `commit` is peeled with the
     /// peel `peel_commit` uses, so no revspec is parsed.
@@ -347,45 +255,6 @@ impl Repo {
             .find_blob(entry.oid.to_owned())
             .map_err(|err| failed(err.to_string()))?;
         Ok(RootEntry::Blob(blob.data.clone()))
-    }
-
-    /// The full names of the refs exactly one level under `prefix`, loose
-    /// and packed, in byte order: the refs git's glob `<prefix>*` matches in
-    /// `git for-each-ref`, so `refs/heads/workspace/a/b` is not under
-    /// `refs/heads/workspace/` (assumption A3).
-    ///
-    /// `prefix` must end in `/`: gix matches it as a partial name, so
-    /// `refs/heads/workspace` without the slash also lists `workspace-x`.
-    ///
-    /// A ref that fails to read is `Error::Gix` naming `prefix`, never a
-    /// shorter list: git warns and skips a corrupt loose ref, which could
-    /// leave one candidate where there are two. A dangling symbolic ref is
-    /// listed, where `git for-each-ref` omits it.
-    pub fn refs_directly_under(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-        let failed = |message: String| Error::Gix {
-            what: format!("list the refs directly under {}", lossy(prefix)),
-            message,
-        };
-        let platform = self
-            .repo
-            .references()
-            .map_err(|err| failed(err.to_string()))?;
-        let refs = platform
-            .prefixed(prefix.as_bstr())
-            .map_err(|err| failed(err.to_string()))?;
-        let mut names = Vec::new();
-        for reference in refs {
-            let reference = reference.map_err(|err| failed(err.to_string()))?;
-            let full: &[u8] = reference.name().as_bstr();
-            if full
-                .strip_prefix(prefix)
-                .is_some_and(|rest| !rest.contains(&b'/'))
-            {
-                names.push(full.to_vec());
-            }
-        }
-        names.sort();
-        Ok(names)
     }
 
     /// Refuses every replace ref, whatever its shape, and every replace base
@@ -532,8 +401,7 @@ mod tests {
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, Git, ObjectId};
     use super::{
-        RefRecord, RefTarget, Repo, RootEntry, is_branch_name, packed_refs_name_the_base,
-        parse_ref_listing,
+        RefRecord, Repo, RootEntry, is_branch_name, packed_refs_name_the_base, parse_ref_listing,
     };
 
     /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
@@ -958,24 +826,6 @@ mod tests {
         );
     }
 
-    /// `<root>/work`, a `git clone` of `<root>/source`, which holds `a.txt`
-    /// committed on `main` at `T0`. The clone has `refs/remotes/origin/main`
-    /// and `refs/remotes/origin/HEAD` symbolic to it. Canonical.
-    fn cloned_repo(scratch: &Scratch) -> PathBuf {
-        let source = scratch.root.join("source");
-        std::fs::create_dir_all(&source)
-            .unwrap_or_else(|err| panic!("create {}: {err}", source.display()));
-        git_ok(scratch, &source, ["init", "-q", "-b", "main"])
-            .unwrap_or_else(|err| panic!("{err}"));
-        write(&source.join("a.txt"), b"a\n").expect("write a.txt");
-        commit_all(scratch, &source, "first", T0).expect("commit");
-        git_ok(scratch, &scratch.root, ["clone", "-q", "source", "work"])
-            .unwrap_or_else(|err| panic!("{err}"));
-        let work = scratch.root.join("work");
-        work.canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", work.display()))
-    }
-
     /// The id `git show-ref --verify <full>` prints in `dir`, or `None` when
     /// git finds no ref of exactly that name. Not `git rev-parse`, whose DWIM
     /// rules would find a ref under another name.
@@ -991,142 +841,6 @@ mod tests {
             .next()
             .unwrap_or_else(|| panic!("git show-ref --verify {full} exited 0 and printed no id"));
         Some(id.to_owned())
-    }
-
-    /// `find_ref(full)`'s answer; fails the test on an error.
-    fn read(repo: &Repo, full: &str) -> Option<RefTarget> {
-        repo.find_ref(full.as_bytes())
-            .unwrap_or_else(|err| panic!("find_ref({full}): {err}"))
-    }
-
-    /// `ref_commit(full)`'s answer as hex; fails the test on an error.
-    fn commit_of(repo: &Repo, full: &str) -> String {
-        repo.ref_commit(full.as_bytes())
-            .unwrap_or_else(|err| panic!("ref_commit({full}): {err}"))
-            .to_string()
-    }
-
-    #[test]
-    fn find_ref_tells_direct_from_symbolic() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("find-ref-kinds").expect("create scratch");
-        let work = cloned_repo(&scratch);
-        let head_target = git_ok(
-            &scratch,
-            &work,
-            ["symbolic-ref", "refs/remotes/origin/HEAD"],
-        )
-        .unwrap_or_else(|err| panic!("{err}"));
-        let head_target = String::from_utf8_lossy(&head_target).trim_end().to_owned();
-        assert_eq!(
-            head_target, "refs/remotes/origin/main",
-            "git symbolic-ref refs/remotes/origin/HEAD in the clone"
-        );
-        let main = show_ref(&scratch, &work, "refs/remotes/origin/main")
-            .expect("git show-ref finds refs/remotes/origin/main");
-        assert_eq!(
-            show_ref(&scratch, &work, "refs/remotes/origin/ghost"),
-            None,
-            "git show-ref finds refs/remotes/origin/ghost"
-        );
-        let repo = Repo::discover(&work).expect("discover the clone");
-
-        assert_eq!(
-            read(&repo, "refs/remotes/origin/HEAD"),
-            Some(RefTarget::Symbolic(head_target.into_bytes())),
-            "find_ref(refs/remotes/origin/HEAD) against git symbolic-ref"
-        );
-        assert_eq!(
-            read(&repo, "refs/remotes/origin/main"),
-            Some(RefTarget::Object(ObjectId(main.clone()))),
-            "find_ref(refs/remotes/origin/main) against git show-ref's {main}"
-        );
-        assert_eq!(
-            read(&repo, "refs/remotes/origin/ghost"),
-            None,
-            "find_ref(refs/remotes/origin/ghost), which git does not find"
-        );
-    }
-
-    #[test]
-    fn find_ref_refuses_a_ref_read_under_another_name() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("find-ref-exact").expect("create scratch");
-        let work = cloned_repo(&scratch);
-        let ok =
-            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
-        ok(&["switch", "-q", "-c", "other"]);
-        write(&work.join("b.txt"), b"b\n").expect("write b.txt");
-        commit_all(&scratch, &work, "other", T0 + TICK).expect("commit");
-        ok(&["switch", "-q", "main"]);
-        let main = show_ref(&scratch, &work, "refs/remotes/origin/main")
-            .expect("git show-ref finds refs/remotes/origin/main");
-        let other = show_ref(&scratch, &work, "refs/heads/other")
-            .expect("git show-ref finds refs/heads/other");
-        assert_ne!(main, other, "the fixture's two commits");
-
-        let git_dir = work.join(".git");
-        let ghost = "refs/remotes/origin/ghost";
-        write(
-            &git_dir.join("heads").join(ghost),
-            format!("{main}\n").as_bytes(),
-        )
-        .expect("write .git/heads/refs/remotes/origin/ghost");
-        assert_eq!(
-            show_ref(&scratch, &work, ghost),
-            None,
-            "git show-ref reads {ghost} from .git/heads/"
-        );
-        let repo = Repo::discover(&work).expect("discover the clone");
-        let raw = repo
-            .repo
-            .try_find_reference(ghost)
-            .unwrap_or_else(|err| panic!("try_find_reference({ghost}): {err}"))
-            .map(|found| found.name().as_bstr().to_string());
-        assert_eq!(
-            raw.as_deref(),
-            Some("heads/refs/remotes/origin/ghost"),
-            "gix's raw lookup of {ghost} reads the file under .git/heads/"
-        );
-        assert_eq!(read(&repo, ghost), None, "find_ref({ghost})");
-        let commit = repo.ref_commit(ghost.as_bytes());
-        assert!(commit.is_err(), "ref_commit({ghost}) gave {commit:?}");
-
-        let exact = "refs/remotes/origin/main";
-        write(
-            &git_dir.join("heads").join(exact),
-            format!("{other}\n").as_bytes(),
-        )
-        .expect("write .git/heads/refs/remotes/origin/main");
-        for packing in ["loose", "packed"] {
-            if packing == "packed" {
-                ok(&["pack-refs", "--all"]);
-                assert!(
-                    !git_dir.join(exact).exists(),
-                    "git pack-refs --all left {exact} loose"
-                );
-            }
-            assert_eq!(
-                show_ref(&scratch, &work, exact).as_deref(),
-                Some(main.as_str()),
-                "git show-ref --verify {exact}, {packing}"
-            );
-            let repo = Repo::discover(&work).expect("discover the clone");
-            assert_eq!(
-                read(&repo, exact),
-                Some(RefTarget::Object(ObjectId(main.clone()))),
-                "find_ref({exact}), {packing}, beside .git/heads/{exact} holding {other}"
-            );
-            assert_eq!(
-                commit_of(&repo, exact),
-                main,
-                "ref_commit({exact}), {packing}"
-            );
-        }
     }
 
     /// `is_branch_name` agrees with `git check-ref-format --branch` on each
@@ -1192,136 +906,8 @@ mod tests {
         );
     }
 
-    /// A full name reads only that ref: `refs/remotes/origin/ghost` is
-    /// absent for `find_ref` and `ref_commit`, as for `git show-ref --verify`,
-    /// while `refs/heads/refs/remotes/origin/ghost` (a longer name ending in
-    /// it) exists and the loose file `.git/heads/refs/remotes/origin/ghost`,
-    /// a path gix tries for that full name, holds a commit id. The longer
-    /// name, read by its own full name, is the control that the ref is there.
     #[test]
-    fn full_name_read_is_exact() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("full-name-exact").expect("create scratch");
-        let work = cloned_repo(&scratch);
-        let ghost = "refs/remotes/origin/ghost";
-        let longer = "refs/heads/refs/remotes/origin/ghost";
-        git_ok(&scratch, &work, ["update-ref", longer, "HEAD"])
-            .unwrap_or_else(|err| panic!("{err}"));
-        let head = show_ref(&scratch, &work, "refs/heads/main")
-            .expect("git show-ref finds refs/heads/main");
-        write(
-            &work.join(".git/heads").join(ghost),
-            format!("{head}\n").as_bytes(),
-        )
-        .expect("write .git/heads/refs/remotes/origin/ghost");
-        assert_eq!(
-            show_ref(&scratch, &work, longer).as_deref(),
-            Some(head.as_str()),
-            "git show-ref --verify {longer}"
-        );
-        assert_eq!(
-            show_ref(&scratch, &work, ghost),
-            None,
-            "git show-ref --verify {ghost}"
-        );
-        let repo = Repo::discover(&work).expect("discover the clone");
-        let raw = repo
-            .repo
-            .try_find_reference(ghost)
-            .unwrap_or_else(|err| panic!("try_find_reference({ghost}): {err}"))
-            .map(|found| found.name().as_bstr().to_string());
-        assert!(
-            raw.as_deref().is_some_and(|name| name != ghost),
-            "gix's raw lookup of {ghost} gave {raw:?}, not a ref under another name, \
-             so this test shows nothing about find_ref's name check"
-        );
-
-        assert_eq!(
-            read(&repo, longer),
-            Some(RefTarget::Object(ObjectId(head.clone()))),
-            "find_ref({longer})"
-        );
-        assert_eq!(read(&repo, ghost), None, "find_ref({ghost})");
-        let commit = repo.ref_commit(ghost.as_bytes());
-        assert!(commit.is_err(), "ref_commit({ghost}) gave {commit:?}");
-    }
-
-    /// A tag never satisfies a branch's full name: neither `refs/tags/develop`
-    /// for `refs/heads/develop` nor `refs/tags/refs/heads/ghost2` for
-    /// `refs/heads/ghost2`, agreeing with `git show-ref --verify`. Each tag,
-    /// read by its own full name, is the control that it exists.
-    #[test]
-    fn tag_does_not_satisfy_a_branch_name() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("tag-not-branch").expect("create scratch");
-        let work = cloned_repo(&scratch);
-        let ok =
-            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
-        ok(&["tag", "develop"]);
-        ok(&["update-ref", "refs/tags/refs/heads/ghost2", "HEAD"]);
-        let repo = Repo::discover(&work).expect("discover the clone");
-
-        for (tag, branch) in [
-            ("refs/tags/develop", "refs/heads/develop"),
-            ("refs/tags/refs/heads/ghost2", "refs/heads/ghost2"),
-        ] {
-            let tagged = show_ref(&scratch, &work, tag)
-                .unwrap_or_else(|| panic!("git show-ref --verify {tag} finds no tag"));
-            assert_eq!(
-                read(&repo, tag),
-                Some(RefTarget::Object(ObjectId(tagged))),
-                "find_ref({tag})"
-            );
-            assert_eq!(
-                show_ref(&scratch, &work, branch),
-                None,
-                "git show-ref --verify {branch}"
-            );
-            assert_eq!(read(&repo, branch), None, "find_ref({branch})");
-            let commit = repo.ref_commit(branch.as_bytes());
-            assert!(commit.is_err(), "ref_commit({branch}) gave {commit:?}");
-        }
-    }
-
-    /// `ref_commit` gives the commit `git show-ref --verify` prints for a
-    /// local branch, a tracking ref and the symbolic `<remote>/HEAD`. The
-    /// branches hold different commits, so a read of the wrong one shows.
-    #[test]
-    fn ref_commit_matches_show_ref() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("ref-commit-show-ref").expect("create scratch");
-        let work = cloned_repo(&scratch);
-        let ok =
-            |args: &[&str]| git_ok(&scratch, &work, args).unwrap_or_else(|err| panic!("{err}"));
-        ok(&["switch", "-q", "-c", "other"]);
-        write(&work.join("b.txt"), b"b\n").expect("write b.txt");
-        commit_all(&scratch, &work, "other", T0 + TICK).expect("commit");
-        ok(&["switch", "-q", "main"]);
-        let repo = Repo::discover(&work).expect("discover the clone");
-
-        let mut seen = Vec::new();
-        for full in [
-            "refs/heads/main",
-            "refs/heads/other",
-            "refs/remotes/origin/main",
-            "refs/remotes/origin/HEAD",
-        ] {
-            let from_git = show_ref(&scratch, &work, full)
-                .unwrap_or_else(|| panic!("git show-ref --verify {full} finds no ref"));
-            assert_eq!(commit_of(&repo, full), from_git, "ref_commit({full})");
-            seen.push(from_git);
-        }
-        assert_ne!(seen[0], seen[1], "main and other hold the same commit");
-    }
-
-    #[test]
-    fn ref_commit_reads_the_commit_a_describe_shaped_ref_holds() {
+    fn listing_reads_a_describe_shaped_ref_as_that_ref() {
         if testing::rerun_scrubbed() {
             return;
         }
@@ -1368,69 +954,32 @@ mod tests {
             Err(err) => panic!("gix's rev_parse_single({}): {err}", fixture.name),
         }
 
+        let git = Git::for_repo(scratch.env.clone(), &repo);
+        let listing = repo
+            .list_refs(
+                &git,
+                &[fixture.name.as_bytes().to_vec(), alias.as_bytes().to_vec()],
+            )
+            .unwrap_or_else(|err| panic!("list_refs({}, {alias}): {err}", fixture.name));
+        let listed_id = |full: &str| {
+            listing
+                .iter()
+                .find(|record| record.name == full.as_bytes())
+                .unwrap_or_else(|| panic!("list_refs did not list {full}: {listing:?}"))
+                .id
+                .to_string()
+        };
         assert_eq!(
-            commit_of(&repo, &fixture.name),
+            listed_id(&fixture.name),
             fixture.one,
-            "ref_commit({}) against ONE, which the ref holds",
+            "list_refs({}) against ONE, which the ref holds",
             fixture.name
         );
         assert_eq!(
-            commit_of(&repo, &alias),
+            listed_id(&alias),
             fixture.one,
-            "ref_commit({alias}), symbolic to {}, against ONE",
+            "list_refs({alias}), symbolic to {}, against ONE",
             fixture.name
-        );
-    }
-
-    #[test]
-    fn ref_commit_follows_symbolic_refs_as_far_as_git_does() {
-        if testing::rerun_scrubbed() {
-            return;
-        }
-        let scratch = Scratch::new("ref-commit-depth").expect("create scratch");
-        let repo_dir = tagged_repo(&scratch);
-        let ok =
-            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
-        ok(&["branch", "workspace/dev"]);
-        for (name, target) in [
-            ("refs/heads/s5", "refs/heads/workspace/dev"),
-            ("refs/heads/s4", "refs/heads/s5"),
-            ("refs/heads/s3", "refs/heads/s4"),
-            ("refs/heads/s2", "refs/heads/s3"),
-            ("refs/heads/s1", "refs/heads/s2"),
-        ] {
-            ok(&["symbolic-ref", name, target]);
-        }
-        let tip = show_ref(&scratch, &repo_dir, "refs/heads/workspace/dev")
-            .expect("git show-ref finds refs/heads/workspace/dev");
-        assert_eq!(
-            id(&scratch, &repo_dir, "refs/heads/s2").to_string(),
-            tip,
-            "git rev-parse --verify refs/heads/s2, four symbolic hops from the tip"
-        );
-        let deeper = testing::git(
-            &scratch,
-            &repo_dir,
-            ["rev-parse", "--verify", "refs/heads/s1"],
-        )
-        .unwrap_or_else(|err| panic!("{err}"));
-        assert_ne!(
-            deeper.status.code(),
-            Some(0),
-            "git rev-parse --verify refs/heads/s1, five symbolic hops, printed {:?}",
-            String::from_utf8_lossy(&deeper.stdout).trim_end()
-        );
-        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
-
-        assert_eq!(
-            commit_of(&repo, "refs/heads/s2"),
-            tip,
-            "ref_commit(refs/heads/s2) against git"
-        );
-        let commit = repo.ref_commit(b"refs/heads/s1");
-        assert!(
-            commit.is_err(),
-            "ref_commit(refs/heads/s1), where git refuses, gave {commit:?}"
         );
     }
 
@@ -1465,19 +1014,28 @@ mod tests {
         names.into_iter().map(BString::from).collect()
     }
 
-    /// `refs_directly_under(prefix)`'s answer; fails the test on an error.
-    fn under(repo: &Repo, prefix: &str) -> Vec<Vec<u8>> {
-        repo.refs_directly_under(prefix.as_bytes())
-            .unwrap_or_else(|err| panic!("refs_directly_under({prefix}): {err}"))
+    /// The names `list_refs` lists in `repo` for `patterns`, in its
+    /// order, through the scratch's git; fails the test on an error.
+    fn list_names(scratch: &Scratch, repo: &Repo, patterns: &[String]) -> Vec<Vec<u8>> {
+        let git = Git::for_repo(scratch.env.clone(), repo);
+        let patterns: Vec<Vec<u8>> = patterns.iter().map(|p| p.as_bytes().to_vec()).collect();
+        repo.list_refs(&git, &patterns)
+            .unwrap_or_else(|err| panic!("list_refs({patterns:?}): {err}"))
+            .into_iter()
+            .map(|record| record.name)
+            .collect()
     }
 
-    /// The union of `refs_directly_under` over `CANDIDATE_PREFIXES`.
-    fn listed(repo: &Repo) -> BTreeSet<BString> {
-        name_set(
-            CANDIDATE_PREFIXES
-                .into_iter()
-                .flat_map(|prefix| under(repo, prefix)),
-        )
+    /// The one-level glob `<prefix>*` of each prefix, the patterns
+    /// `git_listed` passes to git.
+    fn globs(prefixes: &[&str]) -> Vec<String> {
+        prefixes.iter().map(|prefix| format!("{prefix}*")).collect()
+    }
+
+    /// What `list_refs` lists in `repo` for the globs of
+    /// `CANDIDATE_PREFIXES`, as a set.
+    fn listed(scratch: &Scratch, repo: &Repo) -> BTreeSet<BString> {
+        name_set(list_names(scratch, repo, &globs(&CANDIDATE_PREFIXES)))
     }
 
     /// The full names `git for-each-ref 'refs/heads/workspace/*'
@@ -1489,7 +1047,7 @@ mod tests {
             "for-each-ref".to_owned(),
             "--format=%(refname)%00".to_owned(),
         ];
-        args.extend(CANDIDATE_PREFIXES.map(|prefix| format!("{prefix}*")));
+        args.extend(globs(&CANDIDATE_PREFIXES));
         let stdout = git_ok(scratch, dir, &args).unwrap_or_else(|err| panic!("{err}"));
         name_set(testing::records(&stdout, b'\n').into_iter().map(
             |record| match record.split_last() {
@@ -1506,9 +1064,9 @@ mod tests {
     /// only `workspace/a`, `personal/workspace` and
     /// `personal/workspace-backup` are directly under a prefix; the nested
     /// `workspace/nested/deep` and the names that only extend a prefix's
-    /// text are not, for git as for `refs_directly_under`.
+    /// text are not, for git as for `list_refs` over the same globs.
     #[test]
-    fn refs_directly_under_matches_for_each_ref() {
+    fn listing_matches_for_each_ref() {
         if testing::rerun_scrubbed() {
             return;
         }
@@ -1527,14 +1085,14 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
 
         assert_eq!(
-            listed(&repo),
+            listed(&scratch, &repo),
             from_git,
-            "refs_directly_under against git for-each-ref"
+            "list_refs against git for-each-ref"
         );
     }
 
     /// The control for the differential: a new branch under a prefix changes
-    /// git's answer and `refs_directly_under`'s alike, so the two do not
+    /// git's answer and `list_refs`'s alike, so the two do not
     /// agree only because the answer is constant.
     #[test]
     fn listing_changes_with_a_new_branch() {
@@ -1544,19 +1102,25 @@ mod tests {
         let scratch = Scratch::new("refs-under-new-branch").expect("create scratch");
         let repo_dir = listing_repo(&scratch);
         let git_before = git_listed(&scratch, &repo_dir);
-        let before = listed(&Repo::discover(&repo_dir).expect("discover the fixture"));
+        let before = listed(
+            &scratch,
+            &Repo::discover(&repo_dir).expect("discover the fixture"),
+        );
 
         git_ok(&scratch, &repo_dir, ["branch", "workspace/b"])
             .unwrap_or_else(|err| panic!("{err}"));
         let git_after = git_listed(&scratch, &repo_dir);
-        let after = listed(&Repo::discover(&repo_dir).expect("discover the fixture"));
+        let after = listed(
+            &scratch,
+            &Repo::discover(&repo_dir).expect("discover the fixture"),
+        );
 
         assert_ne!(git_after, git_before, "git for-each-ref before and after");
-        assert_ne!(after, before, "refs_directly_under before and after");
-        assert_eq!(after, git_after, "refs_directly_under against git, after");
+        assert_ne!(after, before, "list_refs before and after");
+        assert_eq!(after, git_after, "list_refs against git, after");
         assert!(
             after.contains(&BString::from("refs/heads/workspace/b")),
-            "refs_directly_under after the branch was made: {after:?}"
+            "list_refs after the branch was made: {after:?}"
         );
     }
 
@@ -1585,11 +1149,11 @@ mod tests {
         );
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
 
-        let names = listed(&repo);
+        let names = listed(&scratch, &repo);
         assert_eq!(
             names,
             git_listed(&scratch, &repo_dir),
-            "refs_directly_under against git for-each-ref, packed and loose"
+            "list_refs against git for-each-ref, packed and loose"
         );
         for full in ["refs/heads/workspace/a", "refs/heads/workspace/loose"] {
             assert!(
@@ -1613,7 +1177,7 @@ mod tests {
         }
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
 
-        let names = under(&repo, "refs/heads/workspace/");
+        let names = list_names(&scratch, &repo, &globs(&["refs/heads/workspace/"]));
         assert_eq!(
             names.iter().cloned().map(BString::from).collect::<Vec<_>>(),
             vec![
@@ -1621,7 +1185,7 @@ mod tests {
                 BString::from("refs/heads/workspace/a"),
                 BString::from("refs/heads/workspace/b"),
             ],
-            "refs_directly_under(refs/heads/workspace/)"
+            "list_refs(refs/heads/workspace/*)"
         );
         assert!(
             names.windows(2).all(|pair| pair[0] < pair[1]),
@@ -1654,22 +1218,21 @@ mod tests {
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
 
         assert_eq!(
-            listed(&repo),
+            listed(&scratch, &repo),
             from_git,
-            "refs_directly_under against git for-each-ref"
+            "list_refs against git for-each-ref"
         );
     }
 
-    /// A loose ref file holding garbage under the prefix fails the listing
-    /// of that prefix, naming it, where git warns and lists the rest: a
-    /// shorter list could leave one candidate where there are two. The
-    /// other prefix, which holds no such file, still lists.
+    /// D-35: a loose ref file holding garbage under a prefix is skipped by
+    /// git, which warns and lists the rest, and by `list_refs`, which lists
+    /// what git lists. The other prefix still lists.
     #[test]
-    fn corrupt_ref_under_the_prefix_is_an_error() {
+    fn corrupt_ref_under_the_prefix_is_skipped_as_git_skips_it() {
         if testing::rerun_scrubbed() {
             return;
         }
-        let scratch = Scratch::new("refs-under-corrupt").expect("create scratch");
+        let scratch = Scratch::new("refs-listing-corrupt").expect("create scratch");
         let repo_dir = listing_repo(&scratch);
         let before = git_listed(&scratch, &repo_dir);
         write(
@@ -1684,27 +1247,22 @@ mod tests {
         );
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
 
-        let prefix = "refs/heads/workspace/";
-        match repo.refs_directly_under(prefix.as_bytes()) {
-            Err(err @ Error::Gix { .. }) => {
-                let rendered = err.to_string();
-                let message =
-                    rendered.strip_prefix("list the refs directly under refs/heads/workspace/: ");
-                assert!(
-                    message.is_some_and(|message| message.contains("refs/heads/workspace/bad")),
-                    "refs_directly_under({prefix}) rendered {rendered:?}, not the prefix and \
-                     gix's message naming refs/heads/workspace/bad"
-                );
-            }
-            other => panic!("refs_directly_under({prefix}): expected Error::Gix, got {other:?}"),
-        }
         assert_eq!(
-            name_set(under(&repo, "refs/heads/personal/")),
+            listed(&scratch, &repo),
+            before,
+            "list_refs beside the corrupt workspace ref"
+        );
+        assert_eq!(
+            name_set(list_names(
+                &scratch,
+                &repo,
+                &globs(&["refs/heads/personal/"])
+            )),
             name_set([
                 b"refs/heads/personal/workspace".to_vec(),
                 b"refs/heads/personal/workspace-backup".to_vec(),
             ]),
-            "refs_directly_under(refs/heads/personal/) beside the corrupt workspace ref"
+            "list_refs(refs/heads/personal/*) beside the corrupt workspace ref"
         );
     }
 
@@ -1715,22 +1273,28 @@ mod tests {
         if testing::rerun_scrubbed() {
             return;
         }
-        let scratch = Scratch::new("refs-under-worktree").expect("create scratch");
+        let scratch = Scratch::new("refs-listing-worktree").expect("create scratch");
         let trees = testing::linked_worktrees(&scratch).unwrap_or_else(|err| panic!("{err}"));
         for branch in ["workspace/a", "personal/b", "workspace/n/deep"] {
             git_ok(&scratch, &trees.main, ["branch", branch]).unwrap_or_else(|err| panic!("{err}"));
         }
-        let main = listed(&Repo::discover(&trees.main).expect("discover the main worktree"));
+        let main = listed(
+            &scratch,
+            &Repo::discover(&trees.main).expect("discover the main worktree"),
+        );
         assert_eq!(
             main,
             name_set([
                 b"refs/heads/personal/b".to_vec(),
                 b"refs/heads/workspace/a".to_vec(),
             ]),
-            "refs_directly_under from the main worktree"
+            "list_refs from the main worktree"
         );
 
-        let linked = listed(&Repo::discover(&trees.wt1).expect("discover the linked worktree"));
+        let linked = listed(
+            &scratch,
+            &Repo::discover(&trees.wt1).expect("discover the linked worktree"),
+        );
         assert_eq!(
             linked, main,
             "from the linked worktree against the main one"
@@ -2110,8 +1674,8 @@ mod tests {
     /// T-04-31: the manifest is read from the commit `root_entry` is given,
     /// not from the branch, so a branch moved between the tip read and the
     /// manifest read, on one `Repo`, cannot pair the tip with another
-    /// commit's manifest. The second `ref_commit` is the control that the
-    /// handle sees the update (RESEARCH Pitfall 9).
+    /// commit's manifest. The second listing is the control that the handle
+    /// sees the update (RESEARCH Pitfall 9).
     #[test]
     fn manifest_read_stays_on_the_commit_it_was_given() {
         if testing::rerun_scrubbed() {
@@ -2128,10 +1692,17 @@ mod tests {
         commit_all(&scratch, &repo_dir, "second", T0 + 2 * TICK).expect("commit");
         let second = id(&scratch, &repo_dir, "HEAD");
         let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+        let git = Git::for_repo(scratch.env.clone(), &repo);
+        let tip = |when: &str| {
+            repo.list_refs(&git, &[b"refs/heads/workspace/dev".to_vec()])
+                .unwrap_or_else(|err| panic!("list_refs {when}: {err}"))
+                .into_iter()
+                .find(|record| record.name == b"refs/heads/workspace/dev")
+                .unwrap_or_else(|| panic!("list_refs {when} did not list refs/heads/workspace/dev"))
+                .id
+        };
 
-        let first = repo
-            .ref_commit(b"refs/heads/workspace/dev")
-            .unwrap_or_else(|err| panic!("ref_commit: {err}"));
+        let first = tip("before the move");
         assert_eq!(
             Some(first.to_string()),
             show_ref(&scratch, &repo_dir, "refs/heads/workspace/dev"),
@@ -2144,8 +1715,7 @@ mod tests {
             &second.to_string(),
         ]);
         assert_eq!(
-            repo.ref_commit(b"refs/heads/workspace/dev")
-                .unwrap_or_else(|err| panic!("ref_commit after the move: {err}")),
+            tip("after the move"),
             second,
             "the same handle reads the moved branch"
         );

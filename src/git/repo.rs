@@ -560,7 +560,10 @@ fn refuse_ref_storage(repo: &gix::Repository) -> Result<(), Error> {
 /// Refuses a repository gix opened with a ref namespace, as
 /// `Error::RefsNamespace` naming it. gix maps `GIT_NAMESPACE` and
 /// `gitoxide.core.refsNamespace` onto one value, so this reads gix's
-/// resolved namespace and covers every source gix takes it from.
+/// resolved namespace and covers every source gix takes it from. The model
+/// lists its refs through git, whose reads ignore the namespace; the refusal
+/// stays because gix would apply it to the object reads by id later phases
+/// make, and to the replacement map it builds when it opens the repository.
 ///
 /// Measured with gix 0.90.0 and git 2.56.0, with `refs/heads/workspace/dev`
 /// at X and `refs/namespaces/foo/refs/heads/workspace/dev` at Y: the key in
@@ -619,7 +622,6 @@ mod tests {
     use gix::revision::plumbing::spec::parse::{Delegate, delegate};
     use gix::sec::trust::DefaultForLevel;
 
-    use super::super::refs::RefTarget;
     use super::super::spawn::Git;
     use super::super::testing::{
         self, Env, ForeignOwned, Scratch, T0, TICK, commit_all, git, git_ok, write,
@@ -3261,8 +3263,8 @@ mod tests {
         }
     }
 
-    /// Control: with no namespace, `find_ref` reads `refs/heads/main` as
-    /// git does; then, on the same handle, gix with the namespace `foo` set
+    /// Control: with no namespace, gix's own ref read gives `refs/heads/main`
+    /// as git does; then, on the same handle, gix with the namespace `foo` set
     /// reads Y under that same plain name, which is what the refusal stops.
     #[test]
     fn without_a_namespace_refs_read_as_git_reads() {
@@ -3275,10 +3277,16 @@ mod tests {
 
         let mut found = Repo::discover(&repo)
             .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
-        match found.find_ref(b"refs/heads/main") {
-            Ok(Some(RefTarget::Object(id))) => assert_eq!(id, ObjectId(x)),
-            other => panic!("find_ref(refs/heads/main): {other:?}"),
-        }
+        let plain = found
+            .repo
+            .try_find_reference("refs/heads/main")
+            .unwrap_or_else(|err| panic!("read refs/heads/main: {err}"))
+            .unwrap_or_else(|| panic!("no refs/heads/main"));
+        assert_eq!(
+            plain.target().try_id().map(|id| id.to_hex().to_string()),
+            Some(x),
+            "gix without a namespace does not read X"
+        );
 
         found
             .repo

@@ -146,8 +146,10 @@ pub enum Error {
     ObjectStoreEnv { name: &'static str, value: PathBuf },
     /// gix applies the ref namespace `namespace` (`refs/namespaces/<ns>/`),
     /// set by `GIT_NAMESPACE` or `gitoxide.core.refsNamespace`, which git's
-    /// own reads ignore, so wsx would read every ref, and every replace ref,
-    /// from inside the namespace while git reads them outside it.
+    /// own reads ignore. wsx lists refs through git, but gix would apply the
+    /// namespace to its object reads by id and to the replacement map it
+    /// builds when it opens the repository, reading replace refs from inside
+    /// the namespace while git reads them outside it.
     RefsNamespace { namespace: Vec<u8> },
     /// `GIT_DIR` is `git_dir` without `GIT_WORK_TREE`, and `reason` names
     /// what keeps wsx from deciding the worktree as git does (a setting in
