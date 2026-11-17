@@ -34,13 +34,18 @@ pub(crate) mod testing;
 pub use config::ConfigRead;
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
-pub use refs::{RefTarget, RootEntry, is_branch_name};
+pub use refs::{RefRecord, RefTarget, RootEntry, check_full_ref_name, is_branch_name};
 pub use repo::Repo;
 pub use spawn::Git;
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+
+/// git's global option that turns off fetching a missing object from a
+/// promisor remote. Every model child that could read an object passes it
+/// first (research G3), so a read never reaches the network.
+const NO_LAZY_FETCH: &str = "--no-lazy-fetch";
 
 /// A git object id as lowercase hex, independent of the hash kind.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,6 +55,17 @@ impl ObjectId {
     /// The wsx form of a gix object id: its lowercase hex.
     fn from_gix(id: &gix::oid) -> ObjectId {
         ObjectId(id.to_hex().to_string())
+    }
+
+    /// The id a git child printed as `hex`: `Some` only for 40 or 64 bytes of
+    /// lowercase hex, the full SHA-1 and SHA-256 forms git prints, else
+    /// `None`. Nothing is resolved: the bytes are the id.
+    fn from_hex(hex: &[u8]) -> Option<ObjectId> {
+        let full_length = hex.len() == 40 || hex.len() == 64;
+        let lower_hex = hex
+            .iter()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+        (full_length && lower_hex).then(|| ObjectId(String::from_utf8_lossy(hex).into_owned()))
     }
 
     /// The gix form of this id in a repository whose objects are hashed

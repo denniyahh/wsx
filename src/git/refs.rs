@@ -17,7 +17,7 @@ use std::path::Path;
 use gix::bstr::ByteSlice;
 
 use super::repo::Repo;
-use super::{Error, ObjectId};
+use super::{Error, Git, ObjectId};
 
 /// What a ref holds, read without following it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +26,19 @@ pub enum RefTarget {
     Object(ObjectId),
     /// The ref is symbolic: it names this other full ref.
     Symbolic(Vec<u8>),
+}
+
+/// One ref git listed: its full name, the object it ends at, and, for a
+/// symbolic ref, the full ref its chain ends at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefRecord {
+    /// The ref's full name, as git printed it.
+    pub name: Vec<u8>,
+    /// `%(objectname)`: the object the ref, followed to its end, names.
+    pub id: ObjectId,
+    /// `%(symref)`: the full ref a symbolic ref's chain ends at, or `None`
+    /// for a ref that holds an object id.
+    pub symref: Option<Vec<u8>>,
 }
 
 /// What a commit's root tree holds under one name.
@@ -81,7 +94,34 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Refuses `full` unless it is a valid full ref name, with gix's check, the
+/// one `find_ref` applied first. The error is `Error::Gix` with `what`
+/// `read <full>`, so a name that cannot be a ref fails where it is read.
+pub fn check_full_ref_name(full: &[u8]) -> Result<(), Error> {
+    gix::refs::FullName::try_from(full.as_bstr())
+        .map(|_| ())
+        .map_err(|err| Error::Gix {
+            what: format!("read {}", lossy(full)),
+            message: err.to_string(),
+        })
+}
+
+/// The records of a `for-each-ref` listing (RED stub).
+fn parse_ref_listing(stdout: &[u8]) -> Result<Vec<RefRecord>, String> {
+    let _ = stdout;
+    Ok(Vec::new())
+}
+
 impl Repo {
+    /// The refs git lists for `patterns` (RED stub).
+    pub fn list_refs(&self, git: &Git, patterns: &[Vec<u8>]) -> Result<Vec<RefRecord>, Error> {
+        if patterns.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _ = git;
+        Ok(parse_ref_listing(b"").unwrap_or_default())
+    }
+
     /// The commit `id` names, peeling annotated tags as git's
     /// `<id>^{commit}` does. No ref is read and no revspec is parsed: `id`
     /// is decoded as hex, so a name or a short prefix is refused.
@@ -433,8 +473,11 @@ mod tests {
     use gix::bstr::{BStr, BString};
 
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
-    use super::super::{Error, ObjectId};
-    use super::{RefTarget, Repo, RootEntry, is_branch_name, packed_refs_name_the_base};
+    use super::super::{Error, Git, ObjectId};
+    use super::{
+        RefRecord, RefTarget, Repo, RootEntry, is_branch_name, packed_refs_name_the_base,
+        parse_ref_listing,
+    };
 
     /// `<root>/repo` with `a.txt` and `sub/b.txt` committed on `main`, the
     /// annotated tag `v1` of that commit, `v1nest` of `v1` and `vtree` of
@@ -2073,6 +2116,82 @@ mod tests {
                 assert_eq!(path, scratch.root, "the path the refusal names");
             }
             other => panic!("expected Err(ReplaceRefsUnreadable), got {other:?}"),
+        }
+    }
+
+    /// A SHA-1 id as git prints it.
+    const SHA1_HEX: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// The `ObjectId` of `hex`; fails the test unless it is a full id.
+    fn hex_id(hex: &str) -> ObjectId {
+        ObjectId::from_hex(hex.as_bytes()).unwrap_or_else(|| panic!("{hex} is not a full id"))
+    }
+
+    /// A listing's fields are raw bytes: a name holding the byte E9 stays that
+    /// byte, a direct ref has no symref, and a symbolic one names its target.
+    #[test]
+    fn parse_ref_listing_reads_raw_bytes() {
+        let mut stdout = b"refs/heads/caf\xe9\0".to_vec();
+        stdout.extend_from_slice(SHA1_HEX.as_bytes());
+        stdout.extend_from_slice(b"\0\nrefs/remotes/origin/HEAD\0");
+        stdout.extend_from_slice(SHA1_HEX.as_bytes());
+        stdout.extend_from_slice(b"\0refs/remotes/origin/main\n");
+
+        assert_eq!(
+            parse_ref_listing(&stdout),
+            Ok(vec![
+                RefRecord {
+                    name: b"refs/heads/caf\xe9".to_vec(),
+                    id: hex_id(SHA1_HEX),
+                    symref: None,
+                },
+                RefRecord {
+                    name: b"refs/remotes/origin/HEAD".to_vec(),
+                    id: hex_id(SHA1_HEX),
+                    symref: Some(b"refs/remotes/origin/main".to_vec()),
+                },
+            ])
+        );
+    }
+
+    /// A record with two fields, not three, is refused, naming the record,
+    /// never read as a ref with no symref.
+    #[test]
+    fn parse_ref_listing_refuses_a_record_without_three_fields() {
+        let stdout = format!("refs/heads/x\0{SHA1_HEX}\n");
+        match parse_ref_listing(stdout.as_bytes()) {
+            Err(problem) => assert!(
+                problem.contains(&format!("refs/heads/x\\000{SHA1_HEX}")),
+                "{problem:?} does not name the record"
+            ),
+            other => panic!("expected Err for a two-field record, got {other:?}"),
+        }
+    }
+
+    /// With no pattern `list_refs` lists nothing and runs no git: a `Git`
+    /// whose PATH holds no git still answers. Control: the same `Git` with a
+    /// pattern fails to start git.
+    #[test]
+    fn list_refs_without_a_pattern_spawns_nothing() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("refs-list-no-pattern").expect("create scratch");
+        let repo_dir = repo_with_format(&scratch, "repo", "sha1");
+        let empty = scratch.root.join("no-git");
+        std::fs::create_dir_all(&empty)
+            .unwrap_or_else(|err| panic!("create {}: {err}", empty.display()));
+        let repo = Repo::discover(&repo_dir).expect("discover the fixture");
+        let git = Git::for_repo(vec![("PATH".into(), empty.into())], &repo);
+
+        assert_eq!(
+            repo.list_refs(&git, &[])
+                .unwrap_or_else(|err| panic!("list_refs with no pattern: {err}")),
+            Vec::<RefRecord>::new()
+        );
+        match repo.list_refs(&git, &[b"refs/heads/main".to_vec()]) {
+            Err(Error::Io { .. }) => {}
+            other => panic!("list_refs with a pattern and no git: expected Err(Io), got {other:?}"),
         }
     }
 }

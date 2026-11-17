@@ -807,6 +807,25 @@ pub fn child_print(key: &str, value: impl Display) {
     println!("{MARKER}{key}={value}");
 }
 
+/// The process `reexec` and `reexec_within` run: this unit-test binary
+/// running only `child`, ignored tests included, output not captured, with
+/// an empty environment plus `env`, `cwd` as its working directory and
+/// every stream piped.
+fn spawn_child(child: &str, env: &Env, cwd: &Path) -> Result<std::process::Child, String> {
+    let exe =
+        std::env::current_exe().map_err(|err| format!("locate the test executable: {err}"))?;
+    Command::new(&exe)
+        .args(["--exact", child, "--include-ignored", "--nocapture"])
+        .env_clear()
+        .envs(env.iter().map(|(key, value)| (key, value)))
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("spawn {} --exact {child}: {err}", exe.display()))
+}
+
 /// Re-executes this unit-test binary to run the single test `child` (its full
 /// libtest path, for example `git::spawn::tests::null_stdin_child`), ignored
 /// tests included, with output not captured.
@@ -817,18 +836,7 @@ pub fn child_print(key: &str, value: impl Display) {
 /// the parent chose, without `set_var`. stdout and stderr are captured. An
 /// error only when the child cannot be started, fed or waited on.
 pub fn reexec(child: &str, env: &Env, cwd: &Path, stdin: &[u8]) -> Result<Output, String> {
-    let exe =
-        std::env::current_exe().map_err(|err| format!("locate the test executable: {err}"))?;
-    let mut process = Command::new(&exe)
-        .args(["--exact", child, "--include-ignored", "--nocapture"])
-        .env_clear()
-        .envs(env.iter().map(|(key, value)| (key, value)))
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("spawn {} --exact {child}: {err}", exe.display()))?;
+    let mut process = spawn_child(child, env, cwd)?;
     let mut pipe = process
         .stdin
         .take()
@@ -846,6 +854,74 @@ pub fn reexec(child: &str, env: &Env, cwd: &Path, stdin: &[u8]) -> Result<Output
             .map_err(|_| format!("{child}: the stdin feeder panicked"))?
             .map_err(|err| format!("write {} stdin bytes to {child}: {err}", stdin.len()))?;
         Ok(output)
+    })
+}
+
+/// How often `reexec_within` checks whether its child has exited.
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Reads all of `stream` on its own thread, so a child that fills one pipe
+/// never blocks on it while the parent waits.
+fn drain(mut stream: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        // A read error ends the capture early; the parent reports what it got.
+        let _ = stream.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// `reexec`'s child, given at most `limit` to exit. Past it the child is
+/// killed and reaped, and the answer is `Err` saying it did not finish
+/// within `limit`, so a subject that hangs fails its test instead of
+/// hanging the suite. The streams are fed and drained on threads that are
+/// not joined after a kill, so a grandchild still holding a pipe cannot
+/// block the parent either.
+pub fn reexec_within(
+    child: &str,
+    env: &Env,
+    cwd: &Path,
+    stdin: &[u8],
+    limit: std::time::Duration,
+) -> Result<Output, String> {
+    let mut process = spawn_child(child, env, cwd)?;
+    let (Some(mut pipe), Some(stdout), Some(stderr)) = (
+        process.stdin.take(),
+        process.stdout.take(),
+        process.stderr.take(),
+    ) else {
+        return Err(format!("{child}: the child is missing a piped stream"));
+    };
+    let fed = stdin.to_vec();
+    let feeder = std::thread::spawn(move || pipe.write_all(&fed));
+    let (stdout, stderr) = (drain(stdout), drain(stderr));
+    let started = std::time::Instant::now();
+    let status = loop {
+        match process.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= limit => {
+                let killed = process.kill().and_then(|()| process.wait());
+                return Err(format!(
+                    "{child} did not finish within {limit:?}; killed it ({killed:?})"
+                ));
+            }
+            Ok(None) => std::thread::sleep(WAIT_POLL),
+            Err(err) => return Err(format!("wait for {child}: {err}")),
+        }
+    };
+    feeder
+        .join()
+        .map_err(|_| format!("{child}: the stdin feeder panicked"))?
+        .map_err(|err| format!("write {} stdin bytes to {child}: {err}", stdin.len()))?;
+    let joined = |reader: std::thread::JoinHandle<Vec<u8>>, name: &str| {
+        reader
+            .join()
+            .map_err(|_| format!("{child}: the {name} reader panicked"))
+    };
+    Ok(Output {
+        status,
+        stdout: joined(stdout, "stdout")?,
+        stderr: joined(stderr, "stderr")?,
     })
 }
 
@@ -1206,6 +1282,54 @@ fn reexec_of_an_unknown_child_has_no_marker() {
         marker(&output, "anything").is_err(),
         "a zero-test run produced a marker; stdout: {stdout}"
     );
+}
+
+/// How long `sleeping_child` sleeps: far past the limit its test gives it.
+const SLEEP_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The limit `reexec_within_kills_a_child_that_outlives_its_limit` gives
+/// `sleeping_child`, and the limit its control finishes within.
+const SHORT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+const ROOMY_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[test]
+#[ignore = "child half of reexec_within_kills_a_child_that_outlives_its_limit; runs only when re-executed"]
+fn sleeping_child() {
+    std::thread::sleep(SLEEP_FOR);
+}
+
+/// A child that outlives its limit is killed and reported, well before it
+/// would have finished. Control: a child that exits at once (an unknown name,
+/// which runs no test) finishes within the roomier limit.
+#[test]
+fn reexec_within_kills_a_child_that_outlives_its_limit() {
+    let scratch = Scratch::new("reexec-within").expect("scratch");
+    let started = std::time::Instant::now();
+    match reexec_within(
+        "git::testing::sleeping_child",
+        &scratch.env,
+        &scratch.root,
+        b"",
+        SHORT_LIMIT,
+    ) {
+        Err(err) => assert!(err.contains("did not finish within"), "{err}"),
+        Ok(output) => panic!("the sleeping child finished: {output:?}"),
+    }
+    assert!(
+        started.elapsed() < ROOMY_LIMIT,
+        "the sleeping child was waited for {:?}, not killed",
+        started.elapsed()
+    );
+
+    let output = reexec_within(
+        "git::testing::no_such_child",
+        &scratch.env,
+        &scratch.root,
+        b"",
+        ROOMY_LIMIT,
+    )
+    .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
 /// A one-commit repository at `<root>/<name>`, canonical.

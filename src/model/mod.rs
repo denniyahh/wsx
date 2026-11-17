@@ -2435,11 +2435,13 @@ mod tests {
         }
     }
 
-    /// D-06: `HEAD -> alias -> refs/heads/workspace/dev` is refused at
-    /// `alias`. `git rev-parse` following the chain to the workspace tip is
-    /// the control that it does reach a local commit.
+    /// D-34: `HEAD -> alias -> refs/heads/workspace/dev` ends outside the
+    /// remote, as git's `%(symref)` shows, so it names no default. `git
+    /// rev-parse` following the chain to the workspace tip is the control
+    /// that it does reach a local commit. Control: aimed at the remote's
+    /// `main`, the chain is the default.
     #[test]
-    fn remote_head_chain_into_a_local_branch_is_refused() {
+    fn remote_head_chain_into_a_local_branch_is_not_a_default() {
         if testing::rerun_scrubbed() {
             return;
         }
@@ -2458,21 +2460,45 @@ mod tests {
             workspace,
             "git rev-parse --verify {ORIGIN_ALIAS}"
         );
+        assert_eq!(
+            listed_field(&scratch, &work, "%(symref)", ORIGIN_HEAD),
+            WORKSPACE,
+            "git for-each-ref %(symref) {ORIGIN_HEAD}"
+        );
+        assert_eq!(
+            no_integration(&refusal(&work)),
+            (
+                Some(b"origin".as_slice()),
+                vec![
+                    ORIGIN_DEVELOP.to_owned(),
+                    ORIGIN_NEXT.to_owned(),
+                    ORIGIN_HEAD.to_owned()
+                ]
+            )
+        );
 
-        let err = refusal(&work);
-        assert_symbolic(&err, ORIGIN_ALIAS, WORKSPACE);
-        let rendered = err.to_string();
-        for fix in [
-            "git update-ref --no-deref -d refs/remotes/origin/alias",
-            "wsx.baseRef",
-        ] {
-            assert!(rendered.contains(fix), "{rendered:?} does not name {fix:?}");
-        }
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_ALIAS, ORIGIN_MAIN],
+        );
+        assert_eq!(
+            listed_field(&scratch, &work, "%(symref)", ORIGIN_HEAD),
+            ORIGIN_MAIN,
+            "git for-each-ref %(symref) {ORIGIN_HEAD} once alias names main"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).branch),
+            "main"
+        );
     }
 
-    /// D-06: a chain that never leaves the remote is refused too.
+    /// D-34: a chain that never leaves the remote ends at the remote's
+    /// `main`, as git's `%(symref)` shows, and that branch is the default,
+    /// its tip the one HEAD's listing printed. Control: a chain ending at the
+    /// local workspace branch names no default.
     #[test]
-    fn remote_head_chain_inside_the_remote_is_refused() {
+    fn remote_head_chain_inside_the_remote_resolves() {
         if testing::rerun_scrubbed() {
             return;
         }
@@ -2489,13 +2515,34 @@ mod tests {
             &work,
             &["symbolic-ref", ORIGIN_HEAD, ORIGIN_ALIAS],
         );
+        assert_eq!(
+            listed_field(&scratch, &work, "%(symref)", ORIGIN_HEAD),
+            ORIGIN_MAIN,
+            "git for-each-ref %(symref) {ORIGIN_HEAD}"
+        );
+        assert_eq!(
+            integration_of(&work),
+            Integration {
+                branch: b"main".to_vec(),
+                full_ref: ORIGIN_MAIN.as_bytes().to_vec(),
+                tip: ok(testing::object_id(&scratch, &work, ORIGIN_MAIN)),
+            }
+        );
 
-        assert_symbolic(&refusal(&work), ORIGIN_ALIAS, ORIGIN_MAIN);
+        run(&scratch, &work, &["symbolic-ref", ORIGIN_ALIAS, WORKSPACE]);
+        assert_eq!(
+            listed_field(&scratch, &work, "%(symref)", ORIGIN_HEAD),
+            WORKSPACE,
+            "git for-each-ref %(symref) {ORIGIN_HEAD} once alias names the workspace"
+        );
+        no_integration(&refusal(&work));
     }
 
-    /// D-06: a cycle, which git cannot resolve, is refused at `alias`.
+    /// D-34: a cycle, which git cannot resolve and does not list, names no
+    /// default. Control: with the cycle broken at the remote's `main`, the
+    /// default is `main`.
     #[test]
-    fn remote_head_cycle_is_refused() {
+    fn remote_head_cycle_is_not_a_default() {
         if testing::rerun_scrubbed() {
             return;
         }
@@ -2512,13 +2559,31 @@ mod tests {
             &work,
             &["symbolic-ref", ORIGIN_HEAD, ORIGIN_ALIAS],
         );
+        assert!(
+            for_each_ref(&scratch, &work, ORIGIN_HEAD).is_empty(),
+            "git for-each-ref {ORIGIN_HEAD} listed the cycle"
+        );
         assert_ne!(
             exit_code(&scratch, &work, &["rev-parse", "--verify", ORIGIN_HEAD]),
             Some(0),
             "git rev-parse --verify {ORIGIN_HEAD} resolved the cycle"
         );
+        let (_, tried) = no_integration(&refusal(&work));
+        assert_eq!(
+            tried.last().map(String::as_str),
+            Some(ORIGIN_HEAD),
+            "tried {tried:?}"
+        );
 
-        assert_symbolic(&refusal(&work), ORIGIN_ALIAS, ORIGIN_HEAD);
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", ORIGIN_ALIAS, ORIGIN_MAIN],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).branch),
+            "main"
+        );
     }
 
     /// D-06: a symbolic `develop` is refused, with no fall-through to the
@@ -3190,33 +3255,36 @@ mod tests {
         }
     }
 
-    /// T-04-20: a corrupt loose ref under a candidate prefix fails the
-    /// listing, and that failure stays in `inferred`: the repository is not
-    /// configured, and the one readable candidate is not inferred.
+    /// D-35: a loose candidate ref holding garbage, which git warns about
+    /// and skips, is no candidate, so the one readable candidate is
+    /// inferred. Control: the same ref holding a commit is listed by both.
     #[test]
-    fn corrupt_candidate_ref_stays_in_inferred() {
+    fn corrupt_candidate_ref_is_skipped_as_git_skips_it() {
         if testing::rerun_scrubbed() {
             return;
         }
         let scratch = Scratch::new("model-corrupt-candidate").expect("create scratch");
         let work = repo_with_remote(&scratch);
-        ok(write(
-            &work.join(".git/refs/heads/workspace/bad"),
-            b"garbage\n",
-        ));
+        let bad = work.join(".git/refs/heads/workspace/bad");
+        ok(write(&bad, b"garbage\n"));
         assert_eq!(
             texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/*")),
             ["refs/heads/workspace/dev"],
             "git for-each-ref skips the corrupt ref"
         );
+        assert_eq!(
+            String::from_utf8_lossy(&inferred_model(&work).workspace_branch),
+            "workspace/dev"
+        );
 
-        match inferred(&work) {
-            Err(Error::Git(git::Error::Gix { what, .. })) => assert_eq!(
-                what, "list the refs directly under refs/heads/workspace/",
-                "the failed read"
-            ),
-            other => panic!("inferred: expected Err(Git(Gix)) from the listing, got {other:?}"),
-        }
+        let main = tip(&scratch, &work, "refs/heads/main");
+        ok(write(&bad, format!("{main}\n").as_bytes()));
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/bad", "refs/heads/workspace/dev"],
+            "git for-each-ref once the ref holds a commit"
+        );
+        assert_eq!(candidates_of(&work), ["workspace/bad", "workspace/dev"]);
     }
 
     /// D-17: the recorded set is an input. One repository resolved twice:
@@ -6044,6 +6112,517 @@ mod tests {
         assert_lists(&work, ".planning");
     }
 
+    /// The `branch` of `err`, which must be `Error::WorkspaceBranchMissing`.
+    fn missing_branch(err: &Error) -> String {
+        match err {
+            Error::WorkspaceBranchMissing { branch } => {
+                String::from_utf8_lossy(branch).into_owned()
+            }
+            other => panic!("expected Err(WorkspaceBranchMissing), got {other:?}"),
+        }
+    }
+
+    /// Replaces the file at `link` with a symlink whose target text is
+    /// `target`.
+    fn relink(link: &Path, target: &str) {
+        std::fs::remove_file(link).unwrap_or_else(|err| panic!("remove {}: {err}", link.display()));
+        std::os::unix::fs::symlink(target, link)
+            .unwrap_or_else(|err| panic!("symlink {} -> {target}: {err}", link.display()));
+    }
+
+    /// What `git for-each-ref --format=<format> <full>` prints in `work`,
+    /// its trailing newline removed.
+    fn listed_field(scratch: &Scratch, work: &Path, format: &str, full: &str) -> String {
+        let format = format!("--format={format}");
+        let stdout = run(scratch, work, &["for-each-ref", format.as_str(), full]);
+        String::from_utf8_lossy(&stdout).trim_end().to_owned()
+    }
+
+    /// Whether `git rev-parse --verify -q <rev>` fails in `work`.
+    fn git_cannot_verify(scratch: &Scratch, work: &Path, rev: &str) -> bool {
+        exit_code(scratch, work, &["rev-parse", "--verify", "-q", rev]) != Some(0)
+    }
+
+    /// WR-01, D-27 S2: a branch only in a linked worktree's private ref store,
+    /// which git does not list, is no candidate. Control: a branch in the
+    /// shared store is listed by git and by the model.
+    #[test]
+    fn private_branch_in_a_linked_worktree_is_not_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-private-candidate").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let linked = linked_worktree(&scratch, &work);
+        let main = tip(&scratch, &work, "refs/heads/main");
+        ok(write(
+            &work.join(".git/worktrees/linked/refs/heads/workspace/ghost"),
+            format!("{main}\n").as_bytes(),
+        ));
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &linked, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/dev"],
+            "git for-each-ref from the linked worktree"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&inferred_model(&linked).workspace_branch),
+            "workspace/dev"
+        );
+
+        run(&scratch, &work, &["branch", "workspace/shared"]);
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &linked, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/dev", "refs/heads/workspace/shared"],
+            "git for-each-ref from the linked worktree, with a shared branch"
+        );
+        assert_eq!(
+            candidates_of(&linked),
+            ["workspace/dev", "workspace/shared"]
+        );
+    }
+
+    /// D-27 S3: `wsx.sourceBranch`'s loose ref a symlink to `../side-b`,
+    /// a path git reads through: git and the model both take side-b's tip.
+    /// Control: retargeted to `../side-c`, both move to side-c.
+    #[test]
+    fn relative_symlinked_source_branch_resolves_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-relative-symlink").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let link = work.join(".git/refs/heads/workspace/dev");
+        for (target, side, only) in [("../side-b", &ids.b, "b"), ("../side-c", &ids.c, "c")] {
+            relink(&link, target);
+            assert_eq!(
+                rev_id(&scratch, &work, WORKSPACE),
+                side.commit,
+                "git rev-parse --verify {WORKSPACE} through {target}"
+            );
+            assert_eq!(
+                listed_field(&scratch, &work, "%(objectname)", WORKSPACE),
+                side.commit,
+                "git for-each-ref %(objectname) {WORKSPACE} through {target}"
+            );
+            let model = assert_lists(&work, only);
+            assert_eq!(
+                model.workspace_tip.to_string(),
+                side.commit,
+                "workspace tip"
+            );
+        }
+    }
+
+    /// D-29, D-27 S3: `wsx.sourceBranch`'s loose ref a symlink whose target
+    /// text is `refs/heads/side-b`, which git resolves by name and does not
+    /// list: the model, which only lists, reads it as missing. Control: the
+    /// same target as a symbolic ref is listed and read.
+    #[test]
+    fn git_style_symlinked_source_branch_reads_as_missing() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-git-style-symlink").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let link = work.join(".git/refs/heads/workspace/dev");
+        relink(&link, "refs/heads/side-b");
+        assert_eq!(
+            rev_id(&scratch, &work, WORKSPACE),
+            ids.b.commit,
+            "git rev-parse --verify {WORKSPACE} through the symlink"
+        );
+        assert!(
+            for_each_ref(&scratch, &work, WORKSPACE).is_empty(),
+            "git for-each-ref {WORKSPACE} listed the symlink"
+        );
+        assert_eq!(missing_branch(&refusal(&work)), "workspace/dev");
+
+        std::fs::remove_file(&link)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", link.display()));
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", WORKSPACE, "refs/heads/side-b"],
+        );
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, WORKSPACE)),
+            [WORKSPACE],
+            "git for-each-ref {WORKSPACE} as a symbolic ref"
+        );
+        assert_lists(&work, "b");
+    }
+
+    /// D-29, D-09: a loose `<remote>/HEAD` that is a symlink to the remote's
+    /// `main`, which git resolves by name and does not list, names no
+    /// default, so with no other rung there is no integration branch.
+    /// Control: `git remote set-head` writes a symbolic ref the model reads.
+    #[test]
+    fn symlinked_remote_head_gives_no_integration_branch() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-symlinked-head").expect("create scratch");
+        let work = chain_repo(&scratch);
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP, ORIGIN_NEXT]);
+        let head = work.join(".git").join(ORIGIN_HEAD);
+        relink(&head, ORIGIN_MAIN);
+        assert_eq!(
+            rev_id(&scratch, &work, ORIGIN_HEAD),
+            tip(&scratch, &work, ORIGIN_MAIN),
+            "git rev-parse --verify {ORIGIN_HEAD} through the symlink"
+        );
+        assert!(
+            for_each_ref(&scratch, &work, ORIGIN_HEAD).is_empty(),
+            "git for-each-ref {ORIGIN_HEAD} listed the symlink"
+        );
+        assert_eq!(
+            no_integration(&refusal(&work)),
+            (
+                Some(b"origin".as_slice()),
+                vec![
+                    ORIGIN_DEVELOP.to_owned(),
+                    ORIGIN_NEXT.to_owned(),
+                    ORIGIN_HEAD.to_owned()
+                ]
+            )
+        );
+
+        std::fs::remove_file(&head)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", head.display()));
+        run(&scratch, &work, &["remote", "set-head", "origin", "main"]);
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).branch),
+            "main"
+        );
+    }
+
+    /// D-27 S4: `wsx.sourceBranch`'s ref symbolic to a `main-worktree/`
+    /// alias, a name git refuses as a ref, reads as missing from a linked
+    /// worktree. Control: a plain symbolic ref to the same branch resolves.
+    #[test]
+    fn main_worktree_alias_source_branch_reads_as_missing() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-main-worktree-alias").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let linked = linked_worktree(&scratch, &work);
+        ok(write(
+            &work.join(".git").join(WORKSPACE),
+            b"ref: main-worktree/refs/heads/side-b\n",
+        ));
+        let peeled = format!("{WORKSPACE}^{{commit}}");
+        assert!(
+            git_cannot_verify(&scratch, &linked, &peeled),
+            "git rev-parse --verify {peeled} resolved the alias from the linked worktree"
+        );
+        assert!(
+            for_each_ref(&scratch, &linked, WORKSPACE).is_empty(),
+            "git for-each-ref {WORKSPACE} listed the alias"
+        );
+        assert_eq!(missing_branch(&refusal(&linked)), "workspace/dev");
+
+        run(
+            &scratch,
+            &work,
+            &["symbolic-ref", WORKSPACE, "refs/heads/side-b"],
+        );
+        assert_eq!(
+            rev_id(&scratch, &linked, &peeled),
+            ids.b.commit,
+            "git rev-parse"
+        );
+        assert_eq!(
+            listed_field(&scratch, &linked, "%(objectname)", WORKSPACE),
+            ids.b.commit,
+            "git for-each-ref %(objectname)"
+        );
+        assert_lists(&linked, "b");
+    }
+
+    /// D-27 S6: a symbolic candidate naming a missing branch, which git does
+    /// not list, is no candidate. Control: once its target exists, both list
+    /// it.
+    #[test]
+    fn dangling_symref_is_not_a_candidate() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-dangling-candidate").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(
+            &scratch,
+            &work,
+            &[
+                "symbolic-ref",
+                "refs/heads/workspace/ghost",
+                "refs/heads/nowhere",
+            ],
+        );
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/dev"],
+            "git for-each-ref skips the dangling symref"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&inferred_model(&work).workspace_branch),
+            "workspace/dev"
+        );
+
+        run(&scratch, &work, &["branch", "nowhere", "main"]);
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/*")),
+            ["refs/heads/workspace/dev", "refs/heads/workspace/ghost"],
+            "git for-each-ref once the target exists"
+        );
+        assert_eq!(candidates_of(&work), ["workspace/dev", "workspace/ghost"]);
+    }
+
+    /// D-30: a symbolic `develop` naming a missing ref is absent, as git
+    /// does not list it, and the chain moves on to `next`. Control: once its
+    /// target exists the rung is listed and refused as symbolic.
+    #[test]
+    fn dangling_symbolic_rung_is_absent() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-dangling-rung").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(
+            &scratch,
+            &work,
+            &[
+                "symbolic-ref",
+                ORIGIN_DEVELOP,
+                "refs/remotes/origin/nowhere",
+            ],
+        );
+        assert!(
+            git_cannot_verify(&scratch, &work, ORIGIN_DEVELOP),
+            "git rev-parse --verify {ORIGIN_DEVELOP} resolved the dangling rung"
+        );
+        assert!(
+            for_each_ref(&scratch, &work, ORIGIN_DEVELOP).is_empty(),
+            "git for-each-ref {ORIGIN_DEVELOP} listed the dangling rung"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).full_ref),
+            ORIGIN_NEXT
+        );
+
+        let main = tip(&scratch, &work, ORIGIN_MAIN);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "refs/remotes/origin/nowhere", main.as_str()],
+        );
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, ORIGIN_DEVELOP)),
+            [ORIGIN_DEVELOP],
+            "git for-each-ref {ORIGIN_DEVELOP} once its target exists"
+        );
+        assert_symbolic(
+            &refusal(&work),
+            ORIGIN_DEVELOP,
+            "refs/remotes/origin/nowhere",
+        );
+    }
+
+    /// G1: `git for-each-ref refs/remotes/origin/develop` also lists
+    /// `refs/remotes/origin/develop/x`, which git does not read as
+    /// `develop`; the model reads only the exact name, so the chain moves on.
+    /// Control: `develop` itself back at its tip is the rung again.
+    #[test]
+    fn nested_ref_under_a_rung_name_does_not_satisfy_the_rung() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-nested-rung").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let develop = tip(&scratch, &work, ORIGIN_DEVELOP);
+        let main = tip(&scratch, &work, ORIGIN_MAIN);
+        let nested = "refs/remotes/origin/develop/x";
+        delete_refs(&scratch, &work, &[ORIGIN_DEVELOP]);
+        run(&scratch, &work, &["update-ref", nested, main.as_str()]);
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, ORIGIN_DEVELOP)),
+            [nested],
+            "git for-each-ref {ORIGIN_DEVELOP}"
+        );
+        assert!(
+            git_cannot_verify(&scratch, &work, ORIGIN_DEVELOP),
+            "git rev-parse --verify {ORIGIN_DEVELOP} resolved"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).full_ref),
+            ORIGIN_NEXT
+        );
+
+        delete_refs(&scratch, &work, &[nested]);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", ORIGIN_DEVELOP, develop.as_str()],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&integration_of(&work).full_ref),
+            ORIGIN_DEVELOP
+        );
+    }
+
+    /// F8, G1: a base remote named `o*` makes the rung
+    /// `refs/remotes/o*/develop`, a glob `git for-each-ref` matches against
+    /// `ox`, and a name git refuses as a ref. The rung is refused by name
+    /// at its turn, never listed as a pattern. Control: `origin` resolves.
+    #[test]
+    fn glob_bytes_in_a_remote_name_are_refused() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("chain-glob-remote").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let source = scratch.root.join("source");
+        append_config(
+            &work,
+            format!("[remote \"o*\"]\n\turl = {}\n", source.display()).as_bytes(),
+        );
+        set_config(&scratch, &work, BASE_REMOTE, "o*");
+        let main = tip(&scratch, &work, ORIGIN_MAIN);
+        run(
+            &scratch,
+            &work,
+            &["update-ref", "refs/remotes/ox/develop", main.as_str()],
+        );
+        let glob = "refs/remotes/o*/develop";
+        assert!(
+            texts(&for_each_ref(&scratch, &work, glob))
+                .contains(&"refs/remotes/ox/develop".to_owned()),
+            "git for-each-ref {glob} does not list refs/remotes/ox/develop"
+        );
+        assert!(
+            git_cannot_verify(&scratch, &work, glob),
+            "git rev-parse --verify {glob} resolved"
+        );
+        match refusal(&work) {
+            Error::Git(git::Error::Gix { what, .. }) => assert_eq!(what, format!("read {glob}")),
+            other => panic!("resolve: expected Err(Git(Gix)), got {other:?}"),
+        }
+
+        set_config(&scratch, &work, BASE_REMOTE, "origin");
+        let integration = integration_of(&work);
+        assert_eq!(String::from_utf8_lossy(&integration.branch), "develop");
+        assert_eq!(
+            String::from_utf8_lossy(&integration.full_ref),
+            ORIGIN_DEVELOP
+        );
+    }
+
+    /// How long `fifo_ref_is_skipped_without_hanging` gives git and the model.
+    const FIFO_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Runs `state_child` on `work` within `FIFO_LIMIT`; fails the test
+    /// when it does not finish.
+    fn state_child_within(scratch: &Scratch, work: &Path) -> Output {
+        let mut env = scratch.env.clone();
+        env.push((START_VAR.into(), work.into()));
+        ok(testing::reexec_within(
+            &child_path("state_child"),
+            &env,
+            &scratch.root,
+            b"",
+            FIFO_LIMIT,
+        ))
+    }
+
+    /// D-29, S8: a fifo where a loose ref would be is skipped by git's listing,
+    /// and the model, which only lists, neither hangs on it nor counts it:
+    /// `workspace/dev` is inferred. Control: naming the fifo as
+    /// `wsx.sourceBranch` fails closed as a missing branch, within the limit.
+    #[test]
+    fn fifo_ref_is_skipped_without_hanging() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-fifo-ref").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let fifo = work.join(".git/refs/heads/workspace/fifo");
+        let made = ok(testing::command("mkfifo", &work, &scratch.env)
+            .arg(&fifo)
+            .output()
+            .map_err(|err| format!("mkfifo {}: {err}", fifo.display())));
+        assert_eq!(made.status.code(), Some(0), "mkfifo: {made:?}");
+        let listed = ok(testing::command("timeout", &work, &scratch.env)
+            .args([
+                "10",
+                "git",
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/workspace/",
+            ])
+            .output()
+            .map_err(|err| format!("timeout git for-each-ref: {err}")));
+        assert_eq!(
+            listed.status.code(),
+            Some(0),
+            "git for-each-ref: {listed:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&listed.stdout),
+            "refs/heads/workspace/dev\n",
+            "git for-each-ref refs/heads/workspace/"
+        );
+
+        let child = state_child_within(&scratch, &work);
+        assert_eq!(ok(testing::marker(&child, "state")), "not-configured");
+        assert_eq!(ok(testing::marker(&child, "inferred")), "workspace/dev");
+
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/fifo");
+        let child = state_child_within(&scratch, &work);
+        assert_eq!(ok(testing::marker(&child, "state")), "failed");
+        let error = ok(testing::marker(&child, "error"));
+        assert!(
+            error.starts_with(
+                "wsx.sourceBranch = workspace/fifo, but refs/heads/workspace/fifo does not exist"
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// D-35: a corrupt loose ref named by `wsx.sourceBranch`, which git
+    /// skips, is a missing branch in a configured repository. Control: the
+    /// same ref holding the workspace tip is listed and resolves.
+    #[test]
+    fn corrupt_source_branch_ref_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-corrupt-source").expect("create scratch");
+        let work = chain_repo(&scratch);
+        set_config(&scratch, &work, "wsx.sourceBranch", "workspace/bad");
+        let bad = work.join(".git/refs/heads/workspace/bad");
+        ok(write(&bad, b"garbage\n"));
+        assert!(
+            for_each_ref(&scratch, &work, "refs/heads/workspace/bad").is_empty(),
+            "git for-each-ref listed the corrupt ref"
+        );
+        assert_eq!(missing_branch(&refusal(&work)), "workspace/bad");
+
+        let workspace = tip(&scratch, &work, WORKSPACE);
+        ok(write(&bad, format!("{workspace}\n").as_bytes()));
+        assert_eq!(
+            texts(&for_each_ref(&scratch, &work, "refs/heads/workspace/bad")),
+            ["refs/heads/workspace/bad"],
+            "git for-each-ref once the ref holds a commit"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&configured(&work).workspace_branch),
+            "workspace/bad"
+        );
+    }
+
     #[test]
     #[ignore = "child half of the model config-source tests; runs only when re-executed"]
     fn state_child() {
@@ -6063,7 +6642,19 @@ mod tests {
                 testing::child_print("push_remote", remote_marker(model.push_remote.as_deref()));
                 testing::child_print("personal", personal_marker(&model));
             }
-            Ok(RepoModel::NotConfigured { .. }) => testing::child_print("state", "not-configured"),
+            Ok(RepoModel::NotConfigured { inferred }) => {
+                testing::child_print("state", "not-configured");
+                match inferred {
+                    Ok(model) => testing::child_print(
+                        "inferred",
+                        String::from_utf8_lossy(&model.workspace_branch),
+                    ),
+                    Err(err) => testing::child_print(
+                        "inferred",
+                        format!("error: {}", err.to_string().replace('\n', "\\n")),
+                    ),
+                }
+            }
             Err(err) => {
                 testing::child_print("state", "failed");
                 testing::child_print("error", err.to_string().replace('\n', "\\n"));
