@@ -31,10 +31,12 @@ mod spawn;
 #[cfg(test)]
 pub(crate) mod testing;
 
+pub use config::ConfigRead;
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
 pub use refs::{RefTarget, RootEntry, is_branch_name};
 pub use repo::Repo;
+pub use spawn::Git;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -103,6 +105,12 @@ pub enum Error {
     GitEmptyOutput {
         argv: Vec<OsString>,
         expected: &'static str,
+    },
+    /// A `git` child exited 0 but printed output wsx cannot parse; `problem`
+    /// says what is wrong with it. wsx fails rather than read fewer records.
+    GitBadOutput {
+        argv: Vec<OsString>,
+        problem: String,
     },
     /// The repository-path variable `name` holds the relative path `value`
     /// while wsx runs in `cwd`, below the worktree root `worktree`. gix
@@ -226,6 +234,11 @@ impl fmt::Display for Error {
             Error::GitEmptyOutput { argv, expected } => write!(
                 f,
                 "git {} exited 0 but printed no {expected}",
+                render_argv(argv)
+            ),
+            Error::GitBadOutput { argv, problem } => write!(
+                f,
+                "git {} printed output wsx cannot read: {problem}",
                 render_argv(argv)
             ),
             Error::RelativeRepoEnv {
@@ -648,6 +661,18 @@ mod tests {
         assert_eq!(
             empty.to_string(),
             "git rev-parse --local-env-vars exited 0 but printed no variable names"
+        );
+    }
+
+    #[test]
+    fn bad_output_message_names_the_query_and_the_problem() {
+        let bad = Error::GitBadOutput {
+            argv: argv(&["config", "-z"]),
+            problem: "a record ends after its origin".to_owned(),
+        };
+        assert_eq!(
+            bad.to_string(),
+            "git config -z printed output wsx cannot read: a record ends after its origin"
         );
     }
 }

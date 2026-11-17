@@ -2,11 +2,49 @@
 //! defines. Each read takes the config gix froze when `Repo::discover` opened
 //! the repository, so a value set later is seen only by a new `Repo`.
 
+use std::collections::BTreeSet;
+use std::path::Path;
+
 use gix::bstr::ByteSlice;
 
+use super::Error;
 use super::repo::Repo;
+use super::spawn::Git;
+
+/// What one `git config` child says about this repository: the `wsx.*`
+/// values its own config file holds, and the remotes it defines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigRead {
+    /// Each kept `wsx.<var>` record as (lowercased key, raw value), in the
+    /// order git printed them.
+    values: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The names of the remotes this repository defines.
+    remotes: BTreeSet<Vec<u8>>,
+}
+
+impl ConfigRead {
+    /// Every value of `key` (compared lowercased, as git prints keys), in
+    /// file order, as raw bytes; empty when the key is unset.
+    pub fn values(&self, key: &str) -> Vec<Vec<u8>> {
+        let key = key.to_ascii_lowercase();
+        self.values
+            .iter()
+            .filter(|(found, _)| found.as_slice() == key.as_bytes())
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    /// Whether this repository defines the remote `name`.
+    pub fn defines_remote(&self, name: &[u8]) -> bool {
+        self.remotes.contains(name)
+    }
+}
 
 impl Repo {
+    /// This repository's `wsx.*` values and the remotes it defines.
+    pub fn read_config(&self, _git: &Git) -> Result<ConfigRead, Error> {
+        Ok(ConfigRead::default())
+    }
     /// Every value of `key` in this repository's own config file (gix's
     /// `Source::Local` at include level 0, the common dir's `config`), in
     /// file order, as raw bytes. Nothing else configures the repository
@@ -75,15 +113,24 @@ impl Repo {
     }
 }
 
+/// The records of `git config -z --show-scope --show-origin` output.
+fn parse_config_z(_stdout: &[u8], _cwd: &Path, _own_config: &Path) -> Result<ConfigRead, String> {
+    Ok(ConfigRead::default())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
     use gix::bstr::ByteSlice;
 
+    use super::super::Error;
+    use super::super::spawn::Git;
     use super::super::testing::{self, Env, Scratch, T0, commit_all, git_ok, write};
-    use super::Repo;
+    use super::{ConfigRead, Repo, parse_config_z};
 
     /// The key every test here reads.
     const KEY: &str = "wsx.sourceBranch";
@@ -697,6 +744,197 @@ mod tests {
 
         assert!(!configured(&repo, b"nope"));
         assert!(configured(&repo, b"origin"), "the control remote");
+    }
+
+    /// One `-z` record: scope, origin and entry, each ended by NUL.
+    fn record(scope: &[u8], origin: &[u8], entry: &[u8]) -> Vec<u8> {
+        [scope, b"\0", origin, b"\0", entry, b"\0"].concat()
+    }
+
+    /// `file:<path>`, the origin git prints for a config file.
+    fn file_origin(path: &Path) -> Vec<u8> {
+        [b"file:".as_slice(), path.as_os_str().as_bytes()].concat()
+    }
+
+    /// `parse_config_z` of `stdout` as read from `repo`, whose own config
+    /// is `<repo>/.git/config`.
+    fn parsed(repo: &Path, stdout: &[u8]) -> Result<ConfigRead, String> {
+        let own = repo
+            .join(".git/config")
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}/.git/config: {err}", repo.display()));
+        parse_config_z(stdout, repo, &own)
+    }
+
+    /// `parsed`, failing the test on `Err`.
+    fn parsed_ok(repo: &Path, stdout: &[u8]) -> ConfigRead {
+        parsed(repo, stdout).unwrap_or_else(|err| panic!("parse_config_z: {err}"))
+    }
+
+    /// A `wsx` key counts only from the repository's own file at scope
+    /// `local`; a remote counts from any `local` or `worktree` record,
+    /// included files too, and never from global config.
+    #[test]
+    fn parse_config_z_keeps_only_the_own_local_file() {
+        let scratch = Scratch::new("config-parse-own").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let inc = repo.join("inc.conf");
+        write(&inc, b"").unwrap_or_else(|err| panic!("{err}"));
+        let inc = file_origin(&inc);
+        let global = file_origin(&scratch.home.join(".gitconfig"));
+        let own: &[u8] = b"file:.git/config";
+        let worktree: &[u8] = b"file:.git/config.worktree";
+        let stdout = [
+            record(b"local", own, b"wsx.sourcebranch\ndev"),
+            record(b"local", &inc, b"wsx.sourcebranch\ninc"),
+            record(b"worktree", worktree, b"wsx.sourcebranch\nwt"),
+            record(b"global", &global, b"wsx.sourcebranch\ng"),
+            record(b"command", b"command line:", b"wsx.sourcebranch\nc"),
+            record(b"local", own, b"remote.origin.url\nu"),
+            record(b"worktree", worktree, b"remote.wt.url\nu"),
+            record(b"local", &inc, b"remote.inc.url\nu"),
+            record(b"global", &global, b"remote.g.url\nu"),
+        ]
+        .concat();
+
+        let read = parsed_ok(&repo, &stdout);
+        assert_eq!(read.values(KEY), [b"dev".to_vec()]);
+        assert_eq!(
+            [b"origin".as_slice(), b"wt", b"inc", b"g"].map(|name| read.defines_remote(name)),
+            [true, true, true, false]
+        );
+    }
+
+    /// A key printed with no LF (`key` with no `=`) and one printed as
+    /// `key LF` (`key =`) are each one empty value.
+    #[test]
+    fn parse_config_z_bare_key_is_one_empty_value() {
+        let scratch = Scratch::new("config-parse-bare").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        for entry in [b"wsx.sourcebranch".as_slice(), b"wsx.sourcebranch\n"] {
+            let stdout = record(b"local", b"file:.git/config", entry);
+            assert_eq!(
+                parsed_ok(&repo, &stdout).values(KEY),
+                [Vec::<u8>::new()],
+                "{}",
+                entry.escape_ascii()
+            );
+        }
+    }
+
+    /// Output that stops inside a record is refused, never read as fewer
+    /// keys.
+    #[test]
+    fn parse_config_z_refuses_a_truncated_record() {
+        let scratch = Scratch::new("config-parse-truncated").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let mut stdout = record(b"local", b"file:.git/config", b"wsx.sourcebranch\ndev");
+        stdout.extend_from_slice(b"local\0file:.git/config\0");
+
+        match parsed(&repo, &stdout) {
+            Err(problem) => assert!(
+                problem.contains("record 2") && problem.contains("ends after its origin"),
+                "the problem does not name the incomplete record: {problem}"
+            ),
+            other => panic!("expected Err for a truncated record, got {other:?}"),
+        }
+    }
+
+    /// A remote name is everything between `remote.` and the last dot, so it
+    /// may hold dots; a two-part `remote.*` key names no remote.
+    #[test]
+    fn parse_config_z_names_a_remote_up_to_the_last_dot() {
+        let scratch = Scratch::new("config-parse-dots").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let stdout = [
+            record(b"local", b"file:.git/config", b"remote.a.b.url\nu"),
+            record(b"local", b"file:.git/config", b"remote.pushdefault\nx"),
+        ]
+        .concat();
+
+        let read = parsed_ok(&repo, &stdout);
+        assert!(read.defines_remote(b"a.b"));
+        assert!(!read.defines_remote(b"a"));
+        assert!(!read.defines_remote(b"pushdefault"));
+        assert!(!read.defines_remote(b""));
+    }
+
+    /// The `--get-regexp` the read runs, for the git-side assertions.
+    const READ_ARGS: [&str; 3] = ["config", "--get-regexp", "^(wsx|remote)\\."];
+
+    /// git's exit 1 for "no key matched" is an empty read, not a failure; a
+    /// remote set afterwards on the same `Repo` is seen by the next read.
+    #[test]
+    fn config_read_with_no_keys_is_empty() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-empty").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        assert_git_exits(&scratch, &repo, &READ_ARGS, 1);
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let helper = Git::for_repo(scratch.env.clone(), &found);
+
+        let read = found
+            .read_config(&helper)
+            .unwrap_or_else(|err| panic!("read_config: {err}"));
+        assert_eq!(read.values(KEY), Vec::<Vec<u8>>::new());
+        assert!(!read.defines_remote(b"origin"));
+
+        let elsewhere = scratch.root.join("elsewhere");
+        git_ok(
+            &scratch,
+            &repo,
+            [
+                OsStr::new("config"),
+                OsStr::new("remote.origin.url"),
+                elsewhere.as_os_str(),
+            ],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let listed = git(&scratch, &repo, &READ_ARGS);
+        assert_eq!(
+            listed.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git config --get-regexp", &listed)
+        );
+        assert!(
+            listed.stdout.starts_with(b"remote.origin.url "),
+            "git config --get-regexp printed {:?}",
+            listed.stdout.as_bstr()
+        );
+        let read = found
+            .read_config(&helper)
+            .unwrap_or_else(|err| panic!("read_config: {err}"));
+        assert!(
+            read.defines_remote(b"origin"),
+            "control: git lists remote.origin.url but read_config defines no origin"
+        );
+    }
+
+    /// A config file git cannot parse fails the read with git's own failure,
+    /// never an empty answer.
+    #[test]
+    fn config_read_of_a_malformed_file_is_git_failed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-malformed").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        git_ok(&scratch, &repo, ["config", KEY, "dev"]).unwrap_or_else(|err| panic!("{err}"));
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        append_config(&repo, b"[bad\n");
+        assert_git_exits(&scratch, &repo, &["config", "--get-all", KEY], 128);
+
+        match found.read_config(&Git::for_repo(scratch.env.clone(), &found)) {
+            Err(Error::GitFailed {
+                status: Some(128), ..
+            }) => {}
+            other => panic!("expected Err(GitFailed) with status 128, got {other:?}"),
+        }
     }
 
     /// Prints `configured`, what `remote_configured` answers for the name in

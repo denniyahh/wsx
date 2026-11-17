@@ -147,6 +147,16 @@ impl Git {
         }
     }
 
+    /// A helper whose children see exactly `env`, with `repo`'s worktree
+    /// (when it has one) as wsx's own worktree.
+    pub fn for_repo(env: Vec<(OsString, OsString)>, repo: &Repo) -> Git {
+        let git = Git::new(env);
+        match repo.worktree() {
+            Some(worktree) => git.with_own_worktree(worktree.to_path_buf()),
+            None => git,
+        }
+    }
+
     /// The production helper: a snapshot of the process environment, taken
     /// once, here, with `repo`'s worktree (when it has one) as wsx's own
     /// worktree. Inside a hook the snapshot carries the hook's `GIT_DIR` and

@@ -1954,6 +1954,57 @@ mod tests {
         }
     }
 
+    /// S5: `HEAD` a filesystem symlink to `refs/heads/main` and `origin`
+    /// defined only in an `includeIf.onbranch:main` file. git follows the
+    /// symlink, applies the include and lists `origin`, so `origin` is the
+    /// base remote. Control: with the symlink aimed at another branch, git
+    /// lists no remote and the model has no base remote.
+    #[test]
+    fn onbranch_remote_under_a_symlinked_head_counts_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-onbranch-remote").expect("create scratch");
+        let work = chain_repo(&scratch);
+        run(
+            &scratch,
+            &work,
+            &["config", "--remove-section", "remote.origin"],
+        );
+        let include = format!(
+            "[remote \"origin\"]\n\turl = {}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+            scratch.root.join("source").display()
+        );
+        ok(write(&work.join(".git/remote.inc"), include.as_bytes()));
+        run(
+            &scratch,
+            &work,
+            &["config", "includeIf.onbranch:main.path", "remote.inc"],
+        );
+        let head = work.join(".git/HEAD");
+        let point_head_at = |target: &str| {
+            std::fs::remove_file(&head)
+                .unwrap_or_else(|err| panic!("remove {}: {err}", head.display()));
+            std::os::unix::fs::symlink(target, &head)
+                .unwrap_or_else(|err| panic!("symlink {} -> {target}: {err}", head.display()));
+        };
+        point_head_at("refs/heads/main");
+
+        assert_eq!(
+            run(&scratch, &work, &["symbolic-ref", "HEAD"]),
+            b"refs/heads/main\n"
+        );
+        assert_eq!(run(&scratch, &work, &["remote"]), b"origin\n");
+        assert_eq!(
+            configured(&work).base_remote.as_deref(),
+            Some(b"origin".as_slice())
+        );
+
+        point_head_at("refs/heads/workspace/dev");
+        assert_eq!(run(&scratch, &work, &["remote"]), b"");
+        assert_eq!(no_integration(&refusal(&work)).0, None);
+    }
+
     const ORIGIN_DEVELOP: &str = "refs/remotes/origin/develop";
     const ORIGIN_NEXT: &str = "refs/remotes/origin/next";
     const ORIGIN_MAIN: &str = "refs/remotes/origin/main";

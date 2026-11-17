@@ -148,6 +148,29 @@ pub fn hermetic_env(root: &Path, home: &Path) -> Env {
     env
 }
 
+/// The hermetic environment of the `Scratch` whose tree holds `path`:
+/// `hermetic_env(root, <root>/home)` for the ancestor `root` of `path`
+/// that sits directly under `scratch_root()`, which every `Scratch` root
+/// does. A test that discovers a repository in its own process hands this to
+/// wsx's `Git`, so wsx's children see the fixture's environment, not the
+/// host's PATH and global config. `Err` when no such ancestor exists.
+pub fn scratch_env_of(path: &Path) -> Result<Env, String> {
+    let parent = scratch_root();
+    let parent = parent
+        .canonicalize()
+        .map_err(|err| format!("canonicalize {}: {err}", parent.display()))?;
+    path.ancestors()
+        .find(|ancestor| ancestor.parent() == Some(parent.as_path()))
+        .map(|root| hermetic_env(root, &root.join("home")))
+        .ok_or_else(|| {
+            format!(
+                "{} is not inside a scratch tree under {}",
+                path.display(),
+                parent.display()
+            )
+        })
+}
+
 /// `env` plus author and committer dates fixed at `epoch` UTC.
 pub fn dated(env: &Env, epoch: i64) -> Env {
     let date = OsString::from(format!("@{epoch} +0000"));
@@ -1476,5 +1499,18 @@ fn auto_maintenance_start_is_visible_in_the_trace() {
             &["maintenance.auto=true", "maintenance.autoDetach=false"]
         ),
         "a commit with maintenance.auto=true must show the maintenance child in trace2"
+    );
+}
+
+#[test]
+fn scratch_env_of_a_fixture_path_is_its_scratch_env() {
+    let scratch = Scratch::new("scratch-env-of").expect("scratch");
+    assert_eq!(
+        scratch_env_of(&scratch.root.join("home")),
+        Ok(scratch.env.clone())
+    );
+    assert!(
+        scratch_env_of(Path::new("/")).is_err(),
+        "/ is not inside a scratch tree"
     );
 }
