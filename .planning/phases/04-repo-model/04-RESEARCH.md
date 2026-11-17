@@ -1,8 +1,14 @@
 # Phase 4: Repo model - Research
 
-**Researched:** 2026-11-02
-**Domain:** gix 0.90.0 config, reference, tree and quote reads; the `.wsx.conf` grammar; one resolved repo model in the binary crate
-**Confidence:** HIGH for gix and git behaviour and the grammar (each executed this session with a control). MEDIUM for the type layout (a working prototype, but layout is a judgement call).
+**Researched:** 2026-11-02 (gix era). **Revised:** 2026-11-17 for the git-binary pivot (D-23 to D-32), for the 04-13 replan.
+**Domain:** the model's inputs read through the `git` binary (config, for-each-ref, cat-file) with gix kept for object work by id; the `.wsx.conf` grammar; one resolved repo model in the binary crate
+**Confidence:** HIGH for the git behaviour the pivot rests on (spikes 001/002 plus probes run this session on git 2.56.1, each with a control). HIGH for the grammar (unchanged, 2026-11-02). MEDIUM for the proposed API shapes (no prototype of the Rust side was built).
+
+> **How to read this file after the pivot.** Sections written on 2026-11-02 that describe gix reads carry a
+> "Superseded by D-23" note under their heading and must not be implemented; the behaviour they pin (D-01 to D-21)
+> stays the contract. The grammar (Patterns 5 and 7), the model's shape and error model (Pattern 8), and the
+> Pitfalls not marked superseded are still valid. Everything the replan needs that is new is in
+> **§ Git-binary pivot (D-23 to D-32)** and the rewritten **§ Validation Architecture**.
 
 <user_constraints>
 ## User Constraints (from CONTEXT.md)
@@ -87,6 +93,90 @@ Calls stated to the owner before they chose to move on. They can be challenged a
 The module layout, the model's types and how errors extend `git::Error` are left to research and
 planning.
 
+### Replacement refs
+The owner decided this at plan review, after the planner raised the refusal's cost.
+
+- **D-22:** A chained or symbolic replacement ref anywhere in the repo stops the model in a configured
+  repo, even among objects the manifest read never touches, and the error says the replacement ref is
+  at fault rather than saying `.wsx.conf` cannot be read. A loud stop in a very rare case costs little,
+  and a silent mismatch with git is the worse failure. A repo with no `wsx.sourceBranch` stays not
+  configured (D-16).
+  Amended 2026-11-16 by operator: when replace refs are in use at all, the model refuses, whatever
+  their shape. In a configured repo, any entry under `refs/replace/` in the common dir's loose refs,
+  any `packed-refs` record naming that base (found by a raw byte scan, not a parser), or a replace
+  base other than `refs/replace/` stops the model before any object is read, also where
+  `core.useReplaceRefs=false` or `GIT_NO_REPLACE_OBJECTS` turns replace refs off. Three review rounds
+  of plan 04-12 each found a new way git and gix read replace refs differently, so refusing only the
+  chained or symbolic ones above is replaced by refusing them all. The error blames the replace refs
+  and names the remedy: remove them, or make the replaced history permanent with `git filter-repo`.
+  D-16 is unchanged.
+
+### Model inputs through the git binary
+The operator decided the pivot on 2026-11-17, after round 2 of 04-13's Tier A review. The owner then
+left D-24 to D-28 to Claude ("you decide on all of these").
+
+- **D-23 (operator, 2026-11-17):** The model reads its inputs through the `git` binary with the
+  existing spawn helper (`src/git/spawn.rs` `Git::run`): ref resolution (`wsx.sourceBranch`, the
+  integration chain, `wsx.baseRef`), the workspace-candidate listing, the `.wsx.conf` blob at the tip
+  with its type, the `wsx.*` keys, and the remote list. gix keeps object work by commit id (merge-base,
+  walks, tree diffs) for later phases. This amends Phase 3's "reads through gix" (`03-CONTEXT.md`
+  § Phase Boundary, and Established Patterns below) for these inputs only. Writes stay with the
+  binary. Four review rounds each found another way gix's ref layer differs from git's, and CONF-07
+  requires the bytes git reads, so these inputs match git by construction, not by refusing shapes one
+  by one. `04-13-PLAN.md` as written (4e79ac6) is superseded and must not be executed.
+- **D-24:** D-22 as amended on 2026-11-16 stays in force, unchanged. With git reading the manifest it
+  no longer guards those bytes, but it still guards the gix object reads by id that later phases make,
+  where gix and git can apply replacements differently. The spike checks whether today's detection
+  misses a replace ref that either git or gix applies, including a linked worktree's own
+  `refs/replace/` (CR-01 of `04-REVIEW.md`). A miss is a gap for the replan.
+- **D-25:** Code whose only job is to make a gix ref or config read agree with git (the linked-worktree,
+  symlink, alias and listing checks planned in 04-13, and any 04-11/04-12 code that serves only the
+  manifest read) is deleted once its read moves to git, not kept as a backstop. Refusals that state a
+  product rule stay: D-22's replace-ref stop, the refs-namespace refusal (04-05) and D-18. The replan
+  lists each item and the side it falls on.
+- **D-26:** One `resolve` spawns a small fixed number of git children whatever the repo's size: batched
+  reads (one config read, one ref read covering the chain and the candidates, one object read for the
+  blob and its type), never one child per ref. Provisional budget, Claude's call with no measurement
+  behind it yet: at most 4 children, and `resolve` p95 under 100 ms on the four R3 repos as the spike
+  measures it. A miss goes to the operator before the replan.
+- **D-27:** The D-01 to D-21 behaviour tests are the contract and stay unchanged: they pass before and
+  after the swap. Every shape from 04-13's two review rounds (replace refs, worktree-private stores,
+  symlinked refs, `main-worktree/` aliases, a symlinked `HEAD` with `includeIf.onbranch`, dangling
+  symrefs) becomes a regression test that asserts git's answer first and then that wsx gives the same
+  one, with a control that changes git's answer and must change wsx's.
+- **D-28:** Order: the spike (every D-27 shape with negative controls, D-26's child count and latency,
+  and the open checks below), then the 04-13 replan under Tier A, since it moves a fail-closed
+  boundary.
+
+Open checks for the spike (unmeasured facts, not decisions):
+- Whether `git config --local` gives D-01's meaning: it skips `include.*` by default and leaves out
+  `config.worktree`; compare with what 04-05 does today in both cases.
+- Whether gix honours `core.useReplaceRefs` and `GIT_NO_REPLACE_OBJECTS` for object reads.
+- Whether gix reading `HEAD` at open (round 2, codex 2) still changes anything gix does for object
+  reads once config comes from git.
+- A fifo loose ref hangs both git and gix (round 2, pi): parity, but the spike reports whether the guard
+  then hangs a push.
+
+Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`.
+
+- **D-29 (operator, 2026-11-17):** `wsx.sourceBranch`, the integration rungs and the workspace
+  candidates are all read through `git for-each-ref`, never by name (`rev-parse`, `cat-file
+  --batch-check`). A fifo loose ref is skipped, so the guard never hangs a push. A ref git can reach
+  only by name, such as one written as a filesystem symlink under the deprecated
+  `core.preferSymlinkRefs`, reads as absent: a missing `wsx.sourceBranch` stays a loud error, and a
+  symlinked `<remote>/HEAD` with no other rung gives D-09's error. Chosen over by-name reads (match
+  `rev-parse` but hang on a fifo) and by-name reads with a timeout (one arbitrary limit).
+- **D-30 (Claude's call, 2026-11-17):** A dangling symbolic rung is absent, as git reads it, and the
+  chain moves on (spike 001 S7); a new test pins it. A symbolic rung that resolves is still
+  `IntegrationRefSymbolic`, using for-each-ref's `%(symref)`.
+- **D-31 (Claude's call, 2026-11-17):** D-26's "at most 4 children" counts one `resolve` aimed at
+  wsx's own worktree, which spike 001 measured at 4. Aimed at another worktree, the spawn helper adds
+  one `rev-parse --local-env-vars`, once per process; a test pins both counts.
+- **D-32 (from spike 002, Claude's call):** D-22's detection also scans `<git_dir>/refs/replace` when
+  the git dir is a linked worktree's (closes B2, and B3 with it). gix's divergence on `info/grafts` and
+  `shallow` is outside Phase 4's inputs; it goes into the STATE obligations for the phases that use
+  gix merge-base and walks.
+
 ### Deferred Ideas (OUT OF SCOPE)
 - Exit codes and `--json` for every error here: Phase 5 (IF-01).
 - The `refs/wsx/` record format and the real recorded set for D-17: Phase 8 (WTREE-05).
@@ -96,6 +186,8 @@ Reviewed Todos (not folded):
 - **Re-check Dependabot after first merge to main:** repo tooling, matched on keywords only.
 - **Replace oracle-observed exit 128 under IF-01:** needs Phase 5's exit codes and is applied in
   Phases 7 and 9.
+- **Re-verify Phases 1-3 before milestone audit** and **Shell-quote the path in ForeignOwner's printed
+  fix command:** reviewed 2026-11-17, not folded; neither touches the pivot.
 </user_constraints>
 
 <phase_requirements>
@@ -109,9 +201,22 @@ Reviewed Todos (not folded):
 | CONF-04 | Separate base and push remotes, both defaulting to `origin` | "Exists" is measured against `git remote add`, not `remote_names()` (Pattern 2, Pitfall 3) |
 | CONF-05 | `wsx.sourceBranch`, else the only local `workspace/*` or `personal/*`; zero or several lists them | `prefixed` with a trailing slash plus a one-level filter (Pattern 4, Pitfall 4) |
 | CONF-07 | Manifest from `<tip>:.wsx.conf` in the object database; configured means fail closed | Tree-entry read that tells blob from symlink, directory and submodule (Pattern 6). Working-tree edit and clean checkout measured |
+
+**After the pivot** the "Research Support" column above describes the gix-era reads. The behaviour each row
+names is unchanged; the reads behind CONF-03, CONF-04, CONF-05 and CONF-07 move to § Git-binary pivot (P1 config,
+P2 refs, P3 objects), and CONF-01/CONF-02 (grammar, personal list) are untouched. The test map per requirement is
+in § Validation Architecture.
 </phase_requirements>
 
 ## Summary
+
+**2026-11-17 (pivot):** the paragraphs below are the gix-era summary. After D-23, one `resolve` reads its inputs
+with four `git` children (spike 001), and the 2026-11-17 probes found five things the replan must design for before
+it can execute: the spawn helper gives every child a null stdin, which `cat-file --batch` cannot work with (a locked
+Phase 3 rule; Open Question P1); `%(symref)` reports a chain's final target, so three D-06 tests and one candidate
+test cannot keep their assertions (P2, P3); spike 001's `%(objecttype)` makes one broken ref fail the whole listing;
+the default `cat-file` format reads a symlink manifest as a blob; and in a partial clone `cat-file` fetches over the
+network unless `--no-lazy-fetch` is passed (measured). See § Git-binary pivot.
 
 Every read the phase needs exists in gix 0.90.0 under the current feature set, so **the only new crate is `proptest`, as a dev-dependency**. C-quoting needs nothing new: `gix::quote::ansi_c::{quote, undo}` matched git's own output byte for byte on 270 real file names: every byte value that can appear in a name (1-255 except `/`), plus 16 edge names. A scratch copy of the repo, with a working prototype of the whole phase and 11 tests, passed clippy `-D warnings` and the pinned nextest. Those tests and the rest of the unit suite passed there (131 run). `cargo deny` stayed clean with proptest added and bit on a planted ban.
 
@@ -134,6 +239,371 @@ The phase also has an integration problem nobody has listed yet. **The harness f
 - **The prototype is a feasibility proof.** It has 11 tests, not the phase's test set. It settles that the APIs compile and answer as stated. It does not settle error wording, and it has no global-config test of its own (D-01's control was measured with the probe binary, against `git config`).
 - **Not run this session:** `scripts/check.sh all` (the prototype ran clippy and unit tests only, on a `git archive` copy with no git repo), the harness suite against the changed fixture, and the container gate.
 - **Proptest strength:** 2048 random cases per property in about 0.2 s. That is a good search for encoding defects and not a proof, and only when the generator can reach the defect: a uniform byte generator missed a bare edge space in 36 of 60 runs, so the generator is weighted (Code Examples). The all-bytes differential test is the stronger evidence for quoting.
+
+## Git-binary pivot (D-23 to D-32)
+
+Research for the 04-13 replan. Spikes 001 (VALIDATED) and 002 (PARTIAL) are the primary evidence and are cited,
+not re-measured. Rows marked **probe** were measured on 2026-11-17 on git 2.56.1 in a scratch repo under
+`target/gsd/` (removed after), each with a control; their reproductions are in "Probe reproductions" below. Code
+facts were read this session from the files cited.
+
+### What the replan builds, in one paragraph
+
+`model::resolve` stops reading refs, listings, config and the manifest through gix. On the configured path in
+wsx's own worktree it runs four `git` children through the spawn helper (spike 001, D-26, D-31): `git --version`
+(once per helper), one config read, one `for-each-ref`, one `cat-file --batch`. The model's policy code (chain
+order, candidate rule, D-18, routing in `require`) is rewired to those answers, not rewritten. gix keeps
+`Repo::discover`, its refusals, `peel_commit` and `reads.rs` (object work by id for later phases). D-22's presence
+refusal stays and also scans a linked worktree's private `refs/replace` (D-32).
+
+### Facts the spikes did not cover (probe, 2026-11-17)
+
+| # | Fact | Evidence | Consequence for the plan |
+|---|------|----------|--------------------------|
+| F1 | Every child of the spawn helper gets a null stdin, and that is a locked Phase 3 decision. `cat-file --batch` reads its requests from stdin, so spike 001's fourth child cannot run through `Git::run` as it is | [VERIFIED: src/git/spawn.rs:102 `.stdin(Stdio::null())`; 03-CONTEXT.md:59 "**Every child gets a null stdin and an explicit working directory**, whichever worktree it targets."] | Open Question P1 (operator) |
+| F2 | `cat-file --batch='%(objectname) %(objecttype) %(objectsize) %(objectmode)'` on `<commit>:<path>` reports `blob 100644`, `blob 100755`, `blob 120000` (symlink), `tree 040000`; a request that is not `<tree-ish>:<path>` prints an empty mode. The default format has no mode, so a symlink's link text reads as a `blob` | probe | `%(objectmode)` is required for D-19's not-a-blob rule (Pitfall G2). Spike 001 used the default format and did not test this |
+| F3 | An absent path, a present entry whose blob object is missing, and an unsorted root tree all print `<request> missing`, exit 0. `<commit>^{tree}` in the same batch still returns the root tree, which lists the entry in the last two cases | probe | Classify a `missing` path with the root tree (P3), or accept `ManifestMissing` for all three |
+| F4 | `<id>^{commit}` peels an annotated and a nested tag to the commit; on a blob or a tree it prints `<request> missing` on stdout and `error: ... expected commit type, but the object dereferences to blob type` on stderr, exit 0 | probe | Tips are peeled inside the batch; a rung holding a blob is still an error (`integration_ref_holding_a_blob_fails_closed` expects `Error::Git(_)`) |
+| F5 | In a `--filter=blob:none` partial clone, plain `cat-file --batch` **fetched the missing blob from the remote** (control). `git --no-lazy-fetch cat-file` and `GIT_NO_LAZY_FETCH=1` each printed `missing` and fetched nothing | probe | D-09 ("Resolution makes no network call") needs `--no-lazy-fetch` on every child that reads objects. New with the pivot: gix never fetches |
+| F6 | `for-each-ref --format='%(refname) %(objecttype)'` exits 128 (`fatal: missing object <id> for refs/heads/main`) when one listed ref names a missing object. With `%(refname)%00%(objectname)%00%(symref)` it lists the ref, exit 0 | probe | Drop spike 001's `%(objecttype)`: otherwise one broken ref anywhere under the patterns fails every `resolve`. Types come from `cat-file` |
+| F7 | `%(symref)` prints the **final** target of a chain: for HEAD→a→b→x it prints `refs/remotes/origin/x` for HEAD, a and b. A chain of 5 refs (4 hops) is listed; one of 6 refs, and a cycle, are omitted with no message. `git help for-each-ref`: "The ref which the given symbolic ref refers to" | probe | D-30's `IntegrationRefSymbolic` names the final ref; the HEAD rung sees only its final target. Open Question P2 |
+| F8 | Patterns: `refs/remotes/origin/develop` does not list `refs/remotes/origin/developer`; `refs/heads/workspace/` lists nested `refs/heads/workspace/a/b`; `refs/remotes/a*/develop` lists `refs/remotes/ab/develop` (the pattern is a glob) | probe | Filter every record by exact bytes after the listing (Pitfall G1). A remote name holding `*`, `?` or `[` otherwise reads another remote's refs |
+| F9 | A loose ref holding `garbage` and a ref with a bad name are skipped with `warning: ignoring broken ref …` / `warning: ignoring ref with broken name …` on stderr, exit 0, also with `GIT_REF_PARANOIA=1`. A dangling symref, a fifo and a `refs/…` symlink are skipped with empty stderr | probe | `corrupt_candidate_ref_stays_in_inferred` cannot keep its assertion if the listing follows git (Open Question P3) |
+| F10 | `config -z --show-scope --show-origin --get-regexp` prints records `scope NUL origin NUL key [LF value] NUL`: a bare key has no LF, `key =` is `key LF`; section and variable are lowercased, the subsection keeps its case (`wsx.sub.sourcebranch`, `remote.a.b.url`). The origin is `file:.git/config` from the main worktree (relative to the child's cwd), an absolute path from a linked worktree, `file:config` in a bare repo; an `include.path` file is scope `local` with its own origin. No match: exit 1 and no output | probe; spike 001 C1-C3 | Parser rules in P1; exit 1 means "no keys", not a failure (Pitfall G5) |
+| F11 | A full 40-hex request is read as that object even when `refs/heads/<the same hex>` exists | probe | Feeding `for-each-ref`'s ids to `cat-file` cannot be redirected by a ref name |
+
+### Read flow
+
+```
+resolve(repo, git, recorded)
+  │
+  ├─ child 1  git --version                     (once per Git helper; spawn.rs ensure_version)
+  ├─ child 2  git config -z --show-scope --show-origin --get-regexp '^(wsx|remote)\.'
+  │             parse ─► wsx keys: scope=local AND origin == <common_dir>/config   (D-01)
+  │                   ─► remotes:  scope=local|worktree, any origin                 (A2: as git remote add)
+  │           single(SOURCE_BRANCH) ─► Some(branch) = configured | None = not configured   (D-15, D-18)
+  │           base/push remote (D-02..D-05), baseRef value, worktreeDir value: decided now, errors raised later
+  │
+  ├─ child 3  git --no-lazy-fetch for-each-ref --format=%(refname)%00%(objectname)%00%(symref) <patterns>
+  │             configured:     refs/heads/<branch>                              + rung patterns
+  │             not configured: refs/heads/workspace/  refs/heads/personal/      + rung patterns
+  │             rung patterns:  <prefix>develop <prefix>next [<prefix>HEAD] | <prefix><baseRef>
+  │             exact-byte filter ─► branch present? (WorkspaceBranchMissing) ─► candidates (one level, less recorded)
+  │
+  ├─ D-22 presence refusal (filesystem, no child): common refs/replace, packed-refs, and
+  │             <git_dir>/refs/replace when git_dir != common_dir (D-32)   ── before any object is read
+  │
+  ├─ child 4  git --no-lazy-fetch cat-file --batch='%(objectname) %(objecttype) %(objectsize) %(objectmode)'
+  │             stdin: <ws id>^{commit}  <ws id>^{tree}  <ws id>:.wsx.conf  <rung id>^{commit}
+  │             ─► workspace_tip, integration tip, manifest bytes + mode, root tree (only to classify "missing")
+  │
+  └─ policy, in today's error order ─► RepoModel::Configured | NotConfigured { inferred }
+```
+
+With zero or several candidates, child 4 is not spawned (3 children, spike 001). Aimed at a worktree that is not
+the helper's own, the helper first runs `git rev-parse --local-env-vars` once (D-31) [VERIFIED: src/git/spawn.rs
+`removal_list`, read this session]. A bare repo has no own worktree, so every child there counts as "another
+worktree" and pays that fifth child [VERIFIED: src/git/spawn.rs `from_process`: "`Some(worktree) => git.with_own_worktree(...)`, `None => git`"].
+
+### P1: the config read (D-01, D-02 to D-05, D-18, D-20)
+
+**Command:** `git config -z --show-scope --show-origin --get-regexp '^(wsx|remote)\.'` (spike 001 child 2).
+
+**Parse, as bytes** (F10): split stdout on NUL into triples (scope, origin, entry); split entry at the first LF
+into key and value; no LF means a bare key, which today's read returns as one empty value
+(`source_branch_without_a_value_fails_closed` pins `KeyEmpty`), so map it to an empty value. A trailing record that
+is not a full triple is an output error, never a shorter result.
+
+- **wsx keys (D-01):** keep a record only when scope is `local` **and** the origin, with its `file:` prefix removed
+  and resolved against the child's cwd, is the common dir's `config`. Compare canonical paths (`Repo::common_dir`
+  is canonical). This drops `include.path` files (scope `local`, other origin), `config.worktree` (scope
+  `worktree`), `GIT_CONFIG_PARAMETERS`/`-c` (scope `command`), global and system: spike 001 C1 measured that this
+  filter equals `git config --local --get-all` in all three cases and from a linked worktree. Compare the key
+  lowercased against the lowercased constant (`wsx.sourcebranch`); a three-part key (`wsx.sub.sourcebranch`) never
+  matches. Keep every value in file order, so `single` (D-18) keeps returning `KeyRepeated` with all values.
+- **Remotes (A2, D-03, D-04):** a remote is defined when some key `remote.<name>.<var>` has scope `local` or
+  `worktree`, from any origin, includes too. This is today's `remote_configured` rule, which spike 001 C3 measured
+  against `git remote add` (global-only: free; keyless local section: free, since it prints no record; included:
+  defined). `<name>` is everything between `remote.` and the **last** dot (remote names may hold dots and
+  slashes); a two-part key such as `remote.pushdefault` names no remote (`push_default_is_not_read`).
+- **Exit status:** 1 with empty stdout is "no `wsx.*` and no `remote.*` key" (F10). `Git::run` maps any non-zero
+  exit to `Error::GitFailed` [VERIFIED: src/git/spawn.rs `finish`], so the caller matches `status: Some(1)` with
+  empty stdout and treats it as empty; any other failure (a malformed config file is exit 3 or 128 [ASSUMED]) stays
+  `GitFailed`.
+
+Proposed shape (names are the planner's): `Repo::read_config(&self, git: &Git) -> Result<ConfigRead, Error>` with
+a pure `parse_config_z(stdout, cwd, own_config) -> Result<ConfigRead, Error>` unit-tested on byte fixtures, and
+`ConfigRead::values(key) -> &[Vec<u8>]` / `ConfigRead::remote_defined(name) -> bool` feeding today's `single`,
+`remote` and `default_remote` unchanged.
+
+### P2: the ref read (D-06 to D-10, D-17, D-21, D-29, D-30)
+
+**Command:** `git --no-lazy-fetch for-each-ref --format=%(refname)%00%(objectname)%00%(symref) <patterns…>`.
+Records end in LF; a refname holds no NUL or LF (git skips bad names, F9), so split on LF then on NUL. Do not
+use `%(objecttype)` (F6).
+
+**Patterns, decided from P1:**
+- configured: `refs/heads/<wsx.sourceBranch>` (already checked by `is_branch_name`, which refuses `*`, `?`, `[`);
+- not configured: the two `CANDIDATE_PREFIXES` [VERIFIED: src/model/mod.rs:386 `[b"refs/heads/workspace/", b"refs/heads/personal/"]`];
+- rungs, with prefix `refs/remotes/<base>/` or `refs/heads/` (D-07): `<prefix><wsx.baseRef>` alone when the key is
+  set (D-08), else `<prefix>develop`, `<prefix>next` [VERIFIED: src/model/mod.rs:529 `CHAIN: [&[u8]; 2] = [b"develop", b"next"]`]
+  and, with a base remote, `<prefix>HEAD`.
+- Validate each built rung name as a full ref name before listing (the gix `FullName` check is a pure function,
+  not a read), so an invalid remote name stays an error as it is today rather than reading as absent.
+
+**Then filter by exact bytes** (F8, Pitfall G1): a branch or rung is present only when a record's name equals the
+expected full name; a candidate is a record whose name is one of the two prefixes plus a rest with no `/`
+(`nested_branch_is_not_a_candidate`, `name_extension_is_not_a_candidate`). Sort candidates by bytes across both
+prefixes, then drop `recorded` (D-17), as `candidates` does now.
+
+**What a record means** (spike 001 S2-S8, F7, F9):
+- No record: absent. That covers a missing ref, a dangling symref (S6, S7; D-30), a fifo (S8; D-29), a
+  `refs/…`-target filesystem symlink (S3; D-29), a `main-worktree/` alias (S4), a ref only in a linked worktree's
+  private store (S2, WR-01), a corrupt or badly named ref (F9), and a chain deeper than 5 refs or a cycle (F7).
+- `%(symref)` empty: a direct ref; `%(objectname)` is its value (maybe a tag; peeled in P3).
+- `%(symref)` set on the workspace branch: accepted, with the final object as its tip, as `ref_commit` follows
+  symrefs today (04-13 planned `textual_symbolic_source_branch_resolves`).
+- `%(symref)` set on develop, next or the `baseRef` rung: `IntegrationRefSymbolic { full_ref, target }` (D-30),
+  with `target` the **final** ref (F7). The single-hop tests (`symbolic_develop_is_refused`,
+  `symbolic_next_is_refused`, `symbolic_local_develop_is_refused`, `symbolic_base_ref_is_refused`) keep their
+  assertions, since final and immediate coincide.
+- The `<base>/HEAD` rung: a default only when `%(symref)` starts with the prefix; the branch is the rest and the tip
+  is HEAD's own `%(objectname)` (the final target's). An object-id HEAD (`object_remote_head_is_not_a_default`),
+  a target outside the remote (`remote_head_outside_the_remote_is_not_a_default`) and a dangling HEAD
+  (`dangling_remote_head_is_not_a_default`) stay in `tried`. Multi-hop HEAD chains cannot be told from one hop
+  (F7): Open Question P2.
+
+The listing is one child whatever the number of refs (D-26). It reads no object, so it may run before D-22's
+refusal; `--no-lazy-fetch` is on it only because it costs nothing.
+
+### P3: the object read (CONF-07, D-16, D-19, D-23)
+
+**Command:** `git --no-lazy-fetch cat-file --batch='%(objectname) %(objecttype) %(objectsize) %(objectmode)'`, its
+requests written to stdin and stdin then closed (needs Open Question P1). Requests, one per line, in this order,
+all built from ids `for-each-ref` printed (F11):
+
+1. `<ws id>^{commit}` → `workspace_tip`; `missing` means the tip commit is unreadable (`missing_tip_commit_fails_closed` keeps `ManifestUnreadable`).
+2. `<ws id>^{tree}` → the root tree's raw bytes, read **only** to classify a `missing` answer to request 3.
+3. `<ws id>:.wsx.conf` → type, size, mode and bytes. `<tag>:path` peels through the tag to the same commit as request 1 (probe).
+4. `<rung id>^{commit}` → the integration tip; `missing` is a git-layer error (F4), preserving `Error::Git(_)` for a rung holding a blob.
+
+**Output parse:** for each request in order, read a header up to LF. A header ending in ` missing` is that
+request's "missing" (parse positionally; the echoed request text is not parsed back). Otherwise split it into
+four fields (the mode may be empty), read exactly `objectsize` bytes, then one LF. Any other shape
+(`ambiguous`, short read, bad size) is an output error. Ids are lowercase hex of length 40 or 64; build
+`ObjectId` through a new hex-checking constructor (today's `ObjectId::from_gix` is private to gix ids
+[VERIFIED: src/git/mod.rs:49-52]).
+
+**Classifying `.wsx.conf` (request 3):**
+
+| cat-file answer | root tree (request 2) | Model result | Today's test it keeps |
+|---|---|---|---|
+| `blob`, mode `100644` or `100755` | — | parse the bytes (D-11 to D-14, 64 KiB limit) | `configured_repo_resolves_from_the_object_database`, `executable_manifest_resolves` |
+| `blob`, mode `120000` | — | `ManifestNotABlob { kind: "symlink" }` | `symlink_manifest_fails_closed` |
+| `tree`, mode `040000` | — | `ManifestNotABlob { kind: "directory" }` | `directory_manifest_fails_closed` |
+| mode `160000`, or `missing` with a `160000` entry in the tree | gitlink entry | `ManifestNotABlob { kind: "submodule" }` | `submodule_manifest_fails_closed` (that a gitlink whose commit is not in this repo reads as `missing` is [ASSUMED]; the test settles it) |
+| `missing` | no entry named `.wsx.conf` | `ManifestMissing` | `missing_manifest_fails_closed` |
+| `missing` | entry present (blob object gone, a partial clone, or an unsorted tree git's lookup misses) | `ManifestUnreadable` with a new git-layer source | `missing_blob_object_fails_closed`; `unsorted_tree_manifest_fails_closed` keeps the outer variant but not its inner `TreeNotSorted` |
+
+The root-tree scan reads entries as `<ascii mode> SP <name> NUL <raw id>`, the id `hex length / 2` bytes long. It
+only picks an error variant, never bytes git did not return. Dropping it is simpler and makes the last two rows
+`ManifestMissing` (both still fail closed when configured, and both read as not configured otherwise); that
+changes two more test assertions and tells a partial-clone user "no `.wsx.conf`", which is wrong. Recommendation:
+keep the scan.
+
+### P4: the spawn helper (D-23, D-26, D-31)
+
+- `Git::run` is the only way children start [VERIFIED: src/git/spawn.rs:276 `pub fn run<I, S>(&self, worktree: &Path, args: I) -> Result<Vec<u8>, Error>`].
+  It returns stdout only and drops stderr on success, which is why F9's warnings are invisible to callers.
+- `resolve` needs a `&Git`: add it to the signature (`resolve(repo, git, recorded)`), so tests can hand in a
+  helper whose PATH holds a counting wrapper (D-31) and production uses `Git::from_process(repo)`.
+- The worktree argument is `repo.worktree()`, or the git dir for a bare repo (`bare_repo_resolves_the_same_model`
+  must still pass).
+- For P3, either a sibling of `run` that pipes a fixed byte buffer and closes it (Open Question P1, option A) or
+  two null-stdin children (option B). Under A: write the whole request buffer (under 1 KiB, far below a pipe
+  buffer, so no deadlock) and drop stdin before `wait_with_output`; keep the version check and the env removal
+  exactly as `run` has them. `children_get_null_stdin` stays for `run`.
+
+### P5: replace-ref detection (D-22, D-24, D-32)
+
+`Repo::refuse_replace_refs` stays, in today's order: `GIT_REPLACE_REF_BASE`, gix's
+`gitoxide.objects.replaceRefBase`, the common dir's `refs/replace`, then `packed-refs` [VERIFIED:
+src/git/refs.rs:337-366]. D-32 adds one store: when `git_dir() != common_dir()`, an entry in
+`<git_dir>/refs/replace` is `ReplaceRefsPresent { path, packed: false }`, read with `holds_an_entry` so a fifo or
+unreadable entry there is `ReplaceRefsUnreadable` (04-REVIEW CR-01's fix). Spike 002 B2 measured gix applying such
+a ref and git ignoring it, and B2b measured both ignoring the private dir's `packed-refs`, so no packed scan is
+added there. It runs before child 4, at today's place in `build` (after the `WorkspaceBranchMissing` check), in
+both states, and `require`'s routing is unchanged.
+
+With git reading the manifest, D-22 no longer protects those bytes; git applies or ignores replacements itself
+(spike 001 S1). It is kept as a product rule (D-24) for the gix reads by id later phases make. Fix the two docs the
+review named while touching this code: the "Only the common dir is read" paragraph of `refuse_replace_refs`
+(CR-01) and `resolve`'s "a later check that lists replace refs" (IN-01). IN-02 (`ReplaceBaseSet`'s remedy per
+setting) is independent and small.
+
+Spike 002's other findings stay out of Phase 4: B3 (an `onbranch` include that turns replace refs off) only bites
+while a replace ref exists, which D-32 now refuses; B4/B4b (grafts, shallow) go into STATE's obligations for the
+phases that call `merge_base` and walks (D-32).
+
+### D-25 deletion inventory
+
+Read from `src/git/{refs,config,mod,repo}.rs` and `src/model/mod.rs` this session. "Parity" means its only job is
+to make a gix read agree with git; "product rule" means it states a refusal wsx wants whatever reads the bytes.
+
+| Item | Where | Side | Disposition |
+|------|-------|------|-------------|
+| `Repo::find_ref` and its `found_name != full` check (gix's extra loose paths `.git/heads/<full>` …) | refs.rs:123 | parity | Delete. Its tests `find_ref_tells_direct_from_symbolic`, `find_ref_refuses_a_ref_read_under_another_name`, `full_name_read_is_exact`, `tag_does_not_satisfy_a_branch_name` go; the model test `ref_under_another_path_does_not_satisfy_a_rung` stays and passes by construction. `repo.rs`'s `without_a_namespace_refs_read_as_git_reads` calls it (repo.rs:3278) and must be re-pointed |
+| `Repo::ref_commit`, `SYMREF_MAX_DEPTH = 5` | refs.rs:166, :47 | parity (mirrors `rev-parse`'s depth; `for-each-ref` applies the same limit, F7) | Delete with tests `ref_commit_matches_show_ref`, `ref_commit_reads_the_commit_a_describe_shaped_ref_holds`, `ref_commit_follows_symbolic_refs_as_far_as_git_does` |
+| `Repo::refs_directly_under` | refs.rs:267 | parity | Delete. Port the behaviour its tests pin to the new listing: sorted, non-UTF-8 by bytes, packed and loose, linked worktree (`listing_is_sorted`, `non_utf8_branch_is_listed_by_its_bytes`, `listing_survives_packing`, `linked_worktree_lists_the_same_branches`, `refs_directly_under_matches_for_each_ref`); `corrupt_ref_under_the_prefix_is_an_error` waits on Open Question P3 |
+| `Repo::root_entry`, `Error::TreeNotSorted` and its message test | refs.rs:216; mod.rs:146; `tree_not_sorted_message_names_the_tree_and_the_fix` | parity (the tree-order check made gix's scan agree with git's lookup) | Delete. Port `root_entry_reads_*`, `root_entry_reports_*`, `root_entry_is_absent_without_the_file`, `root_entry_ignores_a_nested_file` and `manifest_read_stays_on_the_commit_it_was_given` to P3; delete `root_entry_refuses_a_tree_out_of_git_order`, `root_entry_reads_a_tree_in_git_order`, `root_entry_reads_a_tree_git_wrote_where_name_order_differs` |
+| `RootEntry`, `RefTarget` (types, re-exported from `git`) | refs.rs:24, :33 | neither: shapes | Keep or rename as P2/P3's result types; planner's call |
+| `Repo::local_config_values` | config.rs:29 | parity | Delete; its 13 behaviour tests (`included_key_is_not_read` … `subsection_key_is_not_read`) are ported to `parse_config_z` plus a repo-backed differential each, keeping their names where possible |
+| `Repo::remote_configured` | config.rs:59 | parity | Delete; port `global_remote_section_is_not_a_remote` … `undefined_remote_is_not_a_remote` the same way |
+| 04-13's planned linked-worktree, symlink, alias and listing checks (`refuse_linked_worktree_refs`, `refuse_symlinked_ref`, `refuse_symlinked_entries`, `is_per_worktree_ref_dir`, `SymlinkedRef` …) | 04-13-PLAN.md only, never built | parity | Not built (D-25) |
+| `lossy` | refs.rs:80 | helper | Delete if orphaned by the above |
+| `Repo::refuse_replace_refs`, `refuse_replace_base_env`, `holds_an_entry`, `packed_refs_name_the_base`, `ReplaceRefsPresent`, `ReplaceBaseSet`, `ReplaceRefsUnreadable`, `is_replacement_refusal` | refs.rs:337-410; mod.rs:151-176 | product rule (D-22, D-24) | Stay; extended by D-32 |
+| `refuse_refs_namespace`, `Error::RefsNamespace` | repo.rs:576; mod.rs:127 | product rule (D-25 names it) | Stay. Its doc ("which git's own reads ignore, so wsx would read every ref … from inside the namespace") describes the gix model reads that leave; reword to the gix reads that remain |
+| `model::single`, `KeyRepeated`, `KeyEmpty` | model/mod.rs:414 | product rule (D-18) | Stay; fed by P1 |
+| `is_branch_name` | refs.rs:71 | product rule (03.1 D-04; `NotABranchName`) | Stay; also keeps glob bytes out of P2's patterns |
+| `peel_commit`, `peeled_commit` | refs.rs:88, :96 | object work by id | Stay: `reads.rs:190` calls `peel_commit`. The model stops calling it (P3 peels) |
+| `refuse_ref_storage`, `ref_storage`, `Error::Reftable` and the other `discover` refusals | repo.rs | Phase 3 rules, outside D-25 | Stay. Changing them would reverse Phase 3 decisions, which needs the operator |
+| `IntegrationRefSymbolic`, every other `model::Error` variant, `require` | model/mod.rs:135-176, :114 | product rules | Stay (D-30 keeps `IntegrationRefSymbolic`) |
+
+### D-27 regression shapes
+
+Each test asserts git's answer first, then that wsx gives the same one, then applies a control that moves git's
+answer and must move wsx's. Source: round 2 SUMMARY, 04-REVIEW, spike 001/002. Proposed names are in
+`model::tests`.
+
+| Shape (source) | git's answer, asserted first | wsx equals | Control that moves git's answer | Proposed test |
+|---|---|---|---|---|
+| Replace ref in the common dir (round 1; S1) | `git cat-file blob <ws>:.wsx.conf` prints the replaced bytes | refuses (`ReplaceRefsPresent`), D-22 | `git replace -d`: git prints the original bytes, wsx resolves them | existing `single_replacement_fails_closed` … `replace_dir_left_empty_resolves` |
+| Replace ref only in `.git/worktrees/<id>/refs/replace`, read from that worktree (CR-01; S1b; B2) | git ignores it: prints `only .planning` | refuses naming `<git_dir>/refs/replace` (D-32 over-refuses, the product rule) | remove the entry: git unchanged, wsx resolves `only .planning`; and the same entry read from the main worktree resolves | `private_replace_ref_in_a_linked_worktree_fails_closed`, `common_replace_ref_from_a_linked_worktree_fails_closed` |
+| Branch only in a linked worktree's private `refs/heads/workspace/` (WR-01; S2) | `git for-each-ref 'refs/heads/workspace/*'` from the worktree lists only `workspace/dev` | `inferred` is `workspace/dev` | `git branch workspace/shared`: both list two | `private_branch_in_a_linked_worktree_is_not_a_candidate` |
+| Relative filesystem symlink as the workspace branch (round 1 codex 1; S3) | `git rev-parse --verify` and `for-each-ref` give the target's id | same tip | retarget the link: both move | `relative_symlinked_source_branch_resolves_as_git_does` |
+| `refs/…`-target symlink (`core.preferSymlinkRefs`) as `wsx.sourceBranch` (S3; D-29) | `git branch --list` / `for-each-ref` list nothing (assert `rev-parse` resolves it too, to pin the split) | `WorkspaceBranchMissing` | rewrite it as a text symref with `git symbolic-ref`: listed, wsx resolves | `git_style_symlinked_source_branch_reads_as_missing` |
+| Same, as `<remote>/HEAD` with no develop or next (D-29) | `for-each-ref` omits HEAD | `NoIntegrationBranch` listing HEAD in `tried` (D-09) | `git remote set-head origin main` (text symref): default found | `symlinked_remote_head_gives_no_integration_branch` |
+| `main-worktree/` alias symref as the workspace branch, from a linked worktree (round 2 codex 1; S4) | `git rev-parse --verify 'refs/heads/workspace/dev^{commit}'` fails; `for-each-ref` omits it | `WorkspaceBranchMissing` | make it a plain symref to `refs/heads/keep`: both resolve the same tip | `main_worktree_alias_source_branch_reads_as_missing` |
+| Symlinked `HEAD` + `includeIf.onbranch` defining `origin` (round 2 codex 2; S5) | `git remote` lists `origin` | base remote `origin` | point `HEAD` elsewhere: `git remote` lists nothing, wsx has no base remote | `onbranch_remote_under_a_symlinked_head_counts_as_git_does` |
+| Dangling text symref under `refs/heads/workspace/` (round 2 codex 3; S6) | `git branch --list 'workspace/*'` omits it | not a candidate | create its target: both list it | `dangling_symref_is_not_a_candidate` |
+| Dangling symbolic `develop` rung (S7; D-30) | `git rev-parse --verify` fails, `for-each-ref` omits it | chain moves on to `next` | create the target: rung present and symbolic → `IntegrationRefSymbolic` | `dangling_symbolic_rung_is_absent` |
+| Fifo loose ref under `refs/heads/workspace/` (round 2 pi; S8; D-29) | `for-each-ref` exits 0 and skips it | resolves (`inferred` = the other candidate), within a bound | the fifo as `wsx.sourceBranch`: `WorkspaceBranchMissing`, still bounded | `fifo_ref_is_skipped_without_hanging` (bound it: Pitfall G7) |
+| `include.path`, `config.worktree`, `GIT_CONFIG_PARAMETERS` `wsx.sourceBranch` (C1; D-01) | `git config --local --get-all` exits 1 | not configured | `git config --add wsx.sourceBranch dev` in the own file: both configured | existing `included_source_branch_does_not_configure`, `global_source_branch_does_not_configure` + ported `worktree_config_key_is_not_read`, `command_line_config_key_is_not_read` |
+| Bare, empty, repeated keys (C2; D-18) | `git config --local --get-all` prints them | `KeyEmpty` / `KeyRepeated` | remove the extra line: single value | existing `repeated_source_branch_fails_closed`, `empty_source_branch_fails_closed`, `source_branch_without_a_value_fails_closed` |
+| Global-only, keyless local, included remote section (C3; A2) | `git remote add <name>` succeeds / succeeds / exits 3 | free / free / defined | add a key to the keyless section: both defined | ported `global_remote_section_is_not_a_remote`, `keyless_local_remote_section_is_not_a_remote`, `included_remote_is_a_remote` |
+| Remote name with a glob byte, `[remote "o*"]` with a `refs/remotes/ox/develop` (F8) | `git for-each-ref refs/remotes/o*/develop` lists `ox`'s ref; `git rev-parse --verify 'refs/remotes/o*/develop'` fails | `refs/remotes/o*/develop` is absent | none needed beyond the listing assertion; the exact filter is the subject | `glob_bytes_in_a_remote_name_match_only_themselves` |
+| Partial clone, manifest blob not local (F5) | `git --no-lazy-fetch cat-file -e <ws>:.wsx.conf` fails; plain `git cat-file -p` fetches it (the control, run last) | `ManifestUnreadable`, and the blob is still absent after `resolve` | the control fetch: wsx then resolves the bytes | `partial_clone_manifest_is_unreadable_without_a_fetch` |
+
+### Contract tests that cannot keep their assertion
+
+D-27 says the D-01 to D-21 tests stay unchanged. These seven assert a gix-era answer that git does not give, so
+reading through git (D-23, D-29) changes them; each still fails closed or stays not configured unless noted.
+
+| Test | Asserts today | Through git | Why |
+|---|---|---|---|
+| `remote_head_chain_into_a_local_branch_is_refused` | `IntegrationRefSymbolic { alias, refs/heads/workspace/dev }` | `NoIntegrationBranch` (HEAD's final target is outside the remote) | F7 |
+| `remote_head_chain_inside_the_remote_is_refused` | `IntegrationRefSymbolic { alias, refs/remotes/origin/main }` | **resolves** `main` (final target inside the remote) | F7; the only row that stops refusing |
+| `remote_head_cycle_is_refused` | `IntegrationRefSymbolic { alias, HEAD }` | `NoIntegrationBranch` (cycle omitted) | F7 |
+| `corrupt_candidate_ref_stays_in_inferred` | `Err(Git(Gix { what: "list the refs directly under refs/heads/workspace/" }))` | infers `workspace/dev` (git skips the corrupt ref) | F9 |
+| `unsorted_tree_manifest_fails_closed` | `ManifestUnreadable { source: TreeNotSorted { .. } }` | `ManifestUnreadable` with the new source (with P3's scan) | `TreeNotSorted` deleted |
+| `git::refs::tests::corrupt_ref_under_the_prefix_is_an_error` | listing error | git skips it | F9 |
+| `refs_namespace` test `without_a_namespace_refs_read_as_git_reads` | through `find_ref` | re-pointed | `find_ref` deleted |
+
+### Pitfalls specific to the pivot
+
+- **G1, prefix and glob matching in `for-each-ref` patterns.** A pattern matches by glob or as a prefix up to a
+  slash (F8), so the listing is a superset. Every decision reads the exact name from the record; nothing trusts
+  that a record matched a pattern.
+- **G2, the default `cat-file` format hides the mode.** A symlink is `blob` (F2). Use `%(objectmode)`; a test
+  asserting `ManifestNotABlob { kind: "symlink" }` already exists and goes RED if the mode is dropped.
+- **G3, lazy fetch.** Without `--no-lazy-fetch` a partial clone turns `resolve` into a network call (F5) and makes
+  CONF-07's "missing object fails closed" depend on the network. Pass it as the global option before the
+  subcommand (`git --no-lazy-fetch cat-file …`).
+- **G4, origin paths.** `--show-origin` prints a path relative to the child's cwd in the main worktree and absolute
+  in a linked worktree (F10). Canonicalise both sides before comparing; a repo path with a space or a non-UTF-8 byte
+  was not probed, so add one fixture with such a path (unquoted with `-z` is [ASSUMED]).
+- **G5, `git config --get-regexp` exits 1 on no match.** Read as "no keys", not `GitFailed`, but only with empty
+  stdout (F10).
+- **G6, error precedence.** Today's order is: `wsx.sourceBranch` key errors, `NotABranchName`,
+  `WorkspaceBranchMissing`, replace refusal, base remote, push remote, `wsx.baseRef` and the chain (rung peel
+  included), `wsx.worktreeDir`, tip, manifest [VERIFIED: src/model/mod.rs `build` and `integration`, read this
+  session]. The batched reads gather everything first; raise the errors afterwards in that order, so a repo with two
+  faults reports the same one as today.
+- **G7, a fifo test must not hang the suite.** `.config/nextest.toml` sets no `slow-timeout` [VERIFIED: read this
+  session, only a junit path and one `success-output` override], so a regression that reads the fifo by name would
+  hang forever. Run that resolve in a child (`testing::reexec`) with a kill after a few seconds and assert it
+  finished, so the failing direction prints an assertion, not a hang.
+- **G8, `Git::run` drops stderr on success.** Warnings (F9) and `cat-file`'s `error:` lines (F4) never reach the
+  caller. Decide from stdout and the exit code only, or add a variant that returns stderr if Open Question P3 goes
+  that way.
+- **G9, locale.** The parsed tokens (`missing`, field order) are machine formats and the user's locale is passed
+  through; that `missing` is never translated is [ASSUMED].
+- **G10, a huge `.wsx.conf`.** The whole blob comes back through stdout before the 64 KiB check, as `find_blob`
+  read it whole before the pivot. Unchanged risk, accepted at ASVS L1 (Security Domain).
+- **G11, the child count has no slack** (spike 001). A bare repo, or `resolve` aimed at another worktree, is five
+  (D-31). A sixth child anywhere on the configured path is a D-26 miss and goes to the operator.
+
+### Open questions for the replan (OPEN, need the operator)
+
+1. **P1, stdin for `cat-file --batch`.** Phase 3 locked "Every child gets a null stdin" (03-CONTEXT.md:59), and spike
+   001's fourth child needs its requests on stdin.
+   - **Option A (recommended):** one `Git` method that writes a fixed buffer to stdin and closes it. The rule's
+     purpose, that git can never wait for input, holds because stdin reaches EOF at once. Four children, as spike
+     001 measured. Amends a Phase 3 decision, so it needs the operator's word.
+   - **Option B:** keep null stdin and use two children, `git ls-tree -z --format=...` for mode and id, then `git
+     cat-file blob <id>`, plus a second peel for annotated-tag tips. Five children on the configured path: a D-26
+     miss, which also goes to the operator. `ls-tree` looks entries up differently from `<tip>:path` on unsorted
+     trees, a split inside git.
+2. **P2, multi-hop `<remote>/HEAD` chains (F7).** Under D-29, `for-each-ref` shows only the final target, so three
+   D-06 tests change (table above), and `HEAD -> alias -> <remote>/main` stops being refused.
+   - **Recommended:** accept git's final-target reading and rewrite the three tests to it. D-06's aim, never
+     landing on a local commit, still holds: a final target outside the remote is not a default.
+   - **Alternative:** read each symbolic rung's immediate target by name with `git symbolic-ref --no-recurse`, which
+     breaks D-29 (by-name reads) and adds a child.
+3. **P3, corrupt and badly named refs (F9).** git skips them with a warning. Following git, `corrupt_candidate_ref_stays_in_inferred` infers the remaining candidate.
+   - **Recommended:** follow git; D-29 already reads every unlistable ref as absent, and a configured repo still
+     fails closed (`WorkspaceBranchMissing`) when the corrupt ref is `wsx.sourceBranch`.
+   - **Alternative:** refuse when `for-each-ref`'s stderr is non-empty. That needs a stderr-returning `Git` method
+     (G8). Measured: a dangling symref, a fifo and a `refs/…` symlink print nothing, so it would not change D-29's
+     cases.
+
+P1 blocks the plan's object-read task; P2 and P3 change test assertions D-27 calls the contract. The rest of the
+replan (P1 config, P2 refs, P5, the deletions, the regression tests) does not depend on them.
+
+### Probe reproductions
+
+Run in a scratch dir with `HOME`, `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` there and `GIT_CONFIG_NOSYSTEM=1`, as
+spike 001's `parity.sh` does. `C2` is a commit holding `.wsx.conf`, a symlink `lnk`, a directory `d` and an
+executable `ex`; `TIP` is `workspace/dev`'s commit.
+
+```bash
+FMT='%(objectname) %(objecttype) %(objectsize) %(objectmode)'
+# F2: mode per entry kind
+printf '%s\n' "$C2:.wsx.conf" "$C2:lnk" "$C2:d" "$C2:ex" "$C2:nope" | git cat-file --batch="$FMT"
+# F3: absent path vs a deleted blob object vs an unsorted tree: all "<request> missing"; ^{tree} still answers
+printf '%s\n' "$C:.wsx.conf" "$C^{tree}" | git cat-file --batch="$FMT"
+# F5: partial clone; the control (no flag) fetches
+git -C src config uploadpack.allowFilter true
+git clone -q --no-checkout --filter=blob:none "file://$PWD/src" pc
+printf '%s\n' "$TIP:.wsx.conf" | git -C pc --no-lazy-fetch cat-file --batch="$FMT"   # ... missing
+printf '%s\n' "$TIP:.wsx.conf" | git -C pc cat-file --batch="$FMT"                    # blob, fetched
+# F6: objecttype dies on a ref to a missing object, the plain format does not
+git for-each-ref --format='%(refname) %(objecttype)' refs/heads/                     # exit 128
+git for-each-ref --format='%(refname)%00%(objectname)%00%(symref)' refs/heads/      # exit 0
+# F7: final target, depth and cycle
+git symbolic-ref refs/remotes/origin/b refs/remotes/origin/x
+git symbolic-ref refs/remotes/origin/a refs/remotes/origin/b
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/a
+git for-each-ref --format='%(refname) [%(symref)]' refs/remotes/origin/   # HEAD, a, b all print .../x
+# F8: glob in a pattern
+git update-ref refs/remotes/ab/develop "$C"
+git for-each-ref --format='%(refname)' 'refs/remotes/a*/develop'          # lists refs/remotes/ab/develop
+# F9: corrupt ref, with paranoia on
+printf 'garbage\n' > .git/refs/heads/workspace/bad
+GIT_REF_PARANOIA=1 git for-each-ref refs/heads/workspace/                 # exit 0, warning on stderr
+# F10: record shape, and exit 1 on no match
+git config -z --show-scope --show-origin --get-regexp '^(wsx|remote)\.' | od -c
+```
 
 ## Project Constraints (from CLAUDE.md)
 
@@ -168,6 +638,10 @@ wsx is a CLI, so the tiers are its own layers rather than browser/server.
 | Guard's exit 0 when not configured | Phase 6 consumer | `RepoModel::NotConfigured` | Deferred; the model only reports the state |
 
 ## Standard Stack
+
+> **Pivot (2026-11-17):** no crate is added or removed. The model's reads move to the `git` binary through the
+> existing spawn helper; gix 0.90.0 stays for discovery, its refusals and object work by id. Package Legitimacy:
+> no new packages, so no audit rows.
 
 ### Core
 | Library | Version | Purpose | Why Standard |
@@ -215,6 +689,8 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 ## Architecture Patterns
 
 ### System Architecture Diagram
+
+> **Superseded by D-23 (2026-11-17):** the reads in this diagram move to the `git` binary; see § Git-binary pivot, Read flow. The policy boxes (chain order, candidate rule, grammar, fail-closed routing) are unchanged.
 
 ```text
 Phase 5+ command or Phase 6 guard
@@ -271,6 +747,8 @@ Cargo.toml, Cargo.lock    # proptest
 
 ### Pattern 1: The local-scope, multi-value config read (D-01, D-18)
 
+> **Superseded by D-23 (2026-11-17):** the read moves to one `git config -z --show-scope --show-origin` child (§ Git-binary pivot, P1). What it must return is unchanged: own-file local values in file order, bare and empty keys as one empty value, repeated keys kept for D-18.
+
 **What:** `strings_filter` with `source == Local && level == 0`. Length 0 is absent, 2+ is repeated, and a single empty value is empty.
 
 ```rust
@@ -311,6 +789,8 @@ pub fn local_config_values(&self, key: &str) -> Vec<Vec<u8>> {
 
 ### Pattern 2: A remote "exists" when this repo defines it (D-03, D-04)
 
+> **Superseded by D-23 (2026-11-17):** the meaning (A2: as `git remote add` decides) stays; the remote set is parsed from the same config child (P1).
+
 **What:** Any key in a `remote.<name>` section from `Source::Local` or `Source::Worktree`. This is git's own in-repo test.
 
 ```rust
@@ -346,6 +826,8 @@ So `remote_names()` is wrong twice for D-04: a global `[remote "origin"]` would 
 
 ### Pattern 3: Exact ref reads and the chain (D-06 to D-10)
 
+> **Superseded by D-23 (2026-11-17):** the chain order and the refusals stay; every rung is read from one `git for-each-ref` listing, never by name (D-29), and `%(symref)` gives the final target, not the immediate one (P2, Open Question P2).
+
 **What:** Build the full name, `FullName::try_from`, then `try_find_reference(name.as_ref())`, reading `target()` without following it, and treat a returned name other than the one asked for as `None`. Report a found ref's commit by peeling the object id that read returned (`peel_commit`), never by resolving the name again (corrected at the second-review replan; see the next list's last item).
 
 **Measured** [VERIFIED: probe run]:
@@ -368,6 +850,8 @@ So `remote_names()` is wrong twice for D-04: a global `[remote "origin"]` would 
 **Branch-name validity for `wsx.baseRef` and `wsx.sourceBranch`:** `FullName::try_from("refs/heads/<name>")` agreed with `git check-ref-format --branch` on 25 names except `HEAD` and `-x`, which gix accepts and git refuses. So `is_branch_name` adds those two checks. `refs/heads/x` as a value is accepted by both and then simply is not found, which D-21 already covers.
 
 ### Pattern 4: Workspace candidates (D-17, D-21)
+
+> **Superseded by D-23 (2026-11-17):** candidates come from the same `for-each-ref` listing, filtered to one level by exact bytes (P2). The trailing-slash rule of Pitfall 4 still applies to the patterns.
 
 ```rust
 pub fn refs_directly_under(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
@@ -440,6 +924,8 @@ pub fn c_unquote(token: &[u8]) -> Result<Vec<u8>, String> {
 **`gix quote` leaves leading and trailing spaces bare, exactly as git does** (` lead` and `trail ` printed unquoted; tab-edged names are quoted). D-19 refuses those bare, so `encode_path` must add the quotes itself: that is the function `wsx init` and `wsx migrate` will use in Phase 12, and the one the proptest round-trips.
 
 ### Pattern 6: The manifest blob (CONF-07, D-19)
+
+> **Superseded by D-23 (2026-11-17):** the blob, its mode and the tip commit come from one `git --no-lazy-fetch cat-file --batch` child with `%(objectmode)` (P3). The tree-order check (`TreeNotSorted`) is deleted (D-25 inventory).
 
 ```rust
 // src/git/refs.rs, the final shape: 04-09 adds the mode check, 04-11 the first call (line 482). `RootEntry` is { Absent, Blob(Vec<u8>), NotABlob { kind } }; `commit` is the id `root_entry` takes.
@@ -603,16 +1089,22 @@ Not a rename or migration phase. One related item: `tests/harness/fixture.rs` wr
 ## Common Pitfalls
 
 ### Pitfall 1: `string_filter` hides both D-18 cases
+
+> **Superseded by D-23 (2026-11-17):** no gix config read remains in the model (P1).
 **What goes wrong:** Copying `ref_storage`'s call gives the last value of a repeated key, and `None` for a key with no `=`.
 **Why it happens:** `string_filter` is last-one-wins; `string_implicit_filter` is its implicit-aware twin, returning `Some(None)`.
 **How to avoid:** `strings_filter` (Pattern 1).
 **Warning signs:** A test for a repeated key that resolves instead of erroring.
 
 ### Pitfall 2: `Source::Local` includes `include.path` files
+
+> **Superseded by D-23 (2026-11-17):** the git equivalent is that `--show-scope` reports an included file as `local`; filter on the origin as well (P1, Pitfall G4).
 **What goes wrong:** A tracked include sets `wsx.sourceBranch`, read live from whatever branch is checked out, and the repo reads as configured.
 **How to avoid:** Add `meta.level == 0`. Negative control: the include file's value must be invisible while `git config --local --includes --get` sees it.
 
 ### Pitfall 3: `remote_names()` over-counts
+
+> **Superseded by D-23 (2026-11-17):** no gix remote read remains (P1).
 **What goes wrong:** A global `[remote "origin"] prune = true` makes a repo without an origin look like it has one. Local refs are then never tried (D-07), and `wsx.baseRef` cannot rescue it, because it resolves against the phantom remote. An empty `[remote "x"]` also counts, though git disagrees.
 **How to avoid:** `remote_configured` (Pattern 2). Run the D-04 test under a global `remote.origin` section through `testing::reexec`.
 
@@ -633,14 +1125,20 @@ Not a rename or migration phase. One related item: `tests/harness/fixture.rs` wr
 **How to avoid:** Write through `encode_path`. The all-bytes differential test asserts exactly two such refusals, which pins this.
 
 ### Pitfall 8: A symlink reads as a valid manifest
+
+> **Superseded by D-23 (2026-11-17):** still true, now of `cat-file --batch` with its default format: a symlink is reported as `blob`. `%(objectmode)` (`120000`) is the tell (P3, Pitfall G2).
 **What goes wrong:** `rev_parse_single("<tip>:.wsx.conf")` and `find_blob` both succeed on a symlink.
 **How to avoid:** Check `entry.mode().is_blob()` first (Pattern 6). Named tests for symlink, directory and submodule, each against `git ls-tree`.
 
 ### Pitfall 9: `Repo`'s config is frozen at open; refs are not
+
+> **Superseded by D-23 (2026-11-17):** config is read by a git child during `resolve`, so it is as fresh as the refs. gix's own snapshot still drives D-22's `gitoxide.objects.replaceRefBase` check.
 **What goes wrong:** A test opens `Repo`, runs `git config`, reads through the same `Repo`, and sees the old value. Measured: config stale (empty) until reopened, while a new branch and a pack-then-new-branch were both seen immediately.
 **How to avoid:** Set config, then discover. Production is unaffected unless a future command writes config and re-reads through one handle.
 
 ### Pitfall 10: On reftable, these reads say "missing", not "unsupported"
+
+> **Superseded by D-23 (2026-11-17):** git reads reftable; the refusal at `Repo::discover` (`refuse_ref_storage`, Phase 3) still runs first, so the model never reaches a reftable repo. Not in D-25's scope.
 **What goes wrong:** On a reftable repo opened without Phase 3's refusal, the exact read returned `None` and the listing was empty. So the `is_unsupported()` backstop in `Repo::resolve` does not fire for them: a reftable repo would read as "no develop, no candidates".
 **How to avoid:** Nothing new: `refuse_ref_storage` runs first in `Repo::discover` (`src/git/repo.rs:37`), and it is tested. Do not add an open path that skips it.
 
@@ -689,6 +1187,8 @@ and `:670` asserts `("wsx.baseRef", "origin/develop\n")`, `:828` asserts `("wsx.
 
 ### Local config with D-18
 
+> **Superseded by D-23 (2026-11-17):** see § Git-binary pivot, P1.
+
 ```rust
 fn single(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
     let mut values = repo.local_config_values(key);
@@ -707,6 +1207,8 @@ fn single(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
 ```
 
 ### Remotes and the chain
+
+> **Superseded by D-23 (2026-11-17):** see § Git-binary pivot, P1 and P2.
 
 ```rust
 fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
@@ -838,9 +1340,17 @@ proptest! {
 | A5 | `wsx.baseRef=HEAD`, a leading `-` and other values `git check-ref-format --branch` refuses are errors, an extension of D-08 and D-21 | Pattern 3 | Harmless: git can't create such branches |
 | A6 | Whitespace in D-19 means space, tab, CR, VT, FF | Code Examples | Only space can reach the unquoted path from git's own output, so only hand-written lines are affected |
 
+| A7 | `%(objectmode)` and `--no-lazy-fetch` exist in every git from the 2.54 floor up (from memory: added in 2.45 and 2.44); both were verified only on 2.56.1 | P3, G3 | A git between 2.54 and 2.56 without them would fail every `resolve` loudly (unknown option or format), not silently. No test runs git 2.54 (Environment) |
+| A8 | A gitlink at `.wsx.conf` whose commit is not in this repo answers `missing` from `<tip>:.wsx.conf` | P3 table | The tree scan still finds mode `160000` either way; `submodule_manifest_fails_closed` settles it |
+| A9 | `git config` exits 3 or 128, never 1, on a malformed config file | P1 | A malformed file read as "no keys" would leave a configured repo not configured. The parser test should plant one and assert `GitFailed` |
+| A10 | `--show-origin -z` prints a path with a space or non-UTF-8 byte unquoted | G4 | The origin comparison would fail and every key read as unset (not configured). One fixture with such a path settles it |
+| A11 | cat-file's `missing` token is never translated | G9 | A translated token would make the parser fail with an output error (loud) |
+
 These are readings of decisions the owner left to research; each was measured against git where git has an opinion. The plan can state them as decided (they fall under Claude's Discretion in CONTEXT); plan review can challenge them.
 
-## Open Questions (RESOLVED)
+## Open Questions (RESOLVED, gix era)
+
+The pivot's open questions, P1 to P3, are in § Git-binary pivot and are **not** resolved.
 
 1. **Does an included file count as "local repo config" (D-01)?**
    - What we know: `git config --local --get` says no, and that is the control CONTEXT names. Plain `git config --get` and gix's `Source::Local` say yes. CLAUDE.md explains why a live include is dangerous.
@@ -863,7 +1373,7 @@ These are readings of decisions the owner left to research; each was measured ag
 
 | Dependency | Required By | Available | Version | Fallback |
 |------------|------------|-----------|---------|----------|
-| git | Fixtures, differential tests | ✓ | 2.56.0 | — |
+| git | Fixtures, differential tests, and now every model read | ✓ | 2.56.1 on the host (2026-11-17; was 2.56.0 on 2026-11-02) | — |
 | rustc, cargo | Build | ✓ | 1.99.1 (pinned) | — |
 | cargo-nextest | `scripts/check.sh test` | ✓ | 0.9.148 in `.tools/bin` (the pin); host PATH has 0.9.150 | `check.sh` puts `.tools/bin` first |
 | cargo-deny | `scripts/check.sh deps` | ✓ | 0.20.2 | — |
@@ -875,74 +1385,86 @@ These are readings of decisions the owner left to research; each was measured ag
 **Missing dependencies with no fallback:** none.
 **Missing dependencies with fallback:** none.
 
+**Pivot (2026-11-17):** the pivot adds no tool. It needs `%(objectmode)` in `cat-file --batch` and the `--no-lazy-fetch` global option (A7), both verified on the host's 2.56.1. The container's git was 2.56.0 on 2026-11-02 and was not re-checked this session; the phase gate in the container settles it.
+
 The container image is `mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie` (`.devcontainer/Dockerfile:14`). Its git, measured 2026-11-02 with `git --version` in the image and not through the test suite: `/usr/local/bin/git` is 2.56.0, `/usr/bin/git` is 2.47.3, and `HERMETIC_PATH` in `src/git/testing.rs` selects 2.56.0, equal to the host, so the container adds no second git version and no real git at the 2.54 floor runs. The prototype's behaviour was not run in it, so the phase gate must.
 
 ## Validation Architecture
 
+Rewritten 2026-11-17 for the 04-13 replan. The 2026-11-02 map (every row "❌ Wave 0") is replaced: those tests now
+exist, and the D-01 to D-21 ones are the contract the swap must keep green (D-27), except the seven listed under
+"Contract tests that cannot keep their assertion". Names marked ❌ are proposals; the planner fixes them.
+
 ### Test Framework
 | Property | Value |
 |----------|-------|
-| Framework | libtest unit tests in the binary crate (`src/model/`, `src/git/`), proptest 1.12.0, run by cargo-nextest 0.9.148 |
-| Config file | `.config/nextest.toml` (exists); `--no-tests=fail` is fixed by `scripts/check.sh` |
-| Quick run command | `scripts/check.sh test -E 'test(=model::manifest::tests::<name>)'`, one test per command, chained with `&&` |
-| Full suite command | `scripts/check.sh all`, plus `scripts/check.sh deps` (dependency added) |
-| Estimated runtime | The prototype's 11 tests took 0.24 s; all unit tests with the prototype added took 4.4 s (131 run, 16 ignored child halves). The whole `check.sh test`, with the harness, was not timed this session |
+| Framework | libtest unit tests in the binary crate (`src/model/`, `src/git/`), proptest 1.12.0, run by the pinned cargo-nextest |
+| Config file | `.config/nextest.toml` (exists; no `slow-timeout`, see Pitfall G7); `--no-tests=fail` is fixed by `scripts/check.sh` |
+| Quick run command | `scripts/check.sh test -E 'test(=<module>::tests::<name>)'`, one test per command, chained with `&&` |
+| Full suite command | `scripts/check.sh all`; `scripts/check-in-container.sh all` at the phase gate |
+| Runtime | Not timed this session |
 
-### Phase Requirements to Test Map
+Module paths used below: model tests are `model::tests::`, the grammar `model::manifest::tests::`, the spawn helper
+`git::spawn::tests::`, the config parser `git::config::tests::`, the ref listing `git::refs::tests::`. A new file for
+the object read (for example `git::objects::tests::`) is the planner's call.
 
-Names are proposals; the planner fixes them. Each has a control that must change the answer. Repo-backed tests call `testing::rerun_scrubbed` first unless noted. `(child)` means run through `testing::reexec` with a scratch env, asserting a `WSXCHILD` marker.
+### Requirements to tests
 
-| Req ID | Behavior | Test Type | Proposed test and control | File Exists? |
-|--------|----------|-----------|---------------------------|-------------|
-| CONF-01 | Any git path round-trips C-quoted | proptest | `model::manifest::tests::any_git_path_round_trips`. Control: the planted bare-edge encoder fails it | ❌ Wave 0 |
-| CONF-01 | git's own quoted output parses to git's raw bytes on every byte value; exactly ` lead` and `trail ` are refused bare | unit, differential | `model::manifest::tests::git_quoted_output_parses_to_git_raw_names` | ❌ |
-| CONF-01 | `.planning` covers `.planning/x`, not `.planningX`; a literal `a*b` covers only itself | proptest and differential | `name_extension_is_not_covered`; `covers_matches_a_literal_pathspec` against `git ls-files -- ':(literal)<path>'` (measured: `.planning` and `.planning/` give `.planning/x`, `.plan` nothing, `a*b` only `a*b/c`) | ❌ |
-| CONF-01 | Unknown line kind names the line | unit | `unknown_kind_names_the_line`: number and text. Control: `only a` parses | ❌ |
-| CONF-01 | D-11, D-12, D-14, D-19 line rules | unit, one per rule | One atomic test per row of Pattern 7's table, not a chained table (global rule) | ❌ |
-| CONF-02 | Undeclared `.planning` or `CLAUDE.md` is not personal; once declared `only`, it is | unit, repo-backed | `undeclared_path_is_not_personal`, `declared_path_is_personal`: the same path before and after one manifest line | ❌ |
-| CONF-02 | Built-ins are `.wsx.conf` and the worktree dir; `wsx.worktreeDir` moves the second | unit, repo-backed | `custom_worktree_dir_replaces_the_default`: `.worktrees/x` stops being personal | ❌ |
-| CONF-02 | A built-in declaration still parses | unit | `declaration_covered_by_a_built_in_parses` (D-13) | ❌ |
-| CONF-03 | `develop` beats `origin/HEAD=main`, then `next`, then the default | unit, repo-backed | Three tests, deleting one tracking ref at a time | ❌ |
-| CONF-03 | A stray local `develop` doesn't redirect | unit, repo-backed | `local_develop_does_not_redirect_a_remote_base`. Control: no remotes, and the same local `develop` wins (D-07) | ❌ |
-| CONF-03 | `wsx.baseRef` overrides; missing is an error with no fallback | unit, repo-backed | `base_ref_overrides_the_chain`, `missing_base_ref_names_the_ref`: `upstream/next` tries `refs/remotes/upstream/upstream/next` | ❌ |
-| CONF-03 | D-09 error lists refs and fixes | unit, repo-backed | `no_integration_branch_lists_the_refs_tried`, plus dangling `<remote>/HEAD` and non-symbolic `<remote>/HEAD` variants | ❌ |
-| CONF-04 | Fork: base `upstream`, push `origin`; both default to `origin` | unit, repo-backed | `fork_layout_resolves_each_remote`, `remotes_default_to_origin` | ❌ |
-| CONF-04 | A key naming a missing remote names both (D-03); no origin, no key, a remote under another name means none (D-04) | unit, repo-backed | `missing_remote_names_the_key_and_remote`, `no_origin_means_no_remote` | ❌ |
-| CONF-04 | A global `remote.origin` section doesn't create a remote | unit (child) | `global_remote_section_is_not_a_remote`. Control: `git remote` lists it, `git remote add` succeeds | ❌ |
-| CONF-05 | `wsx.sourceBranch` names the branch; a missing branch fails closed | unit, repo-backed | `source_branch_names_the_workspace`, `missing_source_branch_fails_closed` | ❌ |
-| CONF-05 | The only candidate is used; several or zero lists them; `personal/workspace` with `-backup` | unit, repo-backed | `only_candidate_is_inferred`, `several_candidates_are_listed`, `zero_candidates_are_an_error` | ❌ |
-| CONF-05 | A recorded branch is excluded (D-17) | unit, repo-backed | `recorded_branches_are_not_candidates`: the same repo with and without the set | ❌ |
-| CONF-05 | `workspace-x`, `workspaceY`, remote-only and the checked-out branch get no credit | unit, differential | `candidates_match_for_each_ref` against `git for-each-ref` | ❌ |
-| CONF-07 | Uncommitted edit changes nothing; clean checkout resolves the same | unit, repo-backed | `working_tree_edit_changes_nothing`, `clean_checkout_resolves_the_same_list` | ❌ |
-| CONF-07 | Configured plus missing, symlink, directory, submodule, missing object or invalid manifest fails closed with the reason | unit, one each | `missing_manifest_fails_closed`, `symlink_manifest_fails_closed`, `directory_manifest_fails_closed`, `submodule_manifest_fails_closed`, `missing_blob_object_fails_closed`, `invalid_manifest_fails_closed`. Differential for kind: `git ls-tree`; for the object: `git cat-file -e` fails | ❌ |
-| CONF-07 | Not configured is reported; a bad inferred manifest stays "not configured" (D-16) | unit, repo-backed | `no_source_branch_is_not_configured`, `invalid_inferred_manifest_is_not_configured`. Control: the same manifest with the key set fails closed | ❌ |
-| D-01 | A global `wsx.sourceBranch` is ignored | unit (child) | `global_source_branch_does_not_configure`. Control: `git config --get` returns it, `--local --get` does not | ❌ |
-| D-18 | Repeated, empty and no-`=` keys are errors | unit, repo-backed | `repeated_key_is_an_error`, `empty_key_is_an_error`, `key_without_a_value_is_an_error`, each against `git config --local --get-all` | ❌ |
-| D-01 | Include and `config.worktree` values are not read | unit, repo-backed | `included_key_is_not_read`. Control: `git config --local --includes --get` returns it | ❌ |
-| Fixture | Harness scenarios still pass with bare `wsx.baseRef` | harness | Existing `devflow_layout_matches_the_preset` and the fork test at `tests/harness/fixture.rs:828`, updated | ✅ update |
+| Req | Behaviour | Type | Command | Exists? |
+|-----|-----------|------|---------|---------|
+| CONF-01 | Any git path round-trips; unknown kinds name the line (grammar untouched by the pivot) | proptest, unit | `scripts/check.sh test -E 'test(=model::manifest::tests::any_git_path_round_trips)' && scripts/check.sh test -E 'test(=model::manifest::tests::unknown_kind_names_the_line)' && scripts/check.sh test -E 'test(=model::manifest::tests::name_extension_is_not_covered)'` | ✅ |
+| CONF-02 | Only built-ins and declared `only` paths are personal | unit, repo | `scripts/check.sh test -E 'test(=model::tests::undeclared_path_is_not_personal)' && scripts/check.sh test -E 'test(=model::tests::declared_path_is_personal)' && scripts/check.sh test -E 'test(=model::tests::custom_worktree_dir_replaces_the_default)'` | ✅ |
+| CONF-03 | Chain order, `baseRef`, D-09 error, single-hop symbolic refusal | unit, repo | `scripts/check.sh test -E 'test(=model::tests::develop_beats_the_remote_default)' && scripts/check.sh test -E 'test(=model::tests::next_follows_develop)' && scripts/check.sh test -E 'test(=model::tests::remote_default_follows_next)' && scripts/check.sh test -E 'test(=model::tests::base_ref_overrides_the_chain)' && scripts/check.sh test -E 'test(=model::tests::no_integration_branch_lists_the_refs_tried)' && scripts/check.sh test -E 'test(=model::tests::symbolic_develop_is_refused)'` | ✅ |
+| CONF-03 | A stray local `develop` does not redirect; a rung under another path does not count | unit, repo | `scripts/check.sh test -E 'test(=model::tests::local_develop_does_not_redirect_a_remote_base)' && scripts/check.sh test -E 'test(=model::tests::ref_under_another_path_does_not_satisfy_a_rung)'` | ✅ |
+| CONF-04 | Fork layout, defaults, missing remote, `pushDefault` unread | unit, repo | `scripts/check.sh test -E 'test(=model::tests::fork_layout_resolves_each_remote)' && scripts/check.sh test -E 'test(=model::tests::remotes_default_to_origin)' && scripts/check.sh test -E 'test(=model::tests::missing_base_remote_names_the_key_and_the_remote)' && scripts/check.sh test -E 'test(=model::tests::push_default_is_not_read)' && scripts/check.sh test -E 'test(=model::tests::remote_name_with_a_slash_resolves)'` | ✅ |
+| CONF-05 | Key names the branch; one candidate; several listed; recorded excluded; nested and remote-only ignored | unit, repo | `scripts/check.sh test -E 'test(=model::tests::source_branch_names_the_workspace)' && scripts/check.sh test -E 'test(=model::tests::only_candidate_is_inferred)' && scripts/check.sh test -E 'test(=model::tests::several_candidates_are_listed)' && scripts/check.sh test -E 'test(=model::tests::recorded_branches_are_not_candidates)' && scripts/check.sh test -E 'test(=model::tests::nested_branch_is_not_a_candidate)' && scripts/check.sh test -E 'test(=model::tests::remote_only_branch_is_not_a_candidate)'` | ✅ |
+| CONF-07 | From the object database in any checkout; fails closed once configured; not configured otherwise | unit, repo | `scripts/check.sh test -E 'test(=model::tests::working_tree_edit_changes_nothing)' && scripts/check.sh test -E 'test(=model::tests::linked_worktree_resolves_the_same_list)' && scripts/check.sh test -E 'test(=model::tests::bare_repo_resolves_the_same_model)' && scripts/check.sh test -E 'test(=model::tests::hook_environment_resolves_the_same_list)' && scripts/check.sh test -E 'test(=model::tests::missing_manifest_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::symlink_manifest_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::missing_blob_object_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::invalid_inferred_manifest_is_not_configured)'` | ✅ |
+| CONF-07 | `resolve` writes nothing | unit, repo | `scripts/check.sh test -E 'test(=model::tests::resolve_changes_nothing_in_the_repository)' && scripts/check.sh test -E 'test(=model::tests::repository_snapshot_sees_a_ref_change)'` | ✅ |
+
+### Pivot decisions to tests
+
+| Decision | Behaviour | Type | Command | Exists? |
+|----------|-----------|------|---------|---------|
+| D-23 | The model reads no ref, config or manifest through gix: the parsers on byte fixtures | unit | `scripts/check.sh test -E 'test(=git::config::tests::parse_config_z_keeps_only_the_own_local_file)' && scripts/check.sh test -E 'test(=git::config::tests::parse_config_z_bare_key_is_one_empty_value)' && scripts/check.sh test -E 'test(=git::refs::tests::parse_ref_listing_reads_raw_bytes)' && scripts/check.sh test -E 'test(=git::objects::tests::parse_batch_reads_missing_and_sized_records)'` | ❌ |
+| D-23 | Each source moved to git keeps its differential against git (config scope, remotes, listing) | unit, repo | `scripts/check.sh test -E 'test(=git::config::tests::included_key_is_not_read)' && scripts/check.sh test -E 'test(=git::config::tests::worktree_config_key_is_not_read)' && scripts/check.sh test -E 'test(=git::config::tests::command_line_config_key_is_not_read)' && scripts/check.sh test -E 'test(=git::config::tests::global_remote_section_is_not_a_remote)' && scripts/check.sh test -E 'test(=git::refs::tests::listing_survives_packing)' && scripts/check.sh test -E 'test(=git::refs::tests::non_utf8_branch_is_listed_by_its_bytes)'` | ✅ names, ported bodies |
+| D-23 | `%(objectmode)` tells the entry kind; a missing entry is classified by the root tree | unit, repo | `scripts/check.sh test -E 'test(=model::tests::symlink_manifest_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::directory_manifest_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::submodule_manifest_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::missing_blob_object_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::unsorted_tree_manifest_fails_closed)'` | ✅ (last one rewritten) |
+| D-23, D-09 | No network read: a partial clone's blob is not fetched | unit, repo | `scripts/check.sh test -E 'test(=model::tests::partial_clone_manifest_is_unreadable_without_a_fetch)'` | ❌ |
+| D-24, D-22 | Every existing replace-ref refusal still fires, and resolves once removed | unit, repo | `scripts/check.sh test -E 'test(=model::tests::single_replacement_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::replace_ref_with_replace_objects_off_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::replace_ref_leaves_a_not_configured_repo_not_configured)' && scripts/check.sh test -E 'test(=model::tests::replace_dir_left_empty_resolves)'` | ✅ |
+| D-25 | Deleted items are gone (a source check, not a test): `rg -n -e 'fn find_ref' -e 'fn ref_commit' -e 'fn refs_directly_under' -e 'fn root_entry' -e 'fn local_config_values' -e 'fn remote_configured' -e TreeNotSorted src` exits 1 | lint | as written, with a negative control: run it once before the deletion and see it match | — |
+| D-26, D-31 | Four children in the own worktree, five aimed at another; a repo with two candidates spawns three (the control that the counter counts) | unit, PATH wrapper | `scripts/check.sh test -E 'test(=model::tests::resolve_spawns_four_git_children_in_its_own_worktree)' && scripts/check.sh test -E 'test(=model::tests::resolve_aimed_at_another_worktree_adds_the_env_var_query)' && scripts/check.sh test -E 'test(=model::tests::resolve_without_one_candidate_skips_the_object_read)'` | ❌ |
+| D-26 | p95 under 100 ms on the four R3 repos | manual measurement | not a test: machine-dependent and reads the operator's real repos (read-only); a release build timing `resolve` 200 times per repo, as spike 001's `bench-git.sh` did | ❌ manual |
+| D-27 | The round 1/2 and review shapes (table "D-27 regression shapes") | unit, repo | `scripts/check.sh test -E 'test(=model::tests::private_replace_ref_in_a_linked_worktree_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::common_replace_ref_from_a_linked_worktree_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::private_branch_in_a_linked_worktree_is_not_a_candidate)' && scripts/check.sh test -E 'test(=model::tests::relative_symlinked_source_branch_resolves_as_git_does)' && scripts/check.sh test -E 'test(=model::tests::main_worktree_alias_source_branch_reads_as_missing)' && scripts/check.sh test -E 'test(=model::tests::onbranch_remote_under_a_symlinked_head_counts_as_git_does)' && scripts/check.sh test -E 'test(=model::tests::dangling_symref_is_not_a_candidate)' && scripts/check.sh test -E 'test(=model::tests::glob_bytes_in_a_remote_name_match_only_themselves)'` | ❌ |
+| D-29 | A `refs/…` symlink reads as absent: missing source branch, and D-09 for a symlinked HEAD | unit, repo | `scripts/check.sh test -E 'test(=model::tests::git_style_symlinked_source_branch_reads_as_missing)' && scripts/check.sh test -E 'test(=model::tests::symlinked_remote_head_gives_no_integration_branch)'` | ❌ |
+| D-29 | A fifo loose ref never hangs `resolve` | unit, child with a kill | `scripts/check.sh test -E 'test(=model::tests::fifo_ref_is_skipped_without_hanging)'` | ❌ |
+| D-30 | A dangling symbolic rung is absent; once its target exists it is `IntegrationRefSymbolic` | unit, repo | `scripts/check.sh test -E 'test(=model::tests::dangling_symbolic_rung_is_absent)' && scripts/check.sh test -E 'test(=model::tests::symbolic_next_is_refused)'` | ❌ / ✅ |
+| D-32 | A linked worktree's private `refs/replace` entry refuses, an unreadable one is `ReplaceRefsUnreadable`, and the main worktree is unaffected | unit, repo | `scripts/check.sh test -E 'test(=model::tests::private_replace_ref_in_a_linked_worktree_fails_closed)' && scripts/check.sh test -E 'test(=model::tests::unreadable_private_replace_dir_blames_the_replace_refs)'` | ❌ |
+| IN-02 | `ReplaceBaseSet`'s remedy per setting | unit | `scripts/check.sh test -E 'test(=git::tests::replace_base_set_message_names_the_setting_and_the_fix)' && scripts/check.sh test -E 'test(=git::tests::replace_base_variable_message_names_only_the_variable)'` | ✅ / ❌ |
+
+D-28 (order: spike, then replan under Tier A) is a process decision with no test.
 
 ### Sampling Rate
-- **Per task commit:** the task's named tests, through the quick run command.
+- **Per task commit:** the task's named tests through the quick run command, each RED first where the task adds
+  behaviour; a deletion task runs the D-25 source check and the D-01 to D-21 commands above.
 - **Per wave merge:** `scripts/check.sh all`.
-- **Phase gate:** `scripts/check.sh all`, `scripts/check.sh deps` and `scripts/check-in-container.sh all`, green before `/gsd-verify-work`.
+- **Phase gate:** `scripts/check.sh all` and `scripts/check-in-container.sh all` green on the final tip, then a fresh
+  `cargo mutants` pass over the changed files (04-10's practice), before `/gsd-verify-work`.
 
 ### Wave 0 Gaps
-- [ ] `Cargo.toml`, `Cargo.lock`: add proptest with a justification comment, `scripts/check.sh deps` clean.
-- [ ] `src/git/mod.rs`: `#[cfg(test)] pub(crate) mod testing;`, the new `mod` lines, `pub use repo::Repo;`.
-- [ ] `src/main.rs`: `mod model;`.
-- [ ] `src/model/mod.rs`, `src/model/manifest.rs`: signatures with wrong-answer stubs, for RED by assertion. `src/model/mod.rs` carries the `dead_code` expectation.
-- [ ] Shared model-test fixtures: a helper building a repo with a remote, `develop`, `next`, and a `workspace/dev` with a `.wsx.conf` (the prototype's `repo_with_remote`).
-
-No new test framework config is needed. `.gitignore` needs no change, since persistence is off.
+- [ ] `Git` method for fixed stdin input (only under Open Question P1, option A), with its own test that the child
+  reads exactly the buffer and then EOF; `git::spawn::tests::children_get_null_stdin` stays for `run`.
+- [ ] A counting `git` wrapper usable from `model::tests`: `git::spawn::tests` has `fake_git` and `log_lines`, which
+  are private to that module; move a shared one into `git::testing`.
+- [ ] A bounded child run for the fifo test (`testing::reexec` has no timeout today).
+- [ ] A partial-clone fixture (`uploadpack.allowFilter` on a local `file://` source, as in the probe).
 
 ### Suggested implementation order (fine granularity)
-1. proptest dependency, visibility changes, harness fixture values, with the harness run.
-2. `git/quote.rs` with the all-bytes differential.
-3. `model/manifest.rs`: `covers`, `normalize_path`, `parse`, `encode_path`, the proptests and one test per grammar rule. No repository, so nothing else is required first.
-4. `git/config.rs` with the scope tests.
-5. `git/refs.rs`: `find_ref`, `refs_directly_under`, `root_entry`, each against git.
-6. `model/mod.rs`: remotes, then integration, then workspace and manifest, then `resolve`, `RepoModel`, `Error`, `Display`.
-7. Phase gate including the container.
+1. The D-25 source check's negative control (it matches today), then the D-01 to D-21 suite green as the baseline.
+2. P1: `parse_config_z` plus the ported config tests; switch `single`, `remote`, `default_remote`; delete `local_config_values` and `remote_configured`.
+3. P2: the listing plus its parser and the ported listing tests; switch `build`, `integration`, `candidates`; delete `find_ref`, `ref_commit`, `refs_directly_under`; apply the P2/P3 decisions to the affected tests.
+4. P4 then P3: the stdin method (or option B), the batch read, the classification; delete `root_entry` and `TreeNotSorted`.
+5. P5: D-32 and the CR-01/IN-01/IN-02 doc and message fixes.
+6. The D-27 regression tests and the D-31 count tests; the STATE obligation for grafts and shallow (D-32).
+7. The phase gate, the mutation pass, and the D-26 latency measurement (manual).
 
 ## Security Domain
 
@@ -969,6 +1491,10 @@ No new test framework config is needed. `.gitignore` needs no change, since pers
 | An ambiguous manifest leaving a path both replayed and stripped | Tampering | Cross-kind overlap refusal (D-12) |
 | Terminal escape sequences in a manifest line or value reach the user's terminal | Spoofing | `c_quote` in `Display` |
 | A stray branch blocks pushes in an unrelated repo | Denial of service | `NotConfigured` is a value, and the guard exits 0 (D-16) |
+| A partial clone turns `resolve` into a fetch from the remote (pivot, F5) | Information disclosure, availability | `git --no-lazy-fetch` on object-reading children (verified with a control) |
+| A remote name holding glob bytes makes the rung pattern read another remote's tracking refs (pivot, F8) | Tampering | Exact-byte filter on every listed record |
+| A git child waits on stdin and hangs a push (pivot) | Denial of service | `run` keeps a null stdin; a stdin-fed child gets a fixed buffer closed before waiting (Open Question P1) |
+| A fifo loose ref hangs the guard (round 2 pi) | Denial of service | Every ref is read through `for-each-ref`, which skips it (D-29, spike 001 S8) |
 | A hostile manifest size | Denial of service | Not bounded: `find_blob` reads it whole, and overlap checking is quadratic in entries. Accepted for ASVS L1: the blob is on the user's own branch |
 
 ## Sources
@@ -977,6 +1503,8 @@ No new test framework config is needed. `.gitignore` needs no change, since pers
 - Scratch probe binary and prototype on gix 0.90.0 (gix-config 0.62.2, gix-ref 0.69.1, gix-object 0.66.1, gix-quote 0.10.1), against git 2.56.0: every "measured" claim above
 - gix sources read this session: `gix-0.90.0/src/lib.rs:155-165`, `src/repository/config/remote.rs:23-34`, `src/object/tree/mod.rs:56-100`, `src/reference/iter.rs:45-87`; `gix-quote-0.10.1/src/ansi_c.rs`; `gix-ref-0.69.1/src/store/file/find.rs:88-133`; `gix-config-0.62.2/src/file/access/comfort.rs:238`
 - Repo files read this session: `src/git/{mod,repo,reads,testing}.rs`, `tests/harness/fixture.rs`, `scripts/workspace/cut-pr-branch.sh`, `.workspace-divergence`, `clippy.toml`, `deny.toml`, `.config/nextest.toml`, `Cargo.toml`, `CLAUDE.md`, `CONTRIBUTING.md`, `.planning/{REQUIREMENTS,ROADMAP,STATE}.md`, 04-CONTEXT.md
+
+- **Pivot (2026-11-17):** `.planning/spikes/001-git-binary-model-reads/README.md` (and its `parity.sh`, `bench.sh`), `.planning/spikes/002-gix-object-reads/README.md`, `.planning/reviews/04-13-adversarial/round2/SUMMARY.md`, `04-REVIEW.md`, `04-13-PLAN.md` (test shapes), `03-CONTEXT.md` § Running the git binary; code read this session: `src/git/{mod,refs,config,spawn}.rs` (production parts), `src/model/mod.rs` (production part and the tests quoted), test names of `src/git/{config,refs,repo,mod}.rs` and `src/model/{mod,manifest}.rs`; probes F1 to F11 on git 2.56.1 with controls (scratch, removed); `git help for-each-ref` (the `symref` atom)
 
 ### Secondary (MEDIUM confidence)
 - Context7 `/proptest-rs/proptest`: `Config` fields, `failure_persistence`, `rng_seed`, `PROPTEST_RNG_SEED`, file persistence. Confirmed where it matters by running 1.12.0
@@ -994,6 +1522,9 @@ No new test framework config is needed. `.gitignore` needs no change, since pers
 - Model shape and errors: MEDIUM. The prototype works, but this is a judgement call.
 - Harness fixture impact: MEDIUM. The contradiction was read from source; the fix was not run.
 
-**Research date:** 2026-11-02
+- Pivot reads: HIGH for F2 to F11 (each measured with a control on one git version). MEDIUM for the proposed shapes in P1 to P4 (no Rust prototype). The three open questions are decisions, not unknowns.
+
+**Research date:** 2026-11-02, revised 2026-11-17
 **Graph context:** the knowledge graph is 326 commits behind (built at `9e96bc8`) and returned only Python 0.1.0 and planning nodes, so it was not used.
-**Valid until:** the next gix upgrade (monthly, per `Cargo.toml`), or 30 days.
+**Graph context (2026-11-17):** `graphify explain "refuse_replace_refs"` located the guard and its callers; the code was then read directly.
+**Valid until:** the next gix or git upgrade, or 30 days.

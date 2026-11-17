@@ -166,6 +166,40 @@ Open checks for the spike (unmeasured facts, not decisions):
 - A fifo loose ref hangs both git and gix (round 2, pi): parity, but the spike reports whether the guard
   then hangs a push.
 
+Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`.
+
+- **D-29 (operator, 2026-11-17):** `wsx.sourceBranch`, the integration rungs and the workspace
+  candidates are all read through `git for-each-ref`, never by name (`rev-parse`, `cat-file
+  --batch-check`). A fifo loose ref is skipped, so the guard never hangs a push. A ref git can reach
+  only by name, such as one written as a filesystem symlink under the deprecated
+  `core.preferSymlinkRefs`, reads as absent: a missing `wsx.sourceBranch` stays a loud error, and a
+  symlinked `<remote>/HEAD` with no other rung gives D-09's error. Chosen over by-name reads (match
+  `rev-parse` but hang on a fifo) and by-name reads with a timeout (one arbitrary limit).
+- **D-30 (Claude's call, 2026-11-17):** A dangling symbolic rung is absent, as git reads it, and the
+  chain moves on (spike 001 S7); a new test pins it. A symbolic rung that resolves is still
+  `IntegrationRefSymbolic`, using for-each-ref's `%(symref)`.
+- **D-31 (Claude's call, 2026-11-17):** D-26's "at most 4 children" counts one `resolve` aimed at
+  wsx's own worktree, which spike 001 measured at 4. Aimed at another worktree, the spawn helper adds
+  one `rev-parse --local-env-vars`, once per process; a test pins both counts.
+- **D-32 (from spike 002, Claude's call):** D-22's detection also scans `<git_dir>/refs/replace` when
+  the git dir is a linked worktree's (closes B2, and B3 with it). gix's divergence on `info/grafts` and
+  `shallow` is outside Phase 4's inputs; it goes into the STATE obligations for the phases that use
+  gix merge-base and walks.
+- **D-33 (operator, 2026-11-17):** The `.wsx.conf` read uses `git cat-file --batch` through one spawn-helper
+  method that writes a small fixed request to stdin and closes it at once, so git can never wait for input.
+  This amends Phase 3's "every child gets a null stdin" (`03-CONTEXT.md`:59) for that method only; `Git::run`
+  keeps a null stdin. Chosen over null stdin with `ls-tree` plus `cat-file blob`, which costs a fifth child.
+- **D-34 (Claude's call, 2026-11-17, amends D-27 for three tests):** `for-each-ref`'s `%(symref)` gives a
+  chain's final target, and the model follows that reading. A `<remote>/HEAD` chain whose final target is inside
+  the base remote resolves; one ending outside it is not a default. D-06's aim, never landing on a local commit,
+  holds. The three D-06 chain tests are rewritten to git's answer.
+- **D-35 (Claude's call, 2026-11-17, amends D-27 for one test):** A corrupt or badly named ref that git skips is
+  absent, as D-29 already treats every ref git cannot list. A configured repo whose `wsx.sourceBranch` is such a
+  ref still fails closed (`WorkspaceBranchMissing`).
+- **D-36 (Claude's call, 2026-11-17):** "A remote exists" (D-03, D-04) means what `git remote add` refuses as
+  already existing, as spike 001 C3 measured; a `wsx.*` key from an `include.path` file is unset (D-01), as
+  today's tests already pin.
+
 </decisions>
 
 <canonical_refs>
