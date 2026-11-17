@@ -53,4 +53,3 @@ Shapes that ship a false green, or a commit the PR cut cannot replay.
 - Add a dependency without a justification and a clean `scripts/check.sh deps`.
 - Make the tool interactive: it never prompts.
 - Resolve a conflict on the user's behalf.
-- Push, open PRs or change repository settings from an agent session.
