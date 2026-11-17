@@ -310,17 +310,25 @@ impl fmt::Display for Error {
                      any that remain.",
                 )
             }
-            Error::ReplaceBaseSet { name, value } => write!(
-                f,
-                "refusing {name}={}: wsx looks for replace refs only under git's default base \
-                 refs/replace/, so it refuses another base rather than compare how git and wsx's \
-                 reader each read replace refs under it.\n\
-                 Run wsx with GIT_REPLACE_REF_BASE unset, and remove \
-                 gitoxide.objects.replaceRefBase from the config file that sets it; this shows \
-                 where it is set:\n\
-                 \tgit config --show-origin --get-all gitoxide.objects.replaceRefBase",
-                shown(value)
-            ),
+            Error::ReplaceBaseSet { name, value } => {
+                write!(
+                    f,
+                    "refusing {name}={}: wsx looks for replace refs only under git's default \
+                     base refs/replace/, so it refuses another base rather than compare how git \
+                     and wsx's reader each read replace refs under it.",
+                    shown(value)
+                )?;
+                if *name == refs::REPLACE_BASE_VAR {
+                    write!(f, "\nRun wsx with {name} unset.")
+                } else {
+                    write!(
+                        f,
+                        "\nRemove {name} from the config file that sets it; this shows where it \
+                         is set:\n\
+                         \tgit config --show-origin --get-all {name}"
+                    )
+                }
+            }
             Error::ReplaceRefsUnreadable { path, source } => write!(
                 f,
                 "refusing the replace refs: wsx failed to read {}, so it cannot tell whether \

@@ -51,7 +51,7 @@ const REPLACE_BASE_KEY: &str = "gitoxide.objects.replaceRefBase";
 
 /// The variable git reads its replace base from, and gix maps onto
 /// `REPLACE_BASE_KEY`.
-const REPLACE_BASE_VAR: &str = "GIT_REPLACE_REF_BASE";
+pub(super) const REPLACE_BASE_VAR: &str = "GIT_REPLACE_REF_BASE";
 
 /// The replace base when neither `REPLACE_BASE_VAR` nor `REPLACE_BASE_KEY`
 /// names one, in git and in gix.

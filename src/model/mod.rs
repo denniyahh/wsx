@@ -349,8 +349,9 @@ impl std::error::Error for Error {}
 /// during the call, and the two tips need not be from one instant: git has
 /// no snapshot across refs. Every object read applies the replacement map
 /// gix loaded when the `Repo` was opened, so a replace ref added or removed
-/// after that, during one run, is not seen by these reads, and a later check
-/// that lists replace refs can disagree with that map in that window
+/// after that, during one run, is not seen by these reads, and the
+/// replace-ref guard, which reads the ref stores later, can disagree with
+/// that map in that window
 /// (accepted by the owner on 2026-11-03). Later reads in a command use the
 /// ids recorded here. Only the one-commit half has a test; nothing pins the
 /// rest.
