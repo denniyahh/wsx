@@ -4900,6 +4900,31 @@ mod tests {
         work.join(".git/refs/replace")
     }
 
+    /// `<work>/.git/worktrees/linked/refs/replace`, the `refs/replace` of
+    /// the private git dir of `linked_worktree`'s worktree, which git never
+    /// reads and gix reads when the repository is opened from that worktree.
+    fn private_replace_dir(work: &Path) -> PathBuf {
+        work.join(".git/worktrees/linked/refs/replace")
+    }
+
+    /// Writes the loose replace ref `<a.blob>` holding `<b.blob>` into
+    /// `private_replace_dir(work)` and returns its path.
+    fn write_private_replace_ref(work: &Path, ids: &Sides) -> PathBuf {
+        let dir = private_replace_dir(work);
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
+        let entry = dir.join(&ids.a.blob);
+        std::fs::write(&entry, format!("{}\n", ids.b.blob))
+            .unwrap_or_else(|err| panic!("write {}: {err}", entry.display()));
+        entry
+    }
+
+    /// Removes the file `entry`.
+    fn remove_file(entry: &Path) {
+        std::fs::remove_file(entry)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", entry.display()));
+    }
+
     /// `<work>/.git/packed-refs`.
     fn packed_refs(work: &Path) -> PathBuf {
         work.join(".git/packed-refs")
@@ -5742,6 +5767,174 @@ mod tests {
         );
 
         assert_lists(&work, ".planning");
+    }
+
+    /// CR-01, D-32: read from a linked worktree, an entry in that
+    /// worktree's own `refs/replace`, which git ignores and gix applies, is
+    /// refused before any object is read.
+    #[test]
+    fn private_replace_ref_in_a_linked_worktree_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-private").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let linked = linked_worktree(&scratch, &work);
+        let entry = write_private_replace_ref(&work, &ids);
+        assert_eq!(
+            git_prints(&scratch, &linked),
+            "only .planning\n",
+            "git's manifest"
+        );
+
+        let err = refusal(&linked);
+        assert_eq!(
+            replace_refs_present(&err),
+            (private_replace_dir(&work), false),
+            "the store the refusal names"
+        );
+        assert_blames_the_replace_refs(&err.to_string());
+
+        remove_file(&entry);
+        assert_lists(&linked, ".planning");
+        write_private_replace_ref(&work, &ids);
+        assert_lists(&work, ".planning");
+    }
+
+    /// A replace ref in the common dir, read from a linked worktree, is
+    /// refused naming the common dir's store.
+    #[test]
+    fn common_replace_ref_from_a_linked_worktree_fails_closed() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-common-linked").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let ids = sides(&scratch, &work);
+        let linked = linked_worktree(&scratch, &work);
+        run(&scratch, &work, &["replace", &ids.a.blob, &ids.b.blob]);
+        assert_eq!(git_prints(&scratch, &linked), "only b\n", "git's manifest");
+
+        assert_eq!(
+            replace_refs_present(&refusal(&linked)),
+            (replace_dir(&work), false),
+            "the store the refusal names"
+        );
+
+        run(&scratch, &work, &["replace", "-d", &ids.a.blob]);
+        assert_eq!(
+            git_prints(&scratch, &linked),
+            "only .planning\n",
+            "git's manifest"
+        );
+        assert_lists(&linked, ".planning");
+    }
+
+    /// A fifo where a linked worktree keeps its own `refs/replace` is
+    /// unreadable replace refs, never blamed on `.wsx.conf`.
+    #[test]
+    fn unreadable_private_replace_dir_blames_the_replace_refs() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-private-fifo").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let linked = linked_worktree(&scratch, &work);
+        let dir = private_replace_dir(&work);
+        let parent = dir.parent().expect("refs/replace has a parent");
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|err| panic!("create {}: {err}", parent.display()));
+        let status = std::process::Command::new("mkfifo")
+            .arg(&dir)
+            .status()
+            .unwrap_or_else(|err| panic!("run mkfifo: {err}"));
+        assert!(status.success(), "mkfifo {} exited {status}", dir.display());
+        assert_eq!(
+            git_prints(&scratch, &linked),
+            "only .planning\n",
+            "git's manifest"
+        );
+
+        let err = refusal(&linked);
+        assert_eq!(
+            unreadable_replace_refs(&err),
+            dir,
+            "the store the refusal names"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("refusing the replace refs: wsx failed to read"),
+            "{rendered:?} does not blame the replace refs"
+        );
+        assert!(
+            !rendered.contains("cannot be read"),
+            "{rendered:?} says the manifest cannot be read"
+        );
+
+        remove_file(&dir);
+        std::fs::create_dir(&dir).unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
+        assert_eq!(
+            git_prints(&scratch, &linked),
+            "only .planning\n",
+            "git's manifest"
+        );
+        assert_lists(&linked, ".planning");
+    }
+
+    /// With no `wsx.sourceBranch`, a linked worktree's own replace ref keeps
+    /// the repository not configured: the refusal stays in `inferred`, and
+    /// `require` reads it as run `wsx init` (D-16).
+    #[test]
+    fn private_replace_ref_leaves_a_not_configured_repo_not_configured() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-replace-private-unconfigured").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        let ids = sides(&scratch, &work);
+        let linked = linked_worktree(&scratch, &work);
+        let entry = write_private_replace_ref(&work, &ids);
+        assert_eq!(
+            git_prints(&scratch, &linked),
+            "only .planning\n",
+            "git's manifest"
+        );
+
+        let answer = resolved(&linked).expect("resolve a repository with no wsx.sourceBranch");
+        let RepoModel::NotConfigured { inferred } = answer else {
+            panic!("resolve: expected RepoModel::NotConfigured, got {answer:?}");
+        };
+        let inferred_err = match &inferred {
+            Err(err) => err,
+            Ok(model) => panic!("inferred: expected an error, got {model:?}"),
+        };
+        assert_eq!(
+            replace_refs_present(inferred_err),
+            (private_replace_dir(&work), false),
+            "the inferred refusal"
+        );
+        let err = match required(&linked) {
+            Err(err @ Error::NotConfigured { .. }) => err,
+            other => panic!("require: expected Err(NotConfigured), got {other:?}"),
+        };
+        let rendered = err.to_string();
+        assert_blames_the_replace_refs(&rendered);
+        assert!(
+            rendered.ends_with("Run wsx init."),
+            "{rendered:?} does not say run wsx init"
+        );
+
+        remove_file(&entry);
+        assert_eq!(
+            personal_list(&inferred_model(&linked)),
+            vec![
+                ".wsx.conf".to_owned(),
+                ".worktrees".to_owned(),
+                ".planning".to_owned()
+            ],
+            "personal paths"
+        );
     }
 
     /// A `packed-refs` holding only branches and remote-tracking refs stops
