@@ -543,7 +543,11 @@ reading through git (D-23, D-29) changes them; each still fails closed or stays 
 - **G11, the child count has no slack** (spike 001). A bare repo, or `resolve` aimed at another worktree, is five
   (D-31). A sixth child anywhere on the configured path is a D-26 miss and goes to the operator.
 
-### Open questions for the replan (OPEN, need the operator)
+### Open questions for the replan (RESOLVED 2026-11-17)
+
+Resolved in 04-CONTEXT.md: P1 by D-33 (operator); P2 by D-34 and P3 by D-35, both Claude's calls because they amend
+D-27, which the operator delegated ("you decide on all of these"); the operator was told of both and can reverse them.
+The original framing is kept below for the record.
 
 1. **P1, stdin for `cat-file --batch`.** Phase 3 locked "Every child gets a null stdin" (03-CONTEXT.md:59), and spike
    001's fourth child needs its requests on stdin.

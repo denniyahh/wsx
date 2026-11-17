@@ -199,6 +199,12 @@ Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`
 - **D-36 (Claude's call, 2026-11-17):** "A remote exists" (D-03, D-04) means what `git remote add` refuses as
   already existing, as spike 001 C3 measured; a `wsx.*` key from an `include.path` file is unset (D-01), as
   today's tests already pin.
+- **D-37 (Claude's call, 2026-11-17, amends D-27 for one test):** `unsorted_tree_manifest_fails_closed` keeps its
+  outer `ManifestUnreadable` and fail-closed result; its inner cause becomes what `cat-file` reports (object
+  missing) instead of gix's `TreeNotSorted`.
+- **Tier A diff review (D-28):** after the last plan's gates pass, the orchestrator runs the external-review diff
+  lanes (at least two, in parallel) on the final tip, up to three rounds until no critical finding remains, before
+  the phase is verified.
 
 </decisions>
 
