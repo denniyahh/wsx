@@ -19,7 +19,7 @@ pub mod manifest;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::git::{self, ConfigRead, Git, ObjectId, RefRecord, Repo, RootEntry};
+use crate::git::{self, ConfigRead, Git, ObjectId, RefRecord, Repo, RootEntry, TipObjects};
 
 use manifest::{EntryKind, Manifest, ParseError, Problem, covers};
 
@@ -345,18 +345,22 @@ impl std::error::Error for Error {}
 /// ref (D-30), a fifo, a symlink git resolves only by name, a linked
 /// worktree's private ref and a chain git does not resolve (D-29). Each tip
 /// is peeled from the id that listing printed, so the ref checked is the ref
-/// whose commit is used. `workspace_tip` and the manifest always come from
-/// one commit, because `root_entry` takes that commit's id, not the branch
-/// name (`manifest_read_stays_on_the_commit_it_was_given` moves the branch
-/// between the two reads). Each tip is a value its ref held when the
-/// listing ran. Every object read applies the replacement map
-/// gix loaded when the `Repo` was opened, so a replace ref added or removed
-/// after that, during one run, is not seen by these reads, and the
-/// replace-ref guard, which reads the ref stores later, can disagree with
-/// that map in that window
-/// (accepted by the owner on 2026-11-03). Later reads in a command use the
-/// ids recorded here. Only the one-commit half has a test; nothing pins the
-/// rest.
+/// whose commit is used. The workspace tip, its manifest and the
+/// integration tip come from one `git cat-file --batch` child
+/// (`Repo::read_tips`, D-23) over the ids that listing printed, so
+/// `workspace_tip` and the manifest always come from one commit
+/// (`tip_read_stays_on_the_id_it_was_given` moves the branch between the
+/// listing and the read). Each tip is a value its ref held when the listing
+/// ran. `refuse_replace_refs` runs before the batch, the one object read;
+/// git applies or ignores replace refs itself, so the guard stands for the
+/// gix reads by id later phases make (D-24). Later reads in a command use
+/// the ids recorded here.
+///
+/// A resolve aimed at wsx's own worktree spawns four git children:
+/// `git --version` (once per helper), the config read, the listing and the
+/// batch. With zero or several candidates `build` never runs, so there are
+/// three; aimed at another worktree, `git rev-parse --local-env-vars` makes
+/// one more (D-26, D-31).
 ///
 /// Every `wsx.*` key and the remote list come from one `git config` child
 /// run through `git` (`Repo::read_config`), read once here and handed down;
@@ -383,7 +387,7 @@ pub fn resolve(repo: &Repo, git: &Git, recorded: &BTreeSet<Vec<u8>>) -> Result<R
     let listing = repo.list_refs(git, &patterns);
     match source {
         Some(branch) => Ok(RepoModel::Configured(Box::new(build(
-            repo, &config, &listing?, branch,
+            repo, git, &config, &listing?, branch,
         )?))),
         None => {
             let inferred = listing.map_err(Error::Git).and_then(|listing| {
@@ -391,7 +395,7 @@ pub fn resolve(repo: &Repo, git: &Git, recorded: &BTreeSet<Vec<u8>>) -> Result<R
                 if names.len() != 1 {
                     return Err(Error::WorkspaceCandidates { candidates: names });
                 }
-                build(repo, &config, &listing, names.remove(0))
+                build(repo, git, &config, &listing, names.remove(0))
             });
             Ok(RepoModel::NotConfigured {
                 inferred: inferred.map(Box::new),
@@ -505,15 +509,20 @@ fn remote(config: &ConfigRead, key: &'static str) -> Result<Option<Vec<u8>>, Err
 ///
 /// The branch exists only as a record named exactly `refs/heads/<branch>`;
 /// a symbolic one is accepted, its tip the object its chain ends at. A
-/// failure peeling the tip or reading its root tree is
-/// `Error::ManifestUnreadable`, since both are reads of the manifest. A
-/// refusal of the replace refs (`git::Error::is_replacement_refusal`), from
-/// the guard `build` runs before it reads any object, and which
-/// `root_entry` runs again, stays `Error::Git`: it does not know whether a
-/// replace ref touches the manifest, so its message blames the replace refs
-/// and does not say `.wsx.conf` cannot be read (D-22).
+/// refusal of the replace refs, from the guard `build` runs before it reads
+/// any object, stays `Error::Git`: it does not know whether a replace ref
+/// touches the manifest, so its message blames the replace refs and does
+/// not say `.wsx.conf` cannot be read (D-22).
+///
+/// The batch runs only after the rung is chosen, and its answers are raised
+/// in the order the reads had before they were batched (research G6): the
+/// batch child's own failure and then the rung's peel, both `Error::Git`;
+/// `wsx.worktreeDir`; the workspace tip, then its manifest entry, either
+/// failing as `Error::ManifestUnreadable`, since both are reads of the
+/// manifest.
 fn build(
     repo: &Repo,
+    git: &Git,
     config: &ConfigRead,
     listing: &[RefRecord],
     branch: Vec<u8>,
@@ -524,22 +533,20 @@ fn build(
     repo.refuse_replace_refs()?;
     let base_remote = remote(config, BASE_REMOTE)?;
     let push_remote = remote(config, PUSH_REMOTE)?;
-    let integration = integration(repo, config, listing, base_remote.as_deref())?;
+    let mut integration = integration(config, listing, base_remote.as_deref())?;
+    let TipObjects {
+        workspace_tip,
+        manifest,
+        integration_tip,
+    } = repo.read_tips(git, &workspace.id, MANIFEST_NAME, &integration.tip)?;
+    integration.tip = integration_tip?;
     let worktree_dir = worktree_dir(config)?;
     let unreadable = |source: git::Error| Error::ManifestUnreadable {
         branch: branch.clone(),
         source,
     };
-    let workspace_tip = repo.peel_commit(&workspace.id).map_err(unreadable)?;
-    let manifest = match repo
-        .root_entry(&workspace_tip, MANIFEST_NAME)
-        .map_err(|source| {
-            if source.is_replacement_refusal() {
-                Error::Git(source)
-            } else {
-                unreadable(source)
-            }
-        })? {
+    let workspace_tip = workspace_tip.map_err(unreadable)?;
+    let manifest = match manifest.map_err(unreadable)? {
         RootEntry::Absent => return Err(Error::ManifestMissing { branch }),
         RootEntry::NotABlob { kind } => return Err(Error::ManifestNotABlob { branch, kind }),
         RootEntry::Blob(bytes) => match manifest::parse(&bytes) {
@@ -644,13 +651,13 @@ fn listed_rungs(config: &ConfigRead) -> Vec<Vec<u8>> {
 /// glob. A rung git does not list is absent and the chain moves on (D-30).
 /// A symbolic rung is `Error::IntegrationRefSymbolic` naming the ref its
 /// chain ends at, never followed and never skipped, since following it can
-/// land on a local commit (D-06). A rung's tip is its listed id, peeled; a
-/// ref that does not peel to a commit is an error, with no fall-through.
+/// land on a local commit (D-06). The chosen rung's `tip` is its listed id,
+/// not yet peeled: `build` peels it in its batch, and a ref that does not
+/// peel to a commit is an error there, with no fall-through.
 /// `<remote>/HEAD` is the default only when its chain ends under the
 /// remote's prefix: the branch is the rest of that target, `full_ref` the
 /// target and the tip HEAD's own listed id (D-34).
 fn integration(
-    repo: &Repo,
     config: &ConfigRead,
     listing: &[RefRecord],
     base: Option<&[u8]>,
@@ -674,7 +681,7 @@ fn integration(
             }),
             Some(record) => Ok(Some(Integration {
                 branch: branch.to_vec(),
-                tip: repo.peel_commit(&record.id)?,
+                tip: record.id.clone(),
                 full_ref,
             })),
         }
@@ -706,7 +713,7 @@ fn integration(
             return Ok(Integration {
                 branch: branch.to_vec(),
                 full_ref: target.clone(),
-                tip: repo.peel_commit(&record.id)?,
+                tip: record.id.clone(),
             });
         }
         tried.push(head);
@@ -3751,8 +3758,8 @@ mod tests {
     }
 
     /// D-16: `require` reads an unreadable inferred manifest as not
-    /// configured, and the rendering keeps the object store's error, which
-    /// names the missing object. The control, still with no key: writing
+    /// configured, and the rendering keeps git's answer, which names the
+    /// request it could not answer. The control, still with no key: writing
     /// the same bytes back restores the object under the same id, and
     /// `require` returns the model.
     #[test]
@@ -3763,6 +3770,10 @@ mod tests {
         let scratch = Scratch::new("model-require-unreadable").expect("create scratch");
         let work = repo_with_remote(&scratch);
         let id = delete_manifest_object(&scratch, &work);
+        let request = format!(
+            "{}:.wsx.conf",
+            tip(&scratch, &work, "refs/heads/workspace/dev")
+        );
 
         let (reason, rendered) = wrapped_reason(&work);
         assert!(
@@ -3770,8 +3781,8 @@ mod tests {
             "reason: expected ManifestUnreadable, got {reason:?}"
         );
         assert!(
-            rendered.contains(&id) && rendered.ends_with("\nRun wsx init."),
-            "{rendered:?} does not name the object {id} and say run wsx init"
+            rendered.contains(&request) && rendered.ends_with("\nRun wsx init."),
+            "{rendered:?} does not name the request {request} and say run wsx init"
         );
 
         let copy = scratch.root.join("manifest-copy");
@@ -3862,10 +3873,14 @@ mod tests {
         );
 
         match required(&work) {
-            Err(Error::Git(git::Error::Gix { what, .. })) => {
-                assert_eq!(what, format!("peel {blob} to a commit"), "the failed read")
+            Err(Error::Git(git::Error::ObjectMissing { request })) => assert_eq!(
+                String::from_utf8_lossy(&request),
+                format!("{blob}^{{commit}}"),
+                "the request git could not answer"
+            ),
+            other => {
+                panic!("require: expected Err(Git(ObjectMissing)) from the rung, got {other:?}")
             }
-            other => panic!("require: expected Err(Git(Gix)) from the rung, got {other:?}"),
         }
     }
 

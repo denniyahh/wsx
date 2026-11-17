@@ -3,14 +3,17 @@
 //! `Git` owns an explicit environment snapshot instead of reading the process
 //! environment per call, so what a child sees is decided in one place and can
 //! be tested without mutating the process. Every child starts from an empty
-//! environment plus that snapshot, runs in an explicit working directory and
-//! reads stdin from `/dev/null`, so git can never stop to wait for input.
+//! environment plus that snapshot and runs in an explicit working directory.
+//! Every child but `run_with_input`'s reads stdin from `/dev/null`; that one
+//! gets a fixed buffer and then EOF, so no git child can stop to wait for
+//! input.
 //! Arguments pass through `Command::args`, never through a shell.
 
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 
 use super::repo::Repo;
@@ -76,6 +79,13 @@ fn finish(mut command: Command, argv: Vec<OsString>, worktree: &Path) -> Result<
         what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
         source,
     })?;
+    exited_zero(output, argv)
+}
+
+/// The stdout of a child that exited 0; any other exit, a signal-killed one
+/// included, is `Error::GitFailed` carrying `argv`, the exit code (`None`
+/// for a signal) and stderr.
+fn exited_zero(output: Output, argv: Vec<OsString>) -> Result<Vec<u8>, Error> {
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -293,7 +303,17 @@ impl Git {
         finish(command, argv, worktree)
     }
 
-    /// Runs `git <args>` in `worktree` with `input` on its stdin.
+    /// Runs `git <args>` in `worktree` as `run` does, with `input` on its
+    /// stdin: the only child whose stdin is not `/dev/null` (D-33). The
+    /// buffer is written whole and the pipe closed, so git reads EOF after it
+    /// and never waits for more. The write runs on its own thread while the
+    /// child's output is read, so no buffer size can deadlock against a
+    /// child that writes before it has read everything.
+    ///
+    /// A child that cannot be started or waited on is `Error::Io` naming the
+    /// argv; one that does not exit 0 is `Error::GitFailed` exactly as `run`
+    /// reports it; a failed write with an exit 0 is `Error::Io` naming the
+    /// argv.
     pub fn run_with_input<I, S>(
         &self,
         worktree: &Path,
@@ -304,8 +324,49 @@ impl Git {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let _ = input;
-        self.run(worktree, args)
+        let argv: Vec<OsString> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        self.ensure_version(worktree)?;
+        let mut command = self.command(worktree, &argv)?;
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let io_failed = |what: &str, source: std::io::Error| Error::Io {
+            what: format!(
+                "{what} git {} in {}",
+                render_argv(&argv),
+                worktree.display()
+            ),
+            source,
+        };
+        let mut child = command
+            .spawn()
+            .map_err(|source| io_failed("spawn", source))?;
+        let Some(mut pipe) = child.stdin.take() else {
+            return Err(io_failed(
+                "open the stdin of",
+                std::io::Error::other("the child has no stdin pipe"),
+            ));
+        };
+        let (output, written) = std::thread::scope(|scope| {
+            // The pipe moves into the writer and drops when it returns, which
+            // closes the child's stdin.
+            let writer = scope.spawn(move || pipe.write_all(input));
+            (child.wait_with_output(), writer.join())
+        });
+        let output = output.map_err(|source| io_failed("wait for", source))?;
+        let stdout = exited_zero(output, argv.clone())?;
+        match written {
+            Ok(Ok(())) => Ok(stdout),
+            Ok(Err(source)) => Err(io_failed("write stdin to", source)),
+            Err(_) => Err(io_failed(
+                "write stdin to",
+                std::io::Error::other("the stdin writer panicked"),
+            )),
+        }
     }
 }
 
