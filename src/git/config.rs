@@ -3,6 +3,8 @@
 //! the repository, so a value set later is seen only by a new `Repo`.
 
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use gix::bstr::ByteSlice;
@@ -41,9 +43,46 @@ impl ConfigRead {
 }
 
 impl Repo {
-    /// This repository's `wsx.*` values and the remotes it defines.
-    pub fn read_config(&self, _git: &Git) -> Result<ConfigRead, Error> {
-        Ok(ConfigRead::default())
+    /// This repository's `wsx.*` values and the remotes it defines, from one
+    /// `git config -z --show-scope --show-origin --get-regexp '^(wsx|remote)\.'`
+    /// child run through `git` in the worktree root (the git dir of a bare
+    /// repository).
+    ///
+    /// A `wsx.<var>` value is kept only from a record of scope `local` whose
+    /// origin is the common dir's `config`, the repository's own file: a
+    /// global, system, `include.path`, `config.worktree` or command-line
+    /// value never configures the repository or names its workspace branch
+    /// (D-01). Every kept value stays, raw and in file order, so a repeated
+    /// key is still seen as repeated (D-18). A remote is defined by any
+    /// `remote.<name>.<var>` record of scope `local` or `worktree`, from any
+    /// origin, includes too: the set `git remote add` refuses with exit 3
+    /// (D-36, A2).
+    ///
+    /// git's exit 1 with empty stderr means no key matched and is an empty
+    /// read; any other failure is `Error::GitFailed`, and output that does
+    /// not parse is `Error::GitBadOutput`, never fewer keys (CONF-07). The
+    /// read is as fresh as the call: unlike gix's config snapshot, frozen when
+    /// `Repo::discover` opened the repository, a value set later is seen.
+    pub fn read_config(&self, git: &Git) -> Result<ConfigRead, Error> {
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = match git.run(cwd, READ_ARGS) {
+            Ok(stdout) => stdout,
+            Err(Error::GitFailed {
+                status: Some(1),
+                stderr,
+                ..
+            }) if stderr.is_empty() => return Ok(ConfigRead::default()),
+            Err(err) => return Err(err),
+        };
+        let own = self.common_dir().join("config");
+        let own_config = std::fs::canonicalize(&own).map_err(|source| Error::Io {
+            what: format!("canonicalize {}", own.display()),
+            source,
+        })?;
+        parse_config_z(&stdout, cwd, &own_config).map_err(|problem| Error::GitBadOutput {
+            argv: READ_ARGS.iter().map(OsString::from).collect(),
+            problem,
+        })
     }
     /// Every value of `key` in this repository's own config file (gix's
     /// `Source::Local` at include level 0, the common dir's `config`), in
@@ -113,9 +152,77 @@ impl Repo {
     }
 }
 
-/// The records of `git config -z --show-scope --show-origin` output.
-fn parse_config_z(_stdout: &[u8], _cwd: &Path, _own_config: &Path) -> Result<ConfigRead, String> {
-    Ok(ConfigRead::default())
+/// The argv of the one config read: every `wsx.*` and `remote.*` record
+/// from every source, NUL-separated, each with its scope and origin.
+const READ_ARGS: [&str; 6] = [
+    "config",
+    "-z",
+    "--show-scope",
+    "--show-origin",
+    "--get-regexp",
+    r"^(wsx|remote)\.",
+];
+
+/// The `ConfigRead` of `git config -z --show-scope --show-origin` output
+/// read in `cwd`, `own_config` being the repository's own file, canonical.
+/// Each record is `scope NUL origin NUL key [LF value] NUL`; a key with no LF
+/// is one empty value. Records `read_config` does not keep are skipped. A
+/// last record that is not a full triple, or output not ending in NUL, is
+/// `Err` naming the problem.
+fn parse_config_z(stdout: &[u8], cwd: &Path, own_config: &Path) -> Result<ConfigRead, String> {
+    let Some(body) = stdout.strip_suffix(b"\0") else {
+        return Err("the output does not end in NUL, so its last record is incomplete".to_owned());
+    };
+    let fields: Vec<&[u8]> = body.split(|byte| *byte == 0).collect();
+    let (records, partial) = fields.as_chunks::<3>();
+    if !partial.is_empty() {
+        let last = if partial.len() == 1 {
+            "scope"
+        } else {
+            "origin"
+        };
+        return Err(format!(
+            "record {} ends after its {last}",
+            records.len() + 1
+        ));
+    }
+    let mut read = ConfigRead::default();
+    for &[scope, origin, entry] in records {
+        let (key, value) = match entry.iter().position(|byte| *byte == b'\n') {
+            Some(at) => (&entry[..at], &entry[at + 1..]),
+            None => (entry, &b""[..]),
+        };
+        if let Some(var) = key.strip_prefix(b"wsx.") {
+            if !var.contains(&b'.') && scope == b"local" && is_own_file(origin, cwd, own_config) {
+                read.values.push((key.to_vec(), value.to_vec()));
+            }
+        } else if let Some(name) = remote_name(key)
+            && (scope == b"local" || scope == b"worktree")
+        {
+            read.remotes.insert(name.to_vec());
+        }
+    }
+    Ok(read)
+}
+
+/// The remote a `remote.<name>.<var>` key names: everything between
+/// `remote.` and the last dot, so a name may hold dots. A two-part key such
+/// as `remote.pushdefault` names none.
+fn remote_name(key: &[u8]) -> Option<&[u8]> {
+    let rest = key.strip_prefix(b"remote.")?;
+    let dot = rest.iter().rposition(|byte| *byte == b'.')?;
+    Some(&rest[..dot]).filter(|name| !name.is_empty())
+}
+
+/// Whether `origin` is `file:<path>` and `<path>`, resolved against `cwd`
+/// when relative, canonicalises to `own_config`. A path that cannot be
+/// canonicalised is not the own file.
+fn is_own_file(origin: &[u8], cwd: &Path, own_config: &Path) -> bool {
+    origin.strip_prefix(b"file:").is_some_and(|path| {
+        cwd.join(OsStr::from_bytes(path))
+            .canonicalize()
+            .is_ok_and(|found| found == own_config)
+    })
 }
 
 #[cfg(test)]
@@ -860,7 +967,7 @@ mod tests {
     }
 
     /// The `--get-regexp` the read runs, for the git-side assertions.
-    const READ_ARGS: [&str; 3] = ["config", "--get-regexp", "^(wsx|remote)\\."];
+    const REGEXP_ARGS: [&str; 3] = ["config", "--get-regexp", "^(wsx|remote)\\."];
 
     /// git's exit 1 for "no key matched" is an empty read, not a failure; a
     /// remote set afterwards on the same `Repo` is seen by the next read.
@@ -871,7 +978,7 @@ mod tests {
         }
         let scratch = Scratch::new("config-read-empty").expect("scratch");
         let repo = one_commit_repo(&scratch, "repo");
-        assert_git_exits(&scratch, &repo, &READ_ARGS, 1);
+        assert_git_exits(&scratch, &repo, &REGEXP_ARGS, 1);
         let found = Repo::discover(&repo)
             .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
         let helper = Git::for_repo(scratch.env.clone(), &found);
@@ -893,7 +1000,7 @@ mod tests {
             ],
         )
         .unwrap_or_else(|err| panic!("{err}"));
-        let listed = git(&scratch, &repo, &READ_ARGS);
+        let listed = git(&scratch, &repo, &REGEXP_ARGS);
         assert_eq!(
             listed.status.code(),
             Some(0),

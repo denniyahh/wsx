@@ -163,11 +163,7 @@ impl Git {
     /// `GIT_INDEX_FILE`, which children aimed at that worktree keep and
     /// children aimed at any other worktree lose.
     pub fn from_process(repo: &Repo) -> Git {
-        let git = Git::new(std::env::vars_os().collect());
-        match repo.worktree() {
-            Some(worktree) => git.with_own_worktree(worktree.to_path_buf()),
-            None => git,
-        }
+        Git::for_repo(std::env::vars_os().collect(), repo)
     }
 
     /// This helper with `worktree` as wsx's own worktree, whose children keep

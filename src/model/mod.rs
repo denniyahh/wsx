@@ -19,7 +19,7 @@ pub mod manifest;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::git::{self, ObjectId, RefTarget, Repo, RootEntry};
+use crate::git::{self, ConfigRead, Git, ObjectId, RefTarget, Repo, RootEntry};
 
 use manifest::{EntryKind, Manifest, ParseError, Problem, covers};
 
@@ -355,8 +355,15 @@ impl std::error::Error for Error {}
 /// (accepted by the owner on 2026-11-03). Later reads in a command use the
 /// ids recorded here. Only the one-commit half has a test; nothing pins the
 /// rest.
-pub fn resolve(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
-    match single(repo, SOURCE_BRANCH)? {
+///
+/// Every `wsx.*` key and the remote list come from one `git config` child
+/// run through `git` (`Repo::read_config`), read once here and handed down;
+/// nothing in the model reads config any other way. Config that git itself
+/// cannot read fails `resolve` with `Error::Git` even in a repository that
+/// is not configured, since every git command fails there too.
+pub fn resolve(repo: &Repo, git: &Git, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
+    let config = repo.read_config(git)?;
+    match single(&config, SOURCE_BRANCH)? {
         Some(branch) => {
             // 03.1 D-04: after this check the branch is read only as the one
             // full ref `refs/heads/<branch>`, never through a DWIM ladder.
@@ -366,14 +373,16 @@ pub fn resolve(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, E
                     value: branch,
                 });
             }
-            Ok(RepoModel::Configured(Box::new(build(repo, branch)?)))
+            Ok(RepoModel::Configured(Box::new(build(
+                repo, &config, branch,
+            )?)))
         }
         None => {
             let inferred = candidates(repo, recorded).and_then(|mut names| {
                 if names.len() != 1 {
                     return Err(Error::WorkspaceCandidates { candidates: names });
                 }
-                build(repo, names.remove(0))
+                build(repo, &config, names.remove(0))
             });
             Ok(RepoModel::NotConfigured {
                 inferred: inferred.map(Box::new),
@@ -412,8 +421,8 @@ fn candidates(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<Vec<Vec<u8>>,
 /// key line with no `=`) is `Error::KeyEmpty` (D-18). Only `key` is read:
 /// another `wsx.*` key, empty or repeated, is not this read's concern
 /// (GUARD-05 turns a guard off with an empty `wsx.protectedBranches`).
-fn single(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
-    let mut values = repo.local_config_values(key);
+fn single(config: &ConfigRead, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
+    let mut values = config.values(key);
     match values.len() {
         0 => Ok(None),
         1 => {
@@ -437,8 +446,9 @@ fn branch_ref(branch: &[u8]) -> Vec<u8> {
 
 /// The remote a base or push remote resolves to: `origin` when this
 /// repository defines it, else none (D-02, D-04).
-fn default_remote(repo: &Repo) -> Option<Vec<u8>> {
-    repo.remote_configured(DEFAULT_REMOTE)
+fn default_remote(config: &ConfigRead) -> Option<Vec<u8>> {
+    config
+        .defines_remote(DEFAULT_REMOTE)
         .then(|| DEFAULT_REMOTE.to_vec())
 }
 
@@ -449,11 +459,11 @@ fn default_remote(repo: &Repo) -> Option<Vec<u8>> {
 /// `remote.pushDefault`, which says where any `git push` goes, and not an
 /// `upstream` remote (D-05), since pushing personal history to a remote the
 /// owner did not name cannot be undone.
-fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
-    match single(repo, key)? {
-        Some(name) if repo.remote_configured(&name) => Ok(Some(name)),
+fn remote(config: &ConfigRead, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
+    match single(config, key)? {
+        Some(name) if config.defines_remote(&name) => Ok(Some(name)),
         Some(remote) => Err(Error::NoSuchRemote { key, remote }),
-        None => Ok(default_remote(repo)),
+        None => Ok(default_remote(config)),
     }
 }
 
@@ -470,16 +480,16 @@ fn remote(repo: &Repo, key: &'static str) -> Result<Option<Vec<u8>>, Error> {
 /// it reads any object, and which `root_entry` runs again: it does not know
 /// whether a replace ref touches the manifest, so its message blames the
 /// replace refs and does not say `.wsx.conf` cannot be read (D-22).
-fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
+fn build(repo: &Repo, config: &ConfigRead, branch: Vec<u8>) -> Result<Model, Error> {
     let full = branch_ref(&branch);
     if repo.find_ref(&full)?.is_none() {
         return Err(Error::WorkspaceBranchMissing { branch });
     }
     repo.refuse_replace_refs()?;
-    let base_remote = remote(repo, BASE_REMOTE)?;
-    let push_remote = remote(repo, PUSH_REMOTE)?;
-    let integration = integration(repo, base_remote.as_deref())?;
-    let worktree_dir = worktree_dir(repo)?;
+    let base_remote = remote(config, BASE_REMOTE)?;
+    let push_remote = remote(config, PUSH_REMOTE)?;
+    let integration = integration(repo, config, base_remote.as_deref())?;
+    let worktree_dir = worktree_dir(config)?;
     let unreadable = |source: git::Error| Error::ManifestUnreadable {
         branch: branch.clone(),
         source,
@@ -517,8 +527,8 @@ fn build(repo: &Repo, branch: Vec<u8>) -> Result<Model, Error> {
 /// D-14), so one trailing `/` is stripped and an absolute path, an empty
 /// component or a `.` or `..` component is `Error::WorktreeDirInvalid`
 /// (D-20); `DEFAULT_WORKTREE_DIR` when the key is unset.
-fn worktree_dir(repo: &Repo) -> Result<Vec<u8>, Error> {
-    match single(repo, WORKTREE_DIR)? {
+fn worktree_dir(config: &ConfigRead) -> Result<Vec<u8>, Error> {
+    match single(config, WORKTREE_DIR)? {
         Some(value) => manifest::normalize_path(&value)
             .map_err(|problem| Error::WorktreeDirInvalid { value, problem }),
         None => Ok(DEFAULT_WORKTREE_DIR.to_vec()),
@@ -555,7 +565,11 @@ fn branch_name(key: &'static str, value: Vec<u8>) -> Result<Vec<u8>, Error> {
 /// (D-06). A rung's tip is the id that same read returned, peeled, so the
 /// ref checked is the ref whose commit is used; a ref that exists and does
 /// not peel to a commit is an error, with no fall-through to the next rung.
-fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
+fn integration(
+    repo: &Repo,
+    config: &ConfigRead,
+    base: Option<&[u8]>,
+) -> Result<Integration, Error> {
     let prefix = match base {
         Some(remote) => [b"refs/remotes/".as_slice(), remote, b"/".as_slice()].concat(),
         None => b"refs/heads/".to_vec(),
@@ -575,7 +589,7 @@ fn integration(repo: &Repo, base: Option<&[u8]>) -> Result<Integration, Error> {
             })),
         }
     };
-    if let Some(value) = single(repo, BASE_REF)? {
+    if let Some(value) = single(config, BASE_REF)? {
         let value = branch_name(BASE_REF, value)?;
         let tried = full(&value);
         return match found(&value)? {
@@ -640,10 +654,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
 
-    use crate::git::Repo;
     use crate::git::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
 
-    use crate::git;
+    use crate::git::{self, Git, Repo};
 
     use super::manifest::{EntryKind, ParseError, Problem};
     use super::{
@@ -720,11 +733,23 @@ mod tests {
             .to_owned()
     }
 
+    /// wsx's `Git` for `repo`, discovered in this process: the hermetic
+    /// environment of the fixture's scratch, so wsx's children run the same
+    /// git with the same global config as the fixture's own git commands.
+    fn git_for(repo: &Repo) -> Git {
+        Git::for_repo(
+            ok(testing::scratch_env_of(
+                repo.worktree().unwrap_or(repo.git_dir()),
+            )),
+            repo,
+        )
+    }
+
     /// The configured model `resolve` gives for `work`; fails the test on
     /// any other answer.
     fn configured(work: &Path) -> Model {
         let repo = Repo::discover(work).expect("discover the fixture");
-        match resolve(&repo, &BTreeSet::new()) {
+        match resolve(&repo, &git_for(&repo), &BTreeSet::new()) {
             Ok(RepoModel::Configured(model)) => *model,
             other => panic!("resolve: expected RepoModel::Configured, got {other:?}"),
         }
@@ -837,7 +862,7 @@ mod tests {
             ["branch", "-q", "-D", "workspace/dev"],
         ));
         let repo = Repo::discover(&work).expect("discover the fixture");
-        match resolve(&repo, &BTreeSet::new()) {
+        match resolve(&repo, &git_for(&repo), &BTreeSet::new()) {
             Ok(RepoModel::NotConfigured { inferred }) => assert!(
                 inferred.is_err(),
                 "inferred a model with no candidate branch: {inferred:?}"
@@ -1182,7 +1207,7 @@ mod tests {
     /// What `resolve` answers for `work`, discovered in this process.
     fn resolved(work: &Path) -> Result<RepoModel, Error> {
         let repo = Repo::discover(work).expect("discover the fixture");
-        resolve(&repo, &BTreeSet::new())
+        resolve(&repo, &git_for(&repo), &BTreeSet::new())
     }
 
     /// `git config <args>` in `work`: its exit code and stdout.
@@ -2781,7 +2806,7 @@ mod tests {
     /// `inferred` from `resolve(repo, recorded)`; fails the test unless the
     /// repository resolves as not configured.
     fn not_configured_in(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<Box<Model>, Error> {
-        match resolve(repo, recorded) {
+        match resolve(repo, &git_for(repo), recorded) {
             Ok(RepoModel::NotConfigured { inferred }) => inferred,
             other => panic!("resolve: expected RepoModel::NotConfigured, got {other:?}"),
         }
@@ -6025,7 +6050,7 @@ mod tests {
         let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
         let answer = Repo::discover(Path::new(&start))
             .map_err(Error::Git)
-            .and_then(|repo| resolve(&repo, &BTreeSet::new()));
+            .and_then(|repo| resolve(&repo, &Git::from_process(&repo), &BTreeSet::new()));
         testing::child_print("env_GIT_DIR", testing::env_or_unset("GIT_DIR"));
         testing::child_print(
             "env_GIT_INDEX_FILE",
