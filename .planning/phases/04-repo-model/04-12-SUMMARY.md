@@ -18,9 +18,9 @@ affects: [phase-05-check, phase-06-guard, phase-09-cut]
 actuals:
   tokens: 18331
   tasks: 3
-  commits: 4
+  commits: 7
 plan_head_before: 463ab95961cc867979515bbf7453b436ebaff891
-plan_head_after: 1ab5bb14177be1366d45fef2d01dfcaa17f3086a
+plan_head_after: e6881d1dceed3ed2db275b0a3100909afaa9aeae
 
 tech-stack:
   added: []
@@ -36,10 +36,11 @@ key-files:
     - src/git/repo.rs
     - src/model/mod.rs
     - .planning/STATE.md
+    - Cargo.lock
 
 key-decisions:
   - "A GIT_REPLACE_REF_BASE of exactly refs/replace/ passes, pinned by replace_base_variable_set_to_the_default_resolves (the one survivor of the first mutation pass)"
-  - "The RUSTSEC-2026-0486 advisory on rustix 1.1.5 is left for the operator: a lockfile update is a package-manager change the executor does not make on its own"
+  - "RUSTSEC-2026-0486 (rustix 1.1.5) fixed by bumping rustix to 1.1.6 alone in Cargo.lock, on the operator's approval, with every gate re-run on that tip"
 
 patterns-established:
   - "assert_refused_as_loose / assert_refused_as_packed / assert_refused_as_base: one refusal assertion per store, each also checking the message blames the replace refs and never says cannot be read"
@@ -207,8 +208,22 @@ No REFACTOR commit: nothing to change after GREEN.
 - `scripts/check.sh all` on `1ab5bb1`: exit 0, `651 tests run: 651 passed, 61 skipped`, `==> check.sh: all OK`.
 - `scripts/check-in-container.sh all` on `1ab5bb1`: exit 0, `651 tests run: 651 passed, 61 skipped`,
   `==> check.sh: all OK`; the image's git is 2.56.0 (host 2.56.1).
-- `scripts/check.sh deps`: **exit 1**, `advisories FAILED, bans ok, licenses ok, sources ok`. See
-  Deferred Issues.
+- `scripts/check.sh deps`: exit 1 on `1ab5bb1` (`advisories FAILED`, RUSTSEC-2026-0486, rustix 1.1.5).
+
+### Re-run after the rustix bump (`e6881d1`)
+
+On the operator's approval, `cargo update -p rustix` moved only rustix 1.1.5 -> 1.1.6 in `Cargo.lock`
+(2 lines: version and checksum), committed alone as `e6881d1`. On that tip:
+
+- `scripts/check.sh deps`: exit 0, `==> check.sh: deps OK`.
+- Full mutation pass, no `--iterate`, `target/gsd/04-12-pass-head.txt` = `e6881d1`: caught 91, missed 0,
+  unviable 16, timeout 0 (`wc -l`), sum 107 = `--list` total 107. Survivor block and identity block
+  (pass-head against HEAD included) exit 0. Doctored copies: exit 1 `tested mutants differ from the
+  listed ones` twice, exit 1 `unexplained survivors above`; copies removed.
+- `scripts/check.sh all`: exit 0, `651 tests run: 651 passed, 61 skipped`, `==> check.sh: all OK`.
+- `scripts/check-in-container.sh all`: exit 0, `651 tests run: 651 passed, 61 skipped`, `==> check.sh: all OK`.
+- `scripts/check.sh coverage`: exit 0; lines `git/mod.rs` 99.28%, `git/refs.rs` 93.44%,
+  `model/mod.rs` 96.72%, TOTAL 92.97% (unchanged).
 
 Scope of these checks: each shape is pinned on one fixture, on host git 2.56.1 and image git 2.56.0;
 the 2.54 floor is not exercised; a device file or socket under the base is refused by the any-entry
@@ -236,12 +251,9 @@ object, so the fixture cost buys nothing.
 
 ## Deferred Issues
 
-- **`scripts/check.sh deps` fails on this tip** with RUSTSEC-2026-0486 (rustix 1.1.5 unsound xattr
-  functions, via gix-index 0.58.0 and tempfile 3.27.0). Not caused by this plan: `Cargo.lock` is
-  unchanged since before the phase; the advisory is new. Fix is rustix `>=1.1.6`
-  (`cargo update -p rustix`), not applied: a lockfile update is a package-manager change the executor
-  does not make without the operator. Bumping `Cargo.lock` after this pass makes Task 3's pass-head
-  check fail until the mutation pass is re-run. Logged in `deferred-items.md` and STATE.md's blockers.
+None open. RUSTSEC-2026-0486, found in Task 3, is fixed by `e6881d1`; its STATE.md blocker is
+resolved through `state.resolve-blocker`, its WINDOWS.md entry is marked fixed, and
+`deferred-items.md` records the resolution.
 
 ## Kept on purpose (gitignored, under `target/gsd/`)
 
@@ -253,7 +265,7 @@ object, so the fixture cost buys nothing.
 
 ## Next
 
-Phase 4's plans all have summaries; ready for phase verification, the review and security gates
-(CR-01, WR-01, T-04-30), after the deps advisory is settled.
+Phase 4's plans all have summaries; ready for phase verification and the review and security gates
+(CR-01, WR-01, T-04-30).
 
 ## Self-Check: PASSED

@@ -11,3 +11,6 @@
 - Not applied by the executor: a lockfile update is a package-manager change the executor does not make
   on its own. It needs the operator's word. Bumping `Cargo.lock` after 04-12's mutation pass makes that
   pass's pass-head check (Task 3's third block) fail until the pass is re-run on the new tip.
+- **Resolved:** the operator approved the bump. `cargo update -p rustix` moved only rustix 1.1.5 -> 1.1.6
+  (`e6881d1`); `scripts/check.sh deps` exits 0 there, and the mutation pass and the other gates were
+  re-run on that tip (see 04-12-SUMMARY.md).
