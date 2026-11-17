@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_base_set_message_names_the_setting_and_the_fix() {
+    fn replace_base_variable_message_names_only_the_variable() {
         let set = Error::ReplaceBaseSet {
             name: "GIT_REPLACE_REF_BASE",
             value: b"refs/other/".to_vec(),
@@ -597,8 +597,23 @@ mod tests {
             "refusing GIT_REPLACE_REF_BASE=refs/other/: wsx looks for replace refs only under \
              git's default base refs/replace/, so it refuses another base rather than compare how \
              git and wsx's reader each read replace refs under it.\n\
-             Run wsx with GIT_REPLACE_REF_BASE unset, and remove gitoxide.objects.replaceRefBase \
-             from the config file that sets it; this shows where it is set:\n\
+             Run wsx with GIT_REPLACE_REF_BASE unset."
+        );
+    }
+
+    #[test]
+    fn replace_base_set_message_names_the_setting_and_the_fix() {
+        let set = Error::ReplaceBaseSet {
+            name: "gitoxide.objects.replaceRefBase",
+            value: b"refs/other/".to_vec(),
+        };
+        assert_eq!(
+            set.to_string(),
+            "refusing gitoxide.objects.replaceRefBase=refs/other/: wsx looks for replace refs \
+             only under git's default base refs/replace/, so it refuses another base rather than \
+             compare how git and wsx's reader each read replace refs under it.\n\
+             Remove gitoxide.objects.replaceRefBase from the config file that sets it; this shows \
+             where it is set:\n\
              \tgit config --show-origin --get-all gitoxide.objects.replaceRefBase"
         );
     }
