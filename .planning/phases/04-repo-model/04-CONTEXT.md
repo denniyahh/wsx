@@ -203,7 +203,7 @@ Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`
   outer `ManifestUnreadable` and fail-closed result; its inner cause becomes what `cat-file` reports (object
   missing) instead of gix's `TreeNotSorted`.
 - **Tier A diff review (D-28):** after the last plan's gates pass, the orchestrator runs the external-review diff
-  lanes (at least two, in parallel) on the final tip, up to three rounds until no critical finding remains, before
+  lanes (at least two, in parallel) on the final tip, up to three rounds until no critical finding remains (then the operator decides), before
   the phase is verified.
 
 </decisions>
