@@ -1,13 +1,12 @@
 //! Reads of the repository's own config: wsx's keys and the remotes it
-//! defines. Each read takes the config gix froze when `Repo::discover` opened
-//! the repository, so a value set later is seen only by a new `Repo`.
+//! defines. Both come from one `git config` child per call, filtered to this
+//! repository's own file (keys) or its local and worktree scopes (remotes),
+//! so what wsx reads is what git reads, as fresh as the call.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-
-use gix::bstr::ByteSlice;
 
 use super::Error;
 use super::repo::Repo;
@@ -82,72 +81,6 @@ impl Repo {
         parse_config_z(&stdout, cwd, &own_config).map_err(|problem| Error::GitBadOutput {
             argv: READ_ARGS.iter().map(OsString::from).collect(),
             problem,
-        })
-    }
-    /// Every value of `key` in this repository's own config file (gix's
-    /// `Source::Local` at include level 0, the common dir's `config`), in
-    /// file order, as raw bytes. Nothing else configures the repository
-    /// (D-01): a global, system, `config.worktree` or `GIT_CONFIG_COUNT`
-    /// value is never returned, and neither is one from an `include.path`
-    /// file, which gix reads as `Source::Local` at level 1 and which a
-    /// tracked include would read live from whatever branch is checked out.
-    ///
-    /// Measured with git 2.56.0 and gix-config 0.62.2, the result equals
-    /// `git config --local --get-all`: no values where git exits 1 (an
-    /// included, global or `config.worktree` value, which `--includes` or
-    /// plain `git config --get` does return, and a `[wsx "sub"]` one),
-    /// every value of a repeated key in order, across sections too, one
-    /// empty value for `key =` and for a key line with no `=`, quotes and
-    /// comments normalised as git does, and non-UTF-8 bytes unchanged. A
-    /// linked worktree reads the common dir's file. `string_filter`, the
-    /// call `ref_storage` makes, is not used: it returns only the last value
-    /// of a repeated key and reads a key with no `=` as absent, which hides
-    /// both cases D-18 refuses.
-    pub fn local_config_values(&self, key: &str) -> Vec<Vec<u8>> {
-        self.repo
-            .config_snapshot()
-            .plumbing()
-            .strings_filter(key, |meta| {
-                meta.source == gix::config::Source::Local && meta.level == 0
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(Vec::from)
-            .collect()
-    }
-
-    /// Whether this repository defines the remote `name`: a `[remote "name"]`
-    /// section with at least one key, read from the repository's own config
-    /// (gix's `Source::Local`) or its `config.worktree` (`Source::Worktree`).
-    /// This is the test `git remote add` makes: it refuses a name, exit 3,
-    /// only when the repository already defines it (D-03, D-04, A2).
-    ///
-    /// Unlike `local_config_values`, the include level is not filtered: a
-    /// section from an `include.path` file counts, because `git remote add`
-    /// refuses its name too.
-    ///
-    /// Measured with git 2.56.0 and gix 0.90.0 against `git remote add`:
-    /// a section only in global config (`git remote` lists it, `git remote
-    /// add` succeeds) and a local section with no keys (gix's
-    /// `remote_names()` lists it, `git remote add` succeeds) are not remotes;
-    /// a local, included or `config.worktree` section with a key is
-    /// (`git remote add` exits 3), with or without a `url`. A remote's url is
-    /// never checked, so one whose url is dead still counts.
-    pub fn remote_configured(&self, name: &[u8]) -> bool {
-        let snapshot = self.repo.config_snapshot();
-        let Some(mut sections) = snapshot.plumbing().sections_by_name("remote") else {
-            return false;
-        };
-        let in_this_repo = |meta: &gix::config::file::Metadata| {
-            matches!(
-                meta.source,
-                gix::config::Source::Local | gix::config::Source::Worktree
-            )
-        };
-        sections.any(|section| {
-            in_this_repo(section.meta())
-                && section.value_names().next().is_some()
-                && section.header().subsection_name() == Some(name.as_bstr())
         })
     }
 }
@@ -247,7 +180,7 @@ mod tests {
     const START_VAR: &str = "WSX_TEST_START";
 
     /// The variable a parent hands `remote_child`: the remote name it asks
-    /// `remote_configured` about.
+    /// `defines_remote` about.
     const REMOTE_VAR: &str = "WSX_TEST_REMOTE";
 
     /// The full libtest path of a child half in this module.
@@ -312,29 +245,37 @@ mod tests {
         );
     }
 
-    /// The values of `key` that `Repo::discover(repo)` reads through
-    /// `local_config_values`.
-    fn local_values(repo: &Path, key: &str) -> Vec<Vec<u8>> {
-        Repo::discover(repo)
-            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()))
-            .local_config_values(key)
-    }
-
-    /// The values of `KEY` gix loaded from `source`, at any include level:
-    /// the control that gix did read the value `local_config_values` leaves
-    /// out.
-    fn values_from(repo: &Path, source: gix::config::Source) -> Vec<Vec<u8>> {
+    /// `Repo::read_config` on a fresh `Repo::discover(repo)`, with a helper
+    /// whose children see the scratch environment; fails the test on `Err`.
+    fn read_of(scratch: &Scratch, repo: &Path) -> ConfigRead {
         let found =
             Repo::discover(repo).unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
         found
-            .repo
-            .config_snapshot()
-            .plumbing()
-            .strings_filter(KEY, |meta| meta.source == source)
-            .unwrap_or_default()
-            .into_iter()
-            .map(Vec::from)
-            .collect()
+            .read_config(&Git::for_repo(scratch.env.clone(), &found))
+            .unwrap_or_else(|err| panic!("read_config {}: {err}", repo.display()))
+    }
+
+    /// The values of `key` that `read_of(scratch, repo)` holds.
+    fn local_values(scratch: &Scratch, repo: &Path, key: &str) -> Vec<Vec<u8>> {
+        read_of(scratch, repo).values(key)
+    }
+
+    /// The scope and origin lines `git config --show-scope --show-origin
+    /// --get-all KEY` prints with includes followed: the control that git
+    /// itself sees the value the read leaves out.
+    fn git_sees(scratch: &Scratch, repo: &Path) -> String {
+        let all = git(
+            scratch,
+            repo,
+            &["config", "--show-scope", "--show-origin", "--get-all", KEY],
+        );
+        assert_eq!(
+            all.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git config --show-scope --get-all", &all)
+        );
+        String::from_utf8_lossy(&all.stdout).into_owned()
     }
 
     /// The scratch environment plus `START_VAR=<repo>`.
@@ -344,13 +285,12 @@ mod tests {
         env
     }
 
-    /// Runs `count_child` with `env` and returns its `count` and `all`
-    /// markers, failing with the child's output when it printed `error`.
-    fn child_counts(scratch: &Scratch, env: &Env) -> (String, String) {
+    /// Runs `count_child` with `env` and returns its `count` marker,
+    /// failing with the child's output when it printed `error`.
+    fn child_count(scratch: &Scratch, env: &Env) -> String {
         let child = testing::reexec(&child_path("count_child"), env, &scratch.root, b"")
             .unwrap_or_else(|err| panic!("{err}"));
-        let fact = |key: &str| testing::marker(&child, key).unwrap_or_else(|err| panic!("{err}"));
-        (fact("count"), fact("all"))
+        testing::marker(&child, "count").unwrap_or_else(|err| panic!("{err}"))
     }
 
     /// A value in an `include.path` file is not this repository's own config:
@@ -381,16 +321,16 @@ mod tests {
         );
         assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get", KEY]);
         assert_eq!(
-            values_from(&repo, gix::config::Source::Local),
-            [b"workspace/dev".to_vec()],
-            "gix did not load the included file, so this test shows nothing"
+            git_sees(&scratch, &repo),
+            "local\tfile:.git/extra.conf\tworkspace/dev\n",
+            "git does not list the included value, so this test shows nothing"
         );
-        assert_eq!(local_values(&repo, KEY), Vec::<Vec<u8>>::new());
+        assert_eq!(local_values(&scratch, &repo, KEY), Vec::<Vec<u8>>::new());
     }
 
     /// A value in global config does not configure the repository: plain
-    /// `git config --get` returns it, `--local --get` does not, and gix in a
-    /// child with the scratch environment loads it but does not return it.
+    /// `git config --get` returns it, `--local --get` does not, and a child
+    /// with the scratch environment does not read it.
     #[test]
     fn global_key_is_not_read() {
         let scratch = Scratch::new("config-global").expect("scratch");
@@ -406,10 +346,7 @@ mod tests {
             [b"workspace/dev".to_vec()]
         );
         assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get", KEY]);
-        assert_eq!(
-            child_counts(&scratch, &child_env(&scratch, &repo)),
-            ("0".to_owned(), "1".to_owned())
-        );
+        assert_eq!(child_count(&scratch, &child_env(&scratch, &repo)), "0");
     }
 
     /// The control for the child: the same child returns a value set in the
@@ -420,10 +357,7 @@ mod tests {
         let repo = one_commit_repo(&scratch, "repo");
         git_ok(&scratch, &repo, ["config", KEY, "workspace/dev"])
             .unwrap_or_else(|err| panic!("{err}"));
-        assert_eq!(
-            child_counts(&scratch, &child_env(&scratch, &repo)),
-            ("1".to_owned(), "1".to_owned())
-        );
+        assert_eq!(child_count(&scratch, &child_env(&scratch, &repo)), "1");
     }
 
     /// A value in the worktree's `config.worktree` is not the repository's
@@ -451,16 +385,16 @@ mod tests {
         );
         assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get", KEY]);
         assert_eq!(
-            values_from(&repo, gix::config::Source::Worktree),
-            [b"workspace/dev".to_vec()],
-            "gix did not load config.worktree, so this test shows nothing"
+            git_sees(&scratch, &repo),
+            "worktree\tfile:.git/config.worktree\tworkspace/dev\n",
+            "git does not list the config.worktree value, so this test shows nothing"
         );
-        assert_eq!(local_values(&repo, KEY), Vec::<Vec<u8>>::new());
+        assert_eq!(local_values(&scratch, &repo, KEY), Vec::<Vec<u8>>::new());
     }
 
     /// A value given through `GIT_CONFIG_COUNT` is not the repository's own
-    /// config: git returns it under that environment, and gix in a child with
-    /// the same environment loads it but does not return it.
+    /// config: git returns it under that environment, and a child with the
+    /// same environment does not read it.
     #[test]
     fn command_line_config_key_is_not_read() {
         let scratch = Scratch::new("config-env").expect("scratch");
@@ -476,10 +410,7 @@ mod tests {
             printed_values("git config --get under GIT_CONFIG_COUNT", &plain),
             [b"workspace/dev".to_vec()]
         );
-        assert_eq!(
-            child_counts(&scratch, &env),
-            ("0".to_owned(), "1".to_owned())
-        );
+        assert_eq!(child_count(&scratch, &env), "0");
     }
 
     /// A linked worktree reads the common dir's `config`, the file every
@@ -497,7 +428,7 @@ mod tests {
         let from_wt1 = git(&scratch, &trees.wt1, &["config", "--local", "--get", KEY]);
         let git_values = printed_values("git -C wt1 config --local --get", &from_wt1);
         assert_eq!(git_values, [b"workspace/dev".to_vec()]);
-        assert_eq!(local_values(&trees.wt1, KEY), git_values);
+        assert_eq!(local_values(&scratch, &trees.wt1, KEY), git_values);
     }
 
     /// Every value of a repeated key, in file order, as `--get-all` prints
@@ -520,7 +451,7 @@ mod tests {
             git_values,
             [b"workspace/a".to_vec(), b"workspace/b".to_vec()]
         );
-        assert_eq!(local_values(&repo, KEY), git_values);
+        assert_eq!(local_values(&scratch, &repo, KEY), git_values);
     }
 
     /// The same for a key set once in each of two `[wsx]` sections.
@@ -542,7 +473,7 @@ mod tests {
             git_values,
             [b"workspace/a".to_vec(), b"workspace/b".to_vec()]
         );
-        assert_eq!(local_values(&repo, KEY), git_values);
+        assert_eq!(local_values(&scratch, &repo, KEY), git_values);
     }
 
     /// A key line with no `=` is one empty value, as git prints it, not an
@@ -565,7 +496,7 @@ mod tests {
         );
         let git_values = printed_values("git config --local --get", &get);
         assert_eq!(git_values, [Vec::<u8>::new()]);
-        assert_eq!(local_values(&repo, KEY), git_values);
+        assert_eq!(local_values(&scratch, &repo, KEY), git_values);
     }
 
     /// An unset key reads as no values, as git's exit 1 says.
@@ -577,7 +508,7 @@ mod tests {
         let scratch = Scratch::new("config-absent").expect("scratch");
         let repo = one_commit_repo(&scratch, "repo");
         assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get", KEY]);
-        assert_eq!(local_values(&repo, KEY), Vec::<Vec<u8>>::new());
+        assert_eq!(local_values(&scratch, &repo, KEY), Vec::<Vec<u8>>::new());
     }
 
     /// Quotes and comments are read as git reads them: a quoted `#` is part
@@ -604,7 +535,7 @@ mod tests {
             let get = git(&scratch, &repo, &["config", "--local", "--get", KEY]);
             let git_values = printed_values("git config --local --get", &get);
             assert_eq!(git_values, [expected.to_vec()], "{name}");
-            assert_eq!(local_values(&repo, KEY), git_values, "{name}");
+            assert_eq!(local_values(&scratch, &repo, KEY), git_values, "{name}");
         }
     }
 
@@ -621,11 +552,12 @@ mod tests {
         let get = git(&scratch, &repo, &["config", "--local", "--get", KEY]);
         let git_values = printed_values("git config --local --get", &get);
         assert_eq!(git_values, [b"caf\xe9".to_vec()]);
-        assert_eq!(local_values(&repo, KEY), git_values);
+        assert_eq!(local_values(&scratch, &repo, KEY), git_values);
     }
 
     /// `[wsx "sub"] sourceBranch` is the key `wsx.sub.sourceBranch`, not
-    /// `wsx.sourceBranch`; the subsection key itself is read, as git reads it.
+    /// `wsx.sourceBranch`: git reads the subsection key under its own name,
+    /// and the read does not take it for `wsx.sourceBranch`.
     #[test]
     fn subsection_key_is_not_read() {
         if testing::rerun_scrubbed() {
@@ -636,15 +568,18 @@ mod tests {
         append_config(&repo, b"[wsx \"sub\"]\n\tsourceBranch = x\n");
 
         assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get", KEY]);
-        assert_eq!(local_values(&repo, KEY), Vec::<Vec<u8>>::new());
         let sub = git(
             &scratch,
             &repo,
             &["config", "--local", "--get", "wsx.sub.sourceBranch"],
         );
         let git_values = printed_values("git config --local --get wsx.sub.sourceBranch", &sub);
-        assert_eq!(git_values, [b"x".to_vec()]);
-        assert_eq!(local_values(&repo, "wsx.sub.sourceBranch"), git_values);
+        assert_eq!(
+            git_values,
+            [b"x".to_vec()],
+            "git does not read the subsection key, so this test shows nothing"
+        );
+        assert_eq!(local_values(&scratch, &repo, KEY), Vec::<Vec<u8>>::new());
     }
 
     /// Asserts `git <args>` in `repo` exits `code`.
@@ -675,23 +610,22 @@ mod tests {
             .collect()
     }
 
-    /// `remote_configured(name)` on `Repo::discover(repo)`.
-    fn configured(repo: &Path, name: &[u8]) -> bool {
-        Repo::discover(repo)
-            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()))
-            .remote_configured(name)
+    /// Whether `read_of(scratch, repo)` defines the remote `name`.
+    fn configured(scratch: &Scratch, repo: &Path, name: &[u8]) -> bool {
+        read_of(scratch, repo).defines_remote(name)
     }
 
-    /// Whether gix's own `remote_names()` lists `name`: the control that a
-    /// section gix counts as a remote is one `remote_configured` refuses.
-    fn gix_lists_remote(repo: &Path, name: &[u8]) -> bool {
-        let found =
-            Repo::discover(repo).unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
-        found
-            .repo
-            .remote_names()
-            .iter()
-            .any(|remote| remote.as_bytes() == name)
+    /// The scope lines `git config --show-scope --get-regexp` prints for
+    /// the keys of the remote `name`, with includes followed: the control
+    /// that git itself sees a section the read must count or drop.
+    fn git_remote_keys(scratch: &Scratch, repo: &Path, name: &str) -> String {
+        let pattern = format!("^remote\\.{name}\\.");
+        let keys = git(
+            scratch,
+            repo,
+            &["config", "--show-scope", "--get-regexp", &pattern],
+        );
+        String::from_utf8_lossy(&keys.stdout).into_owned()
     }
 
     /// Runs `remote_child` on `repo` for the remote `name` with the scratch
@@ -728,8 +662,9 @@ mod tests {
         assert_eq!(child_configured(&scratch, &repo, "x"), "true");
     }
 
-    /// A local `[remote "empty"]` with no keys is not a remote: gix lists it,
-    /// `git remote add` treats the name as free.
+    /// A local `[remote "empty"]` with no keys is not a remote: git prints no
+    /// key for it and `git remote add` treats the name as free. Once that
+    /// `git remote add` gives the section keys, the read defines it.
     #[test]
     fn keyless_local_remote_section_is_not_a_remote() {
         if testing::rerun_scrubbed() {
@@ -739,16 +674,17 @@ mod tests {
         let repo = one_commit_repo(&scratch, "repo");
         append_config(&repo, b"[remote \"empty\"]\n");
 
+        assert_eq!(git_remote_keys(&scratch, &repo, "empty"), "");
         assert!(
-            gix_lists_remote(&repo, b"empty"),
-            "gix does not list the keyless section, so this test shows nothing"
-        );
-        assert!(
-            !configured(&repo, b"empty"),
-            "remote_configured counts a local remote section with no keys"
+            !configured(&scratch, &repo, b"empty"),
+            "read_config counts a local remote section with no keys"
         );
         // Last: it writes the repository's config.
         assert_git_exits(&scratch, &repo, &["remote", "add", "empty", "/y"], 0);
+        assert!(
+            configured(&scratch, &repo, b"empty"),
+            "control: git remote add gave the section a key but read_config defines no empty"
+        );
     }
 
     /// A remote `git remote add` wrote is a remote, and a second
@@ -763,7 +699,7 @@ mod tests {
         git_ok(&scratch, &repo, ["remote", "add", "origin", "/x"])
             .unwrap_or_else(|err| panic!("{err}"));
 
-        assert!(configured(&repo, b"origin"));
+        assert!(configured(&scratch, &repo, b"origin"));
         assert_git_exits(&scratch, &repo, &["remote", "add", "origin", "/y"], 3);
     }
 
@@ -778,7 +714,7 @@ mod tests {
         let repo = one_commit_repo(&scratch, "repo");
         append_config(&repo, b"[remote \"bare\"]\n\tprune = true\n");
 
-        assert!(configured(&repo, b"bare"));
+        assert!(configured(&scratch, &repo, b"bare"));
         assert!(
             git_remotes(&scratch, &repo).contains(&b"bare".to_vec()),
             "git remote does not list the section"
@@ -807,7 +743,11 @@ mod tests {
             &repo,
             &["config", "--local", "--get", "remote.inc.url"],
         );
-        assert!(configured(&repo, b"inc"));
+        assert_eq!(
+            git_remote_keys(&scratch, &repo, "inc"),
+            "local\tremote.inc.url /x\n"
+        );
+        assert!(configured(&scratch, &repo, b"inc"));
         assert_git_exits(&scratch, &repo, &["remote", "add", "inc", "/y"], 3);
     }
 
@@ -833,7 +773,11 @@ mod tests {
             &repo,
             &["config", "--local", "--get", "remote.wt.url"],
         );
-        assert!(configured(&repo, b"wt"));
+        assert_eq!(
+            git_remote_keys(&scratch, &repo, "wt"),
+            "worktree\tremote.wt.url /x\n"
+        );
+        assert!(configured(&scratch, &repo, b"wt"));
         assert_git_exits(&scratch, &repo, &["remote", "add", "wt", "/y"], 3);
     }
 
@@ -849,8 +793,8 @@ mod tests {
         git_ok(&scratch, &repo, ["remote", "add", "origin", "/x"])
             .unwrap_or_else(|err| panic!("{err}"));
 
-        assert!(!configured(&repo, b"nope"));
-        assert!(configured(&repo, b"origin"), "the control remote");
+        assert!(!configured(&scratch, &repo, b"nope"));
+        assert!(configured(&scratch, &repo, b"origin"), "the control remote");
     }
 
     /// One `-z` record: scope, origin and entry, each ended by NUL.
@@ -1044,44 +988,65 @@ mod tests {
         }
     }
 
-    /// Prints `configured`, what `remote_configured` answers for the name in
-    /// `REMOTE_VAR` on `Repo::discover` of the directory in `START_VAR`; or
-    /// `error` when discovery fails.
+    /// A repository whose path holds a space and a byte that is not UTF-8
+    /// reads its own key: the child's cwd and the own file are handled as
+    /// bytes. Once git unsets the key, both answers are empty.
+    #[test]
+    fn config_read_from_a_path_with_a_space_and_a_non_utf8_byte() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-odd-path").expect("scratch");
+        let repo = scratch.root.join(OsStr::from_bytes(b"work dir\xe9"));
+        std::fs::create_dir_all(&repo)
+            .unwrap_or_else(|err| panic!("create {}: {err}", repo.display()));
+        for args in [
+            ["init", "-q", "-b", "main"].as_slice(),
+            &["config", "--local", KEY, "dev"],
+        ] {
+            git_ok(&scratch, &repo, args).unwrap_or_else(|err| panic!("{err}"));
+        }
+
+        let get = git(&scratch, &repo, &["config", "--local", "--get-all", KEY]);
+        let git_values = printed_values("git config --local --get-all", &get);
+        assert_eq!(git_values, [b"dev".to_vec()]);
+        assert_eq!(local_values(&scratch, &repo, KEY), git_values);
+
+        git_ok(&scratch, &repo, ["config", "--local", "--unset", KEY])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_git_finds_nothing(&scratch, &repo, &["config", "--local", "--get-all", KEY]);
+        assert_eq!(local_values(&scratch, &repo, KEY), Vec::<Vec<u8>>::new());
+    }
+
+    /// Prints `configured`, what `read_config` through `Git::from_process`
+    /// answers for the name in `REMOTE_VAR` on `Repo::discover` of the
+    /// directory in `START_VAR`; or `error` when discovery or the read fails.
     #[test]
     #[ignore = "child half of the remote definition tests; runs only when re-executed"]
     fn remote_child() {
         let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
         let name = std::env::var_os(REMOTE_VAR).expect("the parent set the remote name");
-        match Repo::discover(Path::new(&start)) {
-            Ok(found) => {
-                testing::child_print(
-                    "configured",
-                    found.remote_configured(name.as_encoded_bytes()),
-                );
+        match Repo::discover(Path::new(&start))
+            .and_then(|found| found.read_config(&Git::from_process(&found)))
+        {
+            Ok(read) => {
+                testing::child_print("configured", read.defines_remote(name.as_encoded_bytes()));
             }
             Err(err) => testing::child_print("error", err.to_string().replace('\n', "\\n")),
         }
     }
 
-    /// Prints what `Repo::discover` of the directory in `START_VAR` reads
-    /// for `KEY`: `count`, the number of values `local_config_values`
-    /// returns, and `all`, the number gix loaded from any source; or
-    /// `error` when discovery fails.
+    /// Prints `count`, the number of values of `KEY` that `read_config`
+    /// through `Git::from_process` returns on `Repo::discover` of the
+    /// directory in `START_VAR`; or `error` when discovery or the read fails.
     #[test]
     #[ignore = "child half of the config scope tests; runs only when re-executed"]
     fn count_child() {
         let start = std::env::var_os(START_VAR).expect("the parent set the start directory");
-        match Repo::discover(Path::new(&start)) {
-            Ok(found) => {
-                testing::child_print("count", found.local_config_values(KEY).len());
-                let all = found
-                    .repo
-                    .config_snapshot()
-                    .plumbing()
-                    .strings(KEY)
-                    .map_or(0, |values| values.len());
-                testing::child_print("all", all);
-            }
+        match Repo::discover(Path::new(&start))
+            .and_then(|found| found.read_config(&Git::from_process(&found)))
+        {
+            Ok(read) => testing::child_print("count", read.values(KEY).len()),
             Err(err) => testing::child_print("error", err.to_string().replace('\n', "\\n")),
         }
     }
