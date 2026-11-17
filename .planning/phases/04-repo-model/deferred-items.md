@@ -23,3 +23,9 @@
   (open-gsd/gsd-core#5494, closed as working as intended). No defect.
 - The schema-drift gate passed; the non-blocking codebase-drift gate warned that the codebase map
   under `.planning/codebase/` is stale.
+
+## GSD tooling: `roadmap.annotate-dependencies` skips phase 4 (plan-phase 13c, 2026-11-17)
+
+- `query roadmap.annotate-dependencies 04` answered `skipped: "unrecognised_checklist_row"` on the long 04-12 row, so
+  ROADMAP.md got no wave notes. The plan rows for 04-13 to 04-18 are present; only the generated annotation is missing.
+- Bypass: left ROADMAP.md as it is (the annotation is derived and optional). Not reported upstream yet.
