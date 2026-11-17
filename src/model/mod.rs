@@ -19,7 +19,7 @@ pub mod manifest;
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::git::{self, ConfigRead, Git, ObjectId, RefTarget, Repo, RootEntry};
+use crate::git::{self, ConfigRead, Git, ObjectId, RefRecord, Repo, RootEntry};
 
 use manifest::{EntryKind, Manifest, ParseError, Problem, covers};
 
@@ -336,18 +336,20 @@ impl std::error::Error for Error {}
 /// `inferred` (D-15, D-16, D-21).
 ///
 /// What a resolve reads, and when. It writes nothing to the repository.
-/// Every tip comes from the same read of its ref that any check on that ref
-/// used, never from a second lookup of the name: an integration rung's tip
-/// is peeled from the id returned by the read that found the rung not
-/// symbolic (04-07), and `ref_commit` reads each ref it follows once
-/// (04-01). The workspace branch is read once to see that it exists and
-/// once by `ref_commit` for its tip, and the first read checks nothing the
-/// second could undo. `workspace_tip` and the manifest always come from one
-/// commit, because `root_entry` takes that commit's id, not the branch name
-/// (`manifest_read_stays_on_the_commit_it_was_given` moves the branch
-/// between the two reads). Each tip is a value its ref held at some moment
-/// during the call, and the two tips need not be from one instant: git has
-/// no snapshot across refs. Every object read applies the replacement map
+/// Every ref comes from one `git for-each-ref` child (`Repo::list_refs`,
+/// D-23, D-29): the workspace branch, or with `wsx.sourceBranch` unset the
+/// two candidate prefixes, and every integration rung, listed once and never
+/// read by name. A pattern is a glob and a prefix, so each decision reads the
+/// record whose name is exactly the ref it wants. A ref git does not list is
+/// absent: a missing, corrupt or badly named ref (D-35), a dangling symbolic
+/// ref (D-30), a fifo, a symlink git resolves only by name, a linked
+/// worktree's private ref and a chain git does not resolve (D-29). Each tip
+/// is peeled from the id that listing printed, so the ref checked is the ref
+/// whose commit is used. `workspace_tip` and the manifest always come from
+/// one commit, because `root_entry` takes that commit's id, not the branch
+/// name (`manifest_read_stays_on_the_commit_it_was_given` moves the branch
+/// between the two reads). Each tip is a value its ref held when the
+/// listing ran. Every object read applies the replacement map
 /// gix loaded when the `Repo` was opened, so a replace ref added or removed
 /// after that, during one run, is not seen by these reads, and the
 /// replace-ref guard, which reads the ref stores later, can disagree with
@@ -360,29 +362,36 @@ impl std::error::Error for Error {}
 /// run through `git` (`Repo::read_config`), read once here and handed down;
 /// nothing in the model reads config any other way. Config that git itself
 /// cannot read fails `resolve` with `Error::Git` even in a repository that
-/// is not configured, since every git command fails there too.
+/// is not configured, since every git command fails there too. A listing
+/// that fails is `Err` in a configured repository and stays in `inferred`
+/// in one that is not.
 pub fn resolve(repo: &Repo, git: &Git, recorded: &BTreeSet<Vec<u8>>) -> Result<RepoModel, Error> {
     let config = repo.read_config(git)?;
-    match single(&config, SOURCE_BRANCH)? {
-        Some(branch) => {
-            // 03.1 D-04: after this check the branch is read only as the one
-            // full ref `refs/heads/<branch>`, never through a DWIM ladder.
-            if !git::is_branch_name(&branch) {
-                return Err(Error::NotABranchName {
-                    key: SOURCE_BRANCH,
-                    value: branch,
-                });
-            }
-            Ok(RepoModel::Configured(Box::new(build(
-                repo, &config, branch,
-            )?)))
-        }
+    let source = single(&config, SOURCE_BRANCH)?;
+    if let Some(branch) = &source
+        // 03.1 D-04: after this check the branch is read only as the one
+        // full ref `refs/heads/<branch>`, never through a DWIM ladder.
+        && !git::is_branch_name(branch)
+    {
+        return Err(Error::NotABranchName {
+            key: SOURCE_BRANCH,
+            value: branch.clone(),
+        });
+    }
+    let mut patterns = workspace_patterns(source.as_deref());
+    patterns.extend(listed_rungs(&config));
+    let listing = repo.list_refs(git, &patterns);
+    match source {
+        Some(branch) => Ok(RepoModel::Configured(Box::new(build(
+            repo, &config, &listing?, branch,
+        )?))),
         None => {
-            let inferred = candidates(repo, recorded).and_then(|mut names| {
+            let inferred = listing.map_err(Error::Git).and_then(|listing| {
+                let mut names = candidates(&listing, recorded);
                 if names.len() != 1 {
                     return Err(Error::WorkspaceCandidates { candidates: names });
                 }
-                build(repo, &config, names.remove(0))
+                build(repo, &config, &listing, names.remove(0))
             });
             Ok(RepoModel::NotConfigured {
                 inferred: inferred.map(Box::new),
@@ -395,24 +404,46 @@ pub fn resolve(repo: &Repo, git: &Git, recorded: &BTreeSet<Vec<u8>>) -> Result<R
 /// trailing slash, since a prefix without one also matches `workspace-x`.
 const CANDIDATE_PREFIXES: [&[u8]; 2] = [b"refs/heads/workspace/", b"refs/heads/personal/"];
 
-/// The local branches directly under `workspace/` or `personal/`, as short
-/// names in byte order across both prefixes, less those in `recorded`
-/// (D-17, D-21). Remote-tracking branches and nested names are not listed,
-/// and the checked-out branch gets no preference. A ref that fails to read
-/// fails the whole listing rather than shortening it.
-fn candidates(repo: &Repo, recorded: &BTreeSet<Vec<u8>>) -> Result<Vec<Vec<u8>>, Error> {
-    let mut names = Vec::new();
-    for prefix in CANDIDATE_PREFIXES {
-        for full in repo.refs_directly_under(prefix)? {
-            if let Some(short) = full.strip_prefix(BRANCH_PREFIX)
-                && !recorded.contains(short)
-            {
-                names.push(short.to_vec());
-            }
-        }
+/// The listing patterns for the workspace branch: `refs/heads/<source>` when
+/// `wsx.sourceBranch` names it (already a valid branch name, so it holds no
+/// glob byte), else the two `CANDIDATE_PREFIXES`.
+fn workspace_patterns(source: Option<&[u8]>) -> Vec<Vec<u8>> {
+    match source {
+        Some(branch) => vec![branch_ref(branch)],
+        None => CANDIDATE_PREFIXES
+            .iter()
+            .map(|prefix| prefix.to_vec())
+            .collect(),
     }
+}
+
+/// The record named exactly `full` in `listing`, if git listed one.
+fn exact<'a>(listing: &'a [RefRecord], full: &[u8]) -> Option<&'a RefRecord> {
+    listing.iter().find(|record| record.name == full)
+}
+
+/// The local branches directly under `workspace/` or `personal/` in
+/// `listing`, as short names in byte order across both prefixes, less those
+/// in `recorded` (D-17, D-21). Remote-tracking branches and nested names are
+/// not candidates, and the checked-out branch gets no preference. A ref git
+/// does not list, a corrupt one included, is no candidate (D-35).
+fn candidates(listing: &[RefRecord], recorded: &BTreeSet<Vec<u8>>) -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = listing
+        .iter()
+        .filter(|record| {
+            CANDIDATE_PREFIXES.iter().any(|prefix| {
+                record
+                    .name
+                    .strip_prefix(*prefix)
+                    .is_some_and(|rest| !rest.is_empty() && !rest.contains(&b'/'))
+            })
+        })
+        .filter_map(|record| record.name.strip_prefix(BRANCH_PREFIX))
+        .filter(|short| !recorded.contains(*short))
+        .map(<[u8]>::to_vec)
+        .collect();
     names.sort();
-    Ok(names)
+    names
 }
 
 /// The one value of `key` in this repository's own config, or `None` when
@@ -468,33 +499,38 @@ fn remote(config: &ConfigRead, key: &'static str) -> Result<Option<Vec<u8>>, Err
 }
 
 /// The model with `branch` as the workspace branch. The manifest comes from
-/// the root tree of the commit `refs/heads/<branch>` holds, read from the
-/// object database, so neither an uncommitted edit nor the checked-out
-/// branch changes which paths are personal.
+/// the root tree of the commit `refs/heads/<branch>` held in `listing`, read
+/// from the object database, so neither an uncommitted edit nor the
+/// checked-out branch changes which paths are personal.
 ///
-/// A failure reading the tip's commit or its root tree is
-/// `Error::ManifestUnreadable`, since both are reads of the manifest; a
-/// failure of the `find_ref` that checks the branch exists is the ref store
-/// and stays `Error::Git`. So does a refusal of the replace refs
-/// (`git::Error::is_replacement_refusal`), from the guard `build` runs before
-/// it reads any object, and which `root_entry` runs again: it does not know
-/// whether a replace ref touches the manifest, so its message blames the
-/// replace refs and does not say `.wsx.conf` cannot be read (D-22).
-fn build(repo: &Repo, config: &ConfigRead, branch: Vec<u8>) -> Result<Model, Error> {
-    let full = branch_ref(&branch);
-    if repo.find_ref(&full)?.is_none() {
+/// The branch exists only as a record named exactly `refs/heads/<branch>`;
+/// a symbolic one is accepted, its tip the object its chain ends at. A
+/// failure peeling the tip or reading its root tree is
+/// `Error::ManifestUnreadable`, since both are reads of the manifest. A
+/// refusal of the replace refs (`git::Error::is_replacement_refusal`), from
+/// the guard `build` runs before it reads any object, and which
+/// `root_entry` runs again, stays `Error::Git`: it does not know whether a
+/// replace ref touches the manifest, so its message blames the replace refs
+/// and does not say `.wsx.conf` cannot be read (D-22).
+fn build(
+    repo: &Repo,
+    config: &ConfigRead,
+    listing: &[RefRecord],
+    branch: Vec<u8>,
+) -> Result<Model, Error> {
+    let Some(workspace) = exact(listing, &branch_ref(&branch)) else {
         return Err(Error::WorkspaceBranchMissing { branch });
-    }
+    };
     repo.refuse_replace_refs()?;
     let base_remote = remote(config, BASE_REMOTE)?;
     let push_remote = remote(config, PUSH_REMOTE)?;
-    let integration = integration(repo, config, base_remote.as_deref())?;
+    let integration = integration(repo, config, listing, base_remote.as_deref())?;
     let worktree_dir = worktree_dir(config)?;
     let unreadable = |source: git::Error| Error::ManifestUnreadable {
         branch: branch.clone(),
         source,
     };
-    let workspace_tip = repo.ref_commit(&full).map_err(unreadable)?;
+    let workspace_tip = repo.peel_commit(&workspace.id).map_err(unreadable)?;
     let manifest = match repo
         .root_entry(&workspace_tip, MANIFEST_NAME)
         .map_err(|source| {
@@ -550,41 +586,95 @@ fn branch_name(key: &'static str, value: Vec<u8>) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// The integration branch. `wsx.baseRef`, when set, is a bare branch name
-/// read on the base remote (locally with no base remote), and a missing ref
-/// is `Error::BaseRefMissing` with no fallback to the chain (D-08).
-/// Otherwise `develop`, then `next`, then the branch the base remote's
-/// `HEAD` names, each read from the base remote's tracking refs; with no
-/// base remote, the local `develop`, then the local `next` (D-06, D-07).
-/// Nothing else is tried: no `main` or `master`, no network call (D-09), and
-/// a stale `<remote>/HEAD` is used as it is (D-10).
+/// The prefix of a rung's full ref: `refs/remotes/<base>/`, or with no base
+/// remote `refs/heads/`.
+fn rung_prefix(base: Option<&[u8]>) -> Vec<u8> {
+    match base {
+        Some(remote) => [b"refs/remotes/".as_slice(), remote, b"/".as_slice()].concat(),
+        None => BRANCH_PREFIX.to_vec(),
+    }
+}
+
+/// The full refs the integration chain reads, in order: `<prefix><base_ref>`
+/// alone when `wsx.baseRef` is set (D-08), else `<prefix>develop`,
+/// `<prefix>next` and, with a base remote, `<prefix>HEAD` (D-06, D-07).
+fn rung_names(base: Option<&[u8]>, base_ref: Option<&[u8]>) -> Vec<Vec<u8>> {
+    let prefix = rung_prefix(base);
+    let full = |branch: &[u8]| [prefix.as_slice(), branch].concat();
+    match base_ref {
+        Some(value) => vec![full(value)],
+        None => {
+            let mut names: Vec<Vec<u8>> = CHAIN.iter().map(|branch| full(branch)).collect();
+            if base.is_some() {
+                names.push(full(b"HEAD"));
+            }
+            names
+        }
+    }
+}
+
+/// The rung names `resolve` lists: `rung_names` for the configured base
+/// remote and `wsx.baseRef`, less each name that is not a valid full ref
+/// name, which `integration` refuses at its turn rather than lists. Errors
+/// reading either key are not raised here but at their turn in `build`, so
+/// the error order does not change; with one, no rung is listed, since
+/// `build` stops before it reads a rung.
+fn listed_rungs(config: &ConfigRead) -> Vec<Vec<u8>> {
+    let (Ok(base), Ok(base_ref)) = (remote(config, BASE_REMOTE), single(config, BASE_REF)) else {
+        return Vec::new();
+    };
+    rung_names(base.as_deref(), base_ref.as_deref())
+        .into_iter()
+        .filter(|full| git::check_full_ref_name(full).is_ok())
+        .collect()
+}
+
+/// The integration branch, from `listing`. `wsx.baseRef`, when set, is a
+/// bare branch name read on the base remote (locally with no base remote),
+/// and a missing ref is `Error::BaseRefMissing` with no fallback to the
+/// chain (D-08). Otherwise `develop`, then `next`, then the branch the base
+/// remote's `HEAD` names, each read from the base remote's tracking refs;
+/// with no base remote, the local `develop`, then the local `next` (D-06,
+/// D-07). Nothing else is tried: no `main` or `master`, no network call
+/// (D-09), and a stale `<remote>/HEAD` is used as it is (D-10).
 ///
-/// Every rung is one exact read of a full ref through `find_ref`. A
-/// symbolic ref on a rung is `Error::IntegrationRefSymbolic`, never followed
-/// and never skipped, since following it can land on a local commit
-/// (D-06). A rung's tip is the id that same read returned, peeled, so the
-/// ref checked is the ref whose commit is used; a ref that exists and does
-/// not peel to a commit is an error, with no fall-through to the next rung.
+/// Every rung is the record named exactly its full ref, after the name
+/// passes `git::check_full_ref_name` at its turn, so a name that cannot be a
+/// ref, such as one from a remote named `o*`, is an error there and never a
+/// glob. A rung git does not list is absent and the chain moves on (D-30).
+/// A symbolic rung is `Error::IntegrationRefSymbolic` naming the ref its
+/// chain ends at, never followed and never skipped, since following it can
+/// land on a local commit (D-06). A rung's tip is its listed id, peeled; a
+/// ref that does not peel to a commit is an error, with no fall-through.
+/// `<remote>/HEAD` is the default only when its chain ends under the
+/// remote's prefix: the branch is the rest of that target, `full_ref` the
+/// target and the tip HEAD's own listed id (D-34).
 fn integration(
     repo: &Repo,
     config: &ConfigRead,
+    listing: &[RefRecord],
     base: Option<&[u8]>,
 ) -> Result<Integration, Error> {
-    let prefix = match base {
-        Some(remote) => [b"refs/remotes/".as_slice(), remote, b"/".as_slice()].concat(),
-        None => b"refs/heads/".to_vec(),
-    };
+    let prefix = rung_prefix(base);
     let full = |branch: &[u8]| [prefix.as_slice(), branch].concat();
+    let listed = |full_ref: &[u8]| -> Result<Option<&RefRecord>, Error> {
+        git::check_full_ref_name(full_ref)?;
+        Ok(exact(listing, full_ref))
+    };
     let found = |branch: &[u8]| -> Result<Option<Integration>, Error> {
         let full_ref = full(branch);
-        match repo.find_ref(&full_ref)? {
+        match listed(&full_ref)? {
             None => Ok(None),
-            Some(RefTarget::Symbolic(target)) => {
-                Err(Error::IntegrationRefSymbolic { full_ref, target })
-            }
-            Some(RefTarget::Object(id)) => Ok(Some(Integration {
+            Some(RefRecord {
+                symref: Some(target),
+                ..
+            }) => Err(Error::IntegrationRefSymbolic {
+                full_ref,
+                target: target.clone(),
+            }),
+            Some(record) => Ok(Some(Integration {
                 branch: branch.to_vec(),
-                tip: repo.peel_commit(&id)?,
+                tip: repo.peel_commit(&record.id)?,
                 full_ref,
             })),
         }
@@ -605,15 +695,19 @@ fn integration(
         tried.push(full(branch));
     }
     if base.is_some() {
-        // The remote default counts only as a symbolic ref naming a branch
-        // under the base remote; an object id, a target elsewhere and a
-        // dangling target each leave it in `tried`.
+        // The remote default counts only as a symbolic ref whose chain ends
+        // under the base remote; an object id, a target elsewhere and a ref
+        // git does not list each leave it in `tried`.
         let head = full(b"HEAD");
-        if let Some(RefTarget::Symbolic(target)) = repo.find_ref(&head)?
+        if let Some(record) = listed(&head)?
+            && let Some(target) = &record.symref
             && let Some(branch) = target.strip_prefix(prefix.as_slice())
-            && let Some(integration) = found(branch)?
         {
-            return Ok(integration);
+            return Ok(Integration {
+                branch: branch.to_vec(),
+                full_ref: target.clone(),
+                tip: repo.peel_commit(&record.id)?,
+            });
         }
         tried.push(head);
     }
@@ -3744,9 +3838,10 @@ mod tests {
     }
 
     /// `require` passes a git failure that is not a replacement refusal
-    /// through unwrapped: a corrupt loose ref under a candidate prefix fails
-    /// the listing, and `require` returns that `Error::Git`, not
-    /// `NotConfigured` saying run `wsx init`.
+    /// through unwrapped: in a repository with one candidate, `develop` on
+    /// the base remote holds a blob, which git cannot peel to a commit, and
+    /// `require` returns that `Error::Git`, not `NotConfigured` saying run
+    /// `wsx init`.
     #[test]
     fn require_passes_a_git_failure_through() {
         if testing::rerun_scrubbed() {
@@ -3754,17 +3849,23 @@ mod tests {
         }
         let scratch = Scratch::new("model-require-git").expect("create scratch");
         let work = repo_with_remote(&scratch);
-        ok(write(
-            &work.join(".git/refs/heads/workspace/bad"),
-            b"garbage\n",
-        ));
+        let blob = ok(testing::object_id(&scratch, &work, "refs/heads/main:a.txt"));
+        run(
+            &scratch,
+            &work,
+            &["update-ref", ORIGIN_DEVELOP, blob.to_string().as_str()],
+        );
+        let peel = format!("{ORIGIN_DEVELOP}^{{commit}}");
+        assert!(
+            git_cannot_verify(&scratch, &work, &peel),
+            "git peeled {ORIGIN_DEVELOP}, holding a blob, to a commit"
+        );
 
         match required(&work) {
-            Err(Error::Git(git::Error::Gix { what, .. })) => assert_eq!(
-                what, "list the refs directly under refs/heads/workspace/",
-                "the failed read"
-            ),
-            other => panic!("require: expected Err(Git(Gix)) from the listing, got {other:?}"),
+            Err(Error::Git(git::Error::Gix { what, .. })) => {
+                assert_eq!(what, format!("peel {blob} to a commit"), "the failed read")
+            }
+            other => panic!("require: expected Err(Git(Gix)) from the rung, got {other:?}"),
         }
     }
 

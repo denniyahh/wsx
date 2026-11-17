@@ -11,13 +11,14 @@
 //! parser; `banned_gix_revspec_parsers_read_a_describe_shaped_ref_as_another_object`
 //! in `repo.rs` pins the ban).
 
-use std::os::unix::ffi::OsStringExt;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use gix::bstr::ByteSlice;
 
 use super::repo::Repo;
-use super::{Error, Git, ObjectId};
+use super::{Error, Git, NO_LAZY_FETCH, ObjectId, shown};
 
 /// What a ref holds, read without following it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,20 +107,76 @@ pub fn check_full_ref_name(full: &[u8]) -> Result<(), Error> {
         })
 }
 
-/// The records of a `for-each-ref` listing (RED stub).
+/// The format of every ref listing: name, object and symref target, each
+/// field ended by NUL except the last. A ref name holds neither NUL nor LF
+/// (git skips a ref whose name is not valid, F9), so a record is one line.
+/// No `%(objecttype)`: it makes one ref naming a missing object fail the
+/// whole listing (F6).
+const LISTING_FORMAT: &str = "--format=%(refname)%00%(objectname)%00%(symref)";
+
+/// The records of a `LISTING_FORMAT` listing. Empty stdout is no record;
+/// otherwise stdout must end in LF and each line must be three NUL-separated
+/// fields, a non-empty name, a full hex id and a target that is empty for a
+/// ref holding an id. Anything else is `Err` naming the line, C-quoted.
 fn parse_ref_listing(stdout: &[u8]) -> Result<Vec<RefRecord>, String> {
-    let _ = stdout;
-    Ok(Vec::new())
+    if stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(body) = stdout.strip_suffix(b"\n") else {
+        return Err("the listing does not end in a newline".to_owned());
+    };
+    body.split(|byte| *byte == b'\n')
+        .map(|line| {
+            let refused = || format!("a record that is not name, id and symref: {}", shown(line));
+            let fields: Vec<&[u8]> = line.split(|byte| *byte == 0).collect();
+            let [name, id, symref] = fields.as_slice() else {
+                return Err(refused());
+            };
+            if name.is_empty() {
+                return Err(refused());
+            }
+            Ok(RefRecord {
+                name: name.to_vec(),
+                id: ObjectId::from_hex(id).ok_or_else(refused)?,
+                symref: (!symref.is_empty()).then(|| symref.to_vec()),
+            })
+        })
+        .collect()
 }
 
 impl Repo {
-    /// The refs git lists for `patterns` (RED stub).
+    /// The refs `git for-each-ref` lists for `patterns`, in one child run
+    /// through `git` in the worktree (the git dir of a bare repository),
+    /// `--no-lazy-fetch` first. Each pattern is one argument, its bytes as
+    /// they are. With no pattern nothing is spawned and nothing is listed,
+    /// since `for-each-ref` with no pattern lists every ref.
+    ///
+    /// The listing is a superset of the patterns: a pattern matches as a glob
+    /// or as a prefix up to a slash, so `refs/remotes/origin/develop` also
+    /// lists `refs/remotes/origin/develop/x` (F8). It skips what git skips:
+    /// a missing, dangling, corrupt or badly named ref, a fifo, a symlink
+    /// git resolves only by name, a chain too deep or a cycle (F7, F9). So a
+    /// caller compares each record's exact name with the name it wants, and
+    /// reads no record as present for having matched a pattern.
+    ///
+    /// A failed child is `Error::GitFailed`; output that does not parse is
+    /// `Error::GitBadOutput`, never fewer records.
     pub fn list_refs(&self, git: &Git, patterns: &[Vec<u8>]) -> Result<Vec<RefRecord>, Error> {
         if patterns.is_empty() {
             return Ok(Vec::new());
         }
-        let _ = git;
-        Ok(parse_ref_listing(b"").unwrap_or_default())
+        let mut argv: Vec<OsString> = [NO_LAZY_FETCH, "for-each-ref", LISTING_FORMAT]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        argv.extend(
+            patterns
+                .iter()
+                .map(|pattern| OsStr::from_bytes(pattern).to_os_string()),
+        );
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = git.run(cwd, &argv)?;
+        parse_ref_listing(&stdout).map_err(|problem| Error::GitBadOutput { argv, problem })
     }
 
     /// The commit `id` names, peeling annotated tags as git's

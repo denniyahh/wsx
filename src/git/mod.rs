@@ -34,7 +34,7 @@ pub(crate) mod testing;
 pub use config::ConfigRead;
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
-pub use refs::{RefRecord, RefTarget, RootEntry, check_full_ref_name, is_branch_name};
+pub use refs::{RefRecord, RootEntry, check_full_ref_name, is_branch_name};
 pub use repo::Repo;
 pub use spawn::Git;
 
