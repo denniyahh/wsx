@@ -5877,6 +5877,72 @@ mod tests {
         );
     }
 
+    /// `GIT_CONFIG` names the one file `git config` reads: git prints only
+    /// `command` records from it and none from the repository's
+    /// `.git/config`, while every other git command still reads the
+    /// repository's config. wsx's config read drops the variable (04-17, the
+    /// operator), so a configured repository stays configured under it.
+    /// Control: with `wsx.sourceBranch` unset the same child is not
+    /// configured, so the alternative file's own `wsx.sourceBranch` is not
+    /// what configured it.
+    #[test]
+    fn git_config_variable_does_not_unconfigure_a_repo() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-git-config-env").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let alt = scratch.root.join("alt.conf");
+        ok(write(&alt, b"[wsx]\n\tsourceBranch = other\n"));
+        let alt_text = alt.to_str().expect("the scratch path is UTF-8");
+        let mut env = scratch.env.clone();
+        env.push(("GIT_CONFIG".into(), alt.clone().into()));
+        let read = testing::command("git", &work, &env)
+            .args([
+                "config",
+                "-z",
+                "--show-scope",
+                "--show-origin",
+                "--get-regexp",
+                r"^(wsx|remote)\.",
+            ])
+            .output()
+            .unwrap_or_else(|err| panic!("run git config under GIT_CONFIG: {err}"));
+        let printed = String::from_utf8_lossy(&read.stdout);
+        let scopes: Vec<String> = read
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+            .step_by(3)
+            .map(|scope| String::from_utf8_lossy(scope).into_owned())
+            .collect();
+        assert!(
+            read.status.success() && !scopes.is_empty() && scopes.iter().all(|s| s == "command"),
+            "git config under GIT_CONFIG={alt_text} printed scopes {scopes:?}, exit {:?}",
+            read.status.code()
+        );
+        assert!(
+            !printed.contains(".git/config"),
+            "git config under GIT_CONFIG={alt_text} read the repository's config: {printed:?}"
+        );
+
+        assert_eq!(
+            child_state_with(&scratch, &work, &[("GIT_CONFIG", alt_text)]),
+            "configured",
+            "the child under GIT_CONFIG={alt_text}"
+        );
+        run(
+            &scratch,
+            &work,
+            &["config", "--local", "--unset", "wsx.sourceBranch"],
+        );
+        assert_eq!(
+            child_state_with(&scratch, &work, &[("GIT_CONFIG", alt_text)]),
+            "not-configured",
+            "the child under GIT_CONFIG={alt_text} once wsx.sourceBranch is unset"
+        );
+    }
+
     /// D-16: a replace ref in a repository with no `wsx.sourceBranch` stays
     /// in `inferred`, and `require` reads it as run `wsx init`.
     #[test]

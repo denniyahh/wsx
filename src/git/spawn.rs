@@ -303,6 +303,28 @@ impl Git {
         finish(command, argv, worktree)
     }
 
+    /// Runs `git <args>` in `worktree` as `run` does, with `var` removed
+    /// from the child's environment even when `worktree` is wsx's own
+    /// worktree, whose children otherwise keep the whole snapshot. It exists
+    /// for one child: the config read drops `GIT_CONFIG`, which `git config`
+    /// alone honours and which would make it read only that file, while every
+    /// other git command, `git push` included, reads the repository's config
+    /// (04-17, the operator). No other child loses a variable its target
+    /// would keep.
+    pub fn run_without_var<I, S>(
+        &self,
+        worktree: &Path,
+        args: I,
+        var: &str,
+    ) -> Result<Vec<u8>, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let _ = var;
+        self.run(worktree, args)
+    }
+
     /// Runs `git <args>` in `worktree` as `run` does, with `input` on its
     /// stdin: the only child whose stdin is not `/dev/null` (D-33). The
     /// buffer is written whole and the pipe closed, so git reads EOF after it
@@ -801,6 +823,50 @@ mod tests {
         )
         .expect("git hash-object <file>");
         String::from_utf8_lossy(&id).trim().to_owned()
+    }
+
+    /// `run_without_var` hides exactly the variable it names from a child
+    /// aimed at wsx's own worktree, which otherwise keeps the whole snapshot:
+    /// the fake git's `env` lacks `GIT_CONFIG` and still holds
+    /// `WSX_TEST_KEEP`. Control: through `run` the same child shows both.
+    #[test]
+    fn run_without_var_hides_only_that_variable() {
+        let scratch = Scratch::new("run-without-var").expect("scratch");
+        let mut env = fake_git(
+            &scratch,
+            "if [ \"$*\" = \"--version\" ]; then echo 'git version 2.54.0'; exit 0; fi\nenv",
+        );
+        env.push(("GIT_CONFIG".into(), "x".into()));
+        env.push(("WSX_TEST_KEEP".into(), "1".into()));
+        let git = Git::new(env).with_own_worktree(scratch.root.clone());
+        let lines = |stdout: Vec<u8>| -> BTreeSet<String> {
+            String::from_utf8_lossy(&stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        };
+
+        let without = lines(
+            git.run_without_var(&scratch.root, ["status"], "GIT_CONFIG")
+                .unwrap_or_else(|err| panic!("run_without_var: {err}")),
+        );
+        assert!(
+            !without.iter().any(|line| line.starts_with("GIT_CONFIG=")),
+            "the child of run_without_var(GIT_CONFIG) saw GIT_CONFIG: {without:?}"
+        );
+        assert!(
+            without.contains("WSX_TEST_KEEP=1"),
+            "the child of run_without_var(GIT_CONFIG) lost WSX_TEST_KEEP: {without:?}"
+        );
+
+        let with = lines(
+            git.run(&scratch.root, ["status"])
+                .unwrap_or_else(|err| panic!("run: {err}")),
+        );
+        assert!(
+            with.contains("GIT_CONFIG=x") && with.contains("WSX_TEST_KEEP=1"),
+            "the child of run lacks GIT_CONFIG=x or WSX_TEST_KEEP=1: {with:?}"
+        );
     }
 
     #[test]
