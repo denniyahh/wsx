@@ -25,7 +25,7 @@ not change it. It is deleted at cutover.
 
 ## Repo traps
 
-Shapes that ship a false green, or a commit the PR cut cannot replay.
+Shapes that ship a false green.
 
 - A nextest filter that matches nothing must fail. Gate one test with
   `--no-tests=fail -E 'test(=module::name)'`, one test per command chained with `&&`:
@@ -35,13 +35,7 @@ Shapes that ship a false green, or a commit the PR cut cannot replay.
 - Prefer a named Rust test to any shell pipeline; keep shell to the invocation.
 - `std::env::set_var` and `remove_var` are banned by `clippy.toml`. Scope environment to the
   child with `Command::env`.
-- Never run `cargo init` or `cargo new` here, and add new ignore lines at the top of
-  `.gitignore`: the workspace branch appends its own block at the end, and a line beside it
-  conflicts when the PR cut replays the commit.
-- Scripts that must reach develop never go under `scripts/workspace/`, which is workspace-only
-  and stripped from PRs.
-- Commit subjects carry the phase scope, `type(NN-MM): ...`, because the PR cut replays only
-  phase-scoped commits.
+- Never run `cargo init` or `cargo new` here.
 - Never `include.path` the tracked `.gitconfig`: git would read it live from any checked-out
   branch. `setup-repo.sh` copies an allowlist of keys; a new policy key goes in its
   `POLICY_KEYS` first.
