@@ -30,8 +30,6 @@ Shapes that ship a false green, or a commit the PR cut cannot replay.
 - A nextest filter that matches nothing must fail. Gate one test with
   `--no-tests=fail -E 'test(=module::name)'`, one test per command chained with `&&`:
   `-E 'test(=a) | test(=b)'` skips a wrong name and still passes.
-- `rg -c` and `--count` print nothing, not `0`, on zero matches. Check absence with a Rust test
-  or `rg -q` exit codes, not a shell count.
 - zsh has no `PIPESTATUS` (its array is `pipestatus`). Capture the exit code of the command that
   matters, not the pipeline tail, and run gate commands under bash.
 - Prefer a named Rust test to any shell pipeline; keep shell to the invocation.
