@@ -19,6 +19,7 @@ use std::fmt::Display;
 use std::fs;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -409,6 +410,72 @@ pub fn raw_tree_commit(
         .map(|id| id.trim_end().to_owned())
         .map_err(|err| format!("git commit-tree printed non-UTF-8: {err}"))?;
     Ok((ObjectId(commit), ObjectId(tree)))
+}
+
+/// The directories searched for the real git, in PATH order.
+const SYSTEM_BIN_DIRS: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
+
+/// The first executable `git` in the system bin directories.
+pub fn real_git() -> PathBuf {
+    SYSTEM_BIN_DIRS
+        .iter()
+        .map(|dir| Path::new(dir).join("git"))
+        .find(|path| {
+            fs::metadata(path)
+                .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("no executable git in {SYSTEM_BIN_DIRS:?}"))
+}
+
+/// `path` as a single-quoted `/bin/sh` word.
+pub fn sh_quote(path: &Path) -> String {
+    let text = path
+        .to_str()
+        .unwrap_or_else(|| panic!("{} is not UTF-8", path.display()));
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// Writes `<root>/fakebin/git`, a `/bin/sh` script that appends `"$*"` to
+/// `<root>/git.log` and then runs `body`, and returns the scratch's
+/// hermetic environment with `<root>/fakebin` first on PATH. The child
+/// resolves a bare `git` through its own PATH, so the helper runs the fake.
+pub fn fake_git(scratch: &Scratch, body: &str) -> Env {
+    let fakebin = scratch.root.join("fakebin");
+    let script = fakebin.join("git");
+    let log = sh_quote(&scratch.root.join("git.log"));
+    let content = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\n{body}\n");
+    write(&script, content.as_bytes()).expect("write the fake git");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
+        .expect("make the fake git executable");
+    let path = OsString::from(format!(
+        "{}:{}",
+        fakebin.display(),
+        SYSTEM_BIN_DIRS.join(":")
+    ));
+    let mut env = scratch.env.clone();
+    let entry = env
+        .iter_mut()
+        .find(|(key, _)| key == "PATH")
+        .expect("the hermetic env sets PATH");
+    entry.1 = path;
+    env
+}
+
+/// The lines of `<root>/git.log`, one per fake git call.
+pub fn fake_git_log(scratch: &Scratch) -> Vec<String> {
+    let log = scratch.root.join("git.log");
+    fs::read_to_string(&log)
+        .unwrap_or_else(|err| panic!("read {}: {err}", log.display()))
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `fake_git` whose body execs the real git, so the helper runs git as it
+/// would and `fake_git_log` lists every call it made.
+pub fn counting_git(scratch: &Scratch) -> Env {
+    fake_git(scratch, &format!("exec {} \"$@\"", sh_quote(&real_git())))
 }
 
 /// Builds the criss-cross fixture in `<scratch root>/repo` and returns that

@@ -381,58 +381,10 @@ mod tests {
 
     use super::super::Error;
     use super::super::repo::Repo;
-    use super::super::testing::{self, Env, Scratch, Worktrees};
+    use super::super::testing::{
+        self, Env, Scratch, Worktrees, fake_git, fake_git_log, real_git, sh_quote,
+    };
     use super::{Git, MIN_GIT_VERSION, parse_git_version};
-
-    /// The directories searched for the real git, in PATH order.
-    const SYSTEM_BIN_DIRS: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
-
-    /// The first executable `git` in the system bin directories.
-    fn real_git() -> PathBuf {
-        SYSTEM_BIN_DIRS
-            .iter()
-            .map(|dir| Path::new(dir).join("git"))
-            .find(|path| {
-                fs::metadata(path)
-                    .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-            })
-            .unwrap_or_else(|| panic!("no executable git in {SYSTEM_BIN_DIRS:?}"))
-    }
-
-    /// `path` as a single-quoted `/bin/sh` word.
-    fn sh_quote(path: &Path) -> String {
-        let text = path
-            .to_str()
-            .unwrap_or_else(|| panic!("{} is not UTF-8", path.display()));
-        format!("'{}'", text.replace('\'', r"'\''"))
-    }
-
-    /// Writes `<root>/fakebin/git`, a `/bin/sh` script that appends `"$*"` to
-    /// `<root>/git.log` and then runs `body`, and returns the scratch's
-    /// hermetic environment with `<root>/fakebin` first on PATH. The child
-    /// resolves a bare `git` through its own PATH, so the helper runs the fake.
-    fn fake_git(scratch: &Scratch, body: &str) -> Env {
-        let fakebin = scratch.root.join("fakebin");
-        let script = fakebin.join("git");
-        let log = sh_quote(&scratch.root.join("git.log"));
-        let content = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\n{body}\n");
-        testing::write(&script, content.as_bytes()).expect("write the fake git");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
-            .expect("make the fake git executable");
-        let path = OsString::from(format!(
-            "{}:{}",
-            fakebin.display(),
-            SYSTEM_BIN_DIRS.join(":")
-        ));
-        let mut env = scratch.env.clone();
-        let entry = env
-            .iter_mut()
-            .find(|(key, _)| key == "PATH")
-            .expect("the hermetic env sets PATH");
-        entry.1 = path;
-        env
-    }
 
     /// A fake body that answers `--version` with `answer` and execs the real
     /// git for every other call.
@@ -450,16 +402,6 @@ mod tests {
             "if [ \"$*\" = \"{argv}\" ]; then kill -KILL $$; fi\nexec {} \"$@\"",
             sh_quote(&real_git())
         )
-    }
-
-    /// The lines of `<root>/git.log`, one per fake git call.
-    fn log_lines(scratch: &Scratch) -> Vec<String> {
-        let log = scratch.root.join("git.log");
-        fs::read_to_string(&log)
-            .unwrap_or_else(|err| panic!("read {}: {err}", log.display()))
-            .lines()
-            .map(str::to_owned)
-            .collect()
     }
 
     /// `git init -q <root>/repo` in the scratch, returning that path.
@@ -502,7 +444,7 @@ mod tests {
             }
             other => panic!("git 2.53.0 must be refused as GitTooOld, got {other:?}"),
         }
-        assert_eq!(log_lines(&scratch), ["--version"]);
+        assert_eq!(fake_git_log(&scratch), ["--version"]);
     }
 
     #[test]
@@ -517,7 +459,7 @@ mod tests {
             String::from_utf8_lossy(&stdout).trim_end(),
             repo.join(".git").to_string_lossy()
         );
-        let lines = log_lines(&scratch);
+        let lines = fake_git_log(&scratch);
         assert_eq!(lines.first().map(String::as_str), Some("--version"));
         assert_eq!(
             lines.last().map(String::as_str),
@@ -545,7 +487,7 @@ mod tests {
             other => panic!("an unreadable version must be refused as GitTooOld, got {other:?}"),
         }
         assert!(
-            !log_lines(&scratch)
+            !fake_git_log(&scratch)
                 .iter()
                 .any(|line| line == "rev-parse --absolute-git-dir"),
             "the requested command ran after a refused version check"
@@ -558,7 +500,7 @@ mod tests {
         let repo = init_repo(&scratch);
         let env = fake_git(&scratch, &format!("exec {} \"$@\"", sh_quote(&real_git())));
         let version_lines = || {
-            log_lines(&scratch)
+            fake_git_log(&scratch)
                 .iter()
                 .filter(|line| *line == "--version")
                 .count()
@@ -787,7 +729,7 @@ mod tests {
             other => panic!("a killed list query must be GitFailed naming it, got {other:?}"),
         }
         assert!(
-            !log_lines(&scratch)
+            !fake_git_log(&scratch)
                 .iter()
                 .any(|line| line == "rev-parse --absolute-git-dir"),
             "the requested command ran without the removal list"
@@ -1182,7 +1124,7 @@ mod tests {
             }
             other => panic!("an empty removal list must fail closed, got {other:?}"),
         }
-        let lines = log_lines(scratch);
+        let lines = fake_git_log(scratch);
         assert!(
             lines
                 .iter()
@@ -1218,7 +1160,7 @@ mod tests {
             worktrees.main.join(".git/worktrees/wt2").to_string_lossy()
         );
         assert_eq!(
-            log_lines(&scratch).last().map(String::as_str),
+            fake_git_log(&scratch).last().map(String::as_str),
             Some("rev-parse --absolute-git-dir")
         );
     }

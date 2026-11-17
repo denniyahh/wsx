@@ -4115,6 +4115,120 @@ mod tests {
         );
     }
 
+    /// `resolve`'s answer for `repo` through `git`, whose PATH holds
+    /// `testing::counting_git`'s wrapper, and the git children it spawned,
+    /// one logged argv each.
+    fn counted(scratch: &Scratch, repo: &Repo, git: &Git) -> (RepoModel, Vec<String>) {
+        let answer = resolve(repo, git, &BTreeSet::new())
+            .unwrap_or_else(|err| panic!("resolve through the counting git: {err}"));
+        (answer, testing::fake_git_log(scratch))
+    }
+
+    /// Fails the test unless `lines` starts, one line each, with `starts`,
+    /// and holds nothing else; the message prints every logged argv.
+    fn assert_children(lines: &[String], starts: &[&str]) {
+        assert!(
+            lines.len() == starts.len()
+                && lines
+                    .iter()
+                    .zip(starts)
+                    .all(|(line, start)| line.starts_with(start)),
+            "expected {} git children starting {starts:?}, got {}:\n{}",
+            starts.len(),
+            lines.len(),
+            lines.join("\n")
+        );
+    }
+
+    /// The config read's argv, as the counting wrapper logs it.
+    const CONFIG_READ: &str = "config -z --show-scope --show-origin --get-regexp";
+
+    /// The listing's argv, as the counting wrapper logs it.
+    const LISTING: &str = "--no-lazy-fetch for-each-ref --format=";
+
+    /// The batch's argv, as the counting wrapper logs it.
+    const BATCH: &str = "--no-lazy-fetch cat-file --batch=";
+
+    /// D-26: one resolve aimed at wsx's own worktree spawns four git
+    /// children: the version check, the config read, the listing and the
+    /// batch.
+    #[test]
+    fn resolve_spawns_four_git_children_in_its_own_worktree() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-count-own").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let repo = Repo::discover(&work).expect("discover the fixture");
+        let git = Git::for_repo(testing::counting_git(&scratch), &repo);
+
+        let (answer, lines) = counted(&scratch, &repo, &git);
+        assert!(
+            matches!(answer, RepoModel::Configured(_)),
+            "resolve: expected Configured, got {answer:?}"
+        );
+        assert_children(&lines, &["--version", CONFIG_READ, LISTING, BATCH]);
+        assert_eq!(lines[0], "--version", "the first child");
+    }
+
+    /// D-31: aimed at a worktree that is not wsx's own, the helper first
+    /// asks git for its `--local-env-vars`, a fifth child.
+    #[test]
+    fn resolve_aimed_at_another_worktree_adds_the_env_var_query() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-count-other").expect("create scratch");
+        let work = chain_repo(&scratch);
+        let repo = Repo::discover(&work).expect("discover the fixture");
+        let git = Git::new(testing::counting_git(&scratch));
+
+        let (answer, lines) = counted(&scratch, &repo, &git);
+        assert!(
+            matches!(answer, RepoModel::Configured(_)),
+            "resolve: expected Configured, got {answer:?}"
+        );
+        assert_children(
+            &lines,
+            &[
+                "--version",
+                "rev-parse --local-env-vars",
+                CONFIG_READ,
+                LISTING,
+                BATCH,
+            ],
+        );
+        assert_eq!(lines[1], "rev-parse --local-env-vars", "the second child");
+    }
+
+    /// The control that the wrapper logs what runs: with two candidates
+    /// `build` never runs, so no batch is spawned and three children are.
+    #[test]
+    fn resolve_without_one_candidate_skips_the_object_read() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("model-count-candidates").expect("create scratch");
+        let work = repo_with_remote(&scratch);
+        run(&scratch, &work, &["branch", "workspace/other"]);
+        let repo = Repo::discover(&work).expect("discover the fixture");
+        let git = Git::for_repo(testing::counting_git(&scratch), &repo);
+
+        let (answer, lines) = counted(&scratch, &repo, &git);
+        match answer {
+            RepoModel::NotConfigured {
+                inferred: Err(Error::WorkspaceCandidates { .. }),
+            } => {}
+            other => panic!("resolve: expected NotConfigured(WorkspaceCandidates), got {other:?}"),
+        }
+        assert_children(&lines, &["--version", CONFIG_READ, LISTING]);
+        assert!(
+            !lines.iter().any(|line| line.starts_with(BATCH)),
+            "a batch ran without one candidate:\n{}",
+            lines.join("\n")
+        );
+    }
+
     /// D-09, research G3: in a `--filter=blob:none` partial clone the
     /// manifest blob is not local, and resolving fails closed as
     /// `ManifestUnreadable` without fetching it, so resolving never reaches
