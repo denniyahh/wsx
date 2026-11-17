@@ -10,5 +10,8 @@
 # Workflow B tooling (sync, phase worktrees, clean PR branches)
 only scripts/workspace
 
+# Claude Code pointer to the workspace-only AGENTS.md (CLAUDE.md suppresses AGENTS.md)
+only CLAUDE.local.md
+
 # Ignores .worktrees/ and graphify/research caches
 modified .gitignore
