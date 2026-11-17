@@ -6,6 +6,9 @@ points" are leads to check, not facts.
 
 Suggested start: `/gsd-spike` with this file as its input, so the work is recorded under `.planning/spikes/`.
 
+Partial evidence since: `AGENT-HOOKS-FINDINGS-2026-11-17.md` (capability matrix from installed sources, and the
+hand-written adapter baseline built and wired live; no live payloads, no candidates evaluated).
+
 ## The question
 
 The operator runs several coding agents (Claude Code, Codex, Gemini CLI, agy, Pi) and relies on hooks to block
