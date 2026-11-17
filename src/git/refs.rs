@@ -307,7 +307,10 @@ impl Repo {
     ///    `refs/replace/`.
     /// 3. Any entry in the common dir's `refs/replace` directory is
     ///    `Error::ReplaceRefsPresent` naming the directory.
-    /// 4. The text `refs/replace/` anywhere in the common dir's
+    /// 4. When the git dir is a linked worktree's, not the common dir, any
+    ///    entry in the git dir's own `refs/replace` directory is
+    ///    `Error::ReplaceRefsPresent` naming that directory.
+    /// 5. The text `refs/replace/` anywhere in the common dir's
     ///    `packed-refs` is `Error::ReplaceRefsPresent` naming the file.
     ///
     /// No ref name is parsed and no `packed-refs` record is decoded: presence
@@ -317,10 +320,12 @@ impl Repo {
     /// `Error::ReplaceRefsUnreadable`. Every error returned here is one of the
     /// three refusals `Error::is_replacement_refusal` lists.
     ///
-    /// Only the common dir is read: replace refs are shared refs, and git's
-    /// only per-worktree refs are `refs/worktree/`, `refs/bisect/` and
-    /// `refs/rewritten/`, so neither reader takes a `refs/replace/` from a
-    /// linked worktree's own git dir.
+    /// A linked worktree's own git dir is read too: git reads only
+    /// `refs/worktree/`, `refs/bisect/` and `refs/rewritten/` from it, while
+    /// gix lists loose refs there for every prefix and builds its replacement
+    /// map from them, so an entry in that dir's `refs/replace` is refused
+    /// although git ignores it. Neither reader takes a replace ref from that
+    /// dir's `packed-refs`, so it is not scanned.
     ///
     /// It over-refuses where neither reader would apply a replacement:
     /// replace refs turned off by `core.useReplaceRefs=false` or
@@ -350,6 +355,15 @@ impl Repo {
                 path: replace_dir,
                 packed: false,
             });
+        }
+        if self.git_dir() != self.common_dir() {
+            let private_dir = self.git_dir().join("refs/replace");
+            if holds_an_entry(&private_dir)? {
+                return Err(Error::ReplaceRefsPresent {
+                    path: private_dir,
+                    packed: false,
+                });
+            }
         }
         let packed_refs = self.common_dir().join("packed-refs");
         if packed_refs_name_the_base(&packed_refs)? {

@@ -145,8 +145,9 @@ pub enum Error {
     /// fsck reports such a tree as `treeNotSorted`.
     TreeNotSorted { commit: ObjectId, tree: ObjectId },
     /// Something is stored where git keeps replace refs: `path` is the
-    /// common dir's `refs/replace` directory, which holds an entry, or, when
-    /// `packed`, its `packed-refs` file, which holds the text
+    /// common dir's `refs/replace` directory or a linked worktree's own
+    /// `refs/replace` directory, either holding an entry, or, when `packed`,
+    /// the common dir's `packed-refs` file, which holds the text
     /// `refs/replace/`. wsx reads no object while it is there.
     ReplaceRefsPresent { path: PathBuf, packed: bool },
     /// The replace base setting `name`, the variable `GIT_REPLACE_REF_BASE`
