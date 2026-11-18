@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "A fifo at `.git/config` or `packed-refs` hangs wsx in-process, though D-39 says it is stopped"
   - id: WR-01
     severity: warning
@@ -39,7 +39,7 @@ findings:
     severity: warning
     disposition: open
     title: "A symbolic workspace branch is followed, though a symbolic integration rung is refused"
-open: 9
+open: 8
 total: 9
 recorded: 2026-11-18T05:12:18.204Z
 ---
@@ -48,7 +48,7 @@ recorded: 2026-11-18T05:12:18.204Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
+| CR-01 | critical | fixed | d8cae67 (test 3d44c24): discover's open held to CHILD_DEADLINE, special packed-refs refused unopened |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
