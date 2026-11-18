@@ -247,13 +247,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. `wsx check --json` matches a versioned, documented schema, and its exit codes are documented. A contract test enumerates the command tree and fails for any command without a pinned schema or whose output drifts from it (control: a field change without a version bump fails), so every later command must join the contract
   5. A source-scan test fails on any read of `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml` or `.claude`/`.codex` settings (control: a planted read trips it), and every command runs in a repo that has none of those files
 
-**Plans**: 2/9 plans executed
+**Plans**: 3/9 plans executed
 **Wave 1**
 - [x] 05-01-PLAN.md — Tracer: `wsx check` end to end for added paths (command table, read order, five scenarios); every error's D-06 class and kind; `docs/exit-codes.md`; reftable and replace refs exit 5
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 05-02-PLAN.md — `--json`: one versioned object for every outcome, D-09 hex bytes, failure object, D-04 inferred branch; `serde_json` dev-only
-- [ ] 05-03-PLAN.md — Git reads: NUL-framed tree lookups, tree listing, blobs, effective `core.hooksPath`, reflog and `FETCH_HEAD` times
+- [x] 05-03-PLAN.md — Git reads: NUL-framed tree lookups, tree listing, blobs, effective `core.hooksPath`, reflog and `FETCH_HEAD` times
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05-04-PLAN.md — Undeclared modified and deleted, stale `only`/`modified`, redundant built-in, D-05 order, feature-worktree case (D-02)
@@ -417,7 +417,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
 | 4. Repo model | 18/18 | Complete    | 2026-11-18 |
-| 5. Divergence check and command contract | 2/9 | In Progress | - |
+| 5. Divergence check and command contract | 3/9 | In Progress | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |
 | 8. Worktree lifecycle | 0/TBD | Not started | - |
