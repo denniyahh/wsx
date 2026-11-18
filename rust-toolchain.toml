@@ -16,5 +16,5 @@
 # fails instead of being installed silently.
 [toolchain]
 channel = "1.99.1"
-components = ["clippy", "rustfmt", "llvm-tools"]
+components = ["clippy", "rustfmt", "llvm-tools", "rust-analyzer"]
 profile = "minimal"
