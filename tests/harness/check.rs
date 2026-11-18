@@ -844,13 +844,17 @@ fn hook_mode_from_the_commit() -> Scenario {
 
 /// Fixture step: `scripts/run-pre-push` committed with `mode` (asserted
 /// `committed`), `scripts/hooks/pre-push` a symlink to `../run-pre-push`
-/// (asserted 120000), and `core.hooksPath` at `scripts/hooks`.
+/// (asserted 120000), and `core.hooksPath` at `scripts/hooks`. The link is
+/// then removed from the working tree, which the harness's observer records
+/// as regular files only; the commit and the index keep it, and both sides
+/// read those, never the working tree.
 fn hook_symlink(fixture: &mut Fixture, mode: u32, committed: &str) -> Result<(), String> {
     write_with_mode(fixture, b"scripts/run-pre-push", HOOK_SCRIPT, mode)?;
     write_symlink(fixture, PRE_PUSH, b"../run-pre-push")?;
     fixture.commit(WORK, b"chore(ws): link the pre-push hook\n")?;
     assert_committed_mode(fixture, b"scripts/run-pre-push", committed)?;
     assert_committed_mode(fixture, PRE_PUSH, "120000")?;
+    fixture.remove(WORK, PRE_PUSH)?;
     set_hooks_path(fixture, OsStr::new("scripts/hooks"))
 }
 

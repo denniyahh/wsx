@@ -17,7 +17,8 @@ use crate::model::manifest::encode_path;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Human {
     /// For stderr: the not-configured notice when the branch was inferred
-    /// (D-04), then the header and one line per problem.
+    /// (D-04), the notice of a `core.hooksPath` not checked (D-03), then the
+    /// header and one line per problem.
     pub diagnostics: Vec<String>,
     /// The one-line verdict.
     pub verdict: String,
@@ -78,6 +79,12 @@ pub fn human(report: &Report) -> Human {
              {branch} (run wsx init to configure this repository)"
         ));
     }
+    if let HookStatus::NotChecked { value, reason } = &report.hooks {
+        diagnostics.push(format!(
+            "wsx check: core.hooksPath {} is not checked: {reason}",
+            quoted(value)
+        ));
+    }
     let count = report.problems.len();
     if count == 0 {
         return Human {
@@ -105,8 +112,8 @@ pub fn human(report: &Report) -> Human {
 }
 
 /// The check's payload for the JSON object, in the contract's key order:
-/// `configured`, `workspace`, `integration`, then `problems` in D-05's
-/// order, present and empty when there are none (D-11).
+/// `configured`, `workspace`, `integration`, `hooks`, then `problems` in
+/// D-05's order, present and empty when there are none (D-11).
 pub fn json(report: &Report) -> Vec<(&'static str, Value)> {
     let integration = &report.integration;
     vec![
@@ -126,12 +133,33 @@ pub fn json(report: &Report) -> Vec<(&'static str, Value)> {
                 ("tip", Value::Str(integration.tip.to_string())),
             ]),
         ),
+        ("hooks", hooks_json(&report.hooks)),
         (
             "problems",
             Value::Array(report.problems.iter().map(problem_json).collect()),
         ),
     ]
 }
+
+/// The hooks object of the JSON payload: the value or directory, whether it
+/// was checked and, when not, why.
+fn hooks_json(hooks: &HookStatus) -> Value {
+    let (path, checked, reason) = match hooks {
+        HookStatus::NotSet => (Value::Null, false, Value::Str(NOT_SET_REASON.to_owned())),
+        HookStatus::NotChecked { value, reason } => {
+            (json::bytes(value), false, Value::Str(reason.clone()))
+        }
+        HookStatus::Checked { dir } => (json::bytes(dir), true, Value::Null),
+    };
+    Value::Object(vec![
+        ("path", path),
+        ("checked", Value::Bool(checked)),
+        ("reason", reason),
+    ])
+}
+
+/// Why the hooks object of an unset `core.hooksPath` says it was not checked.
+const NOT_SET_REASON: &str = "core.hooksPath is not set";
 
 /// One problem in the JSON payload: its kind's name, its path and its
 /// detail, `null` for a kind that carries none.

@@ -17,8 +17,6 @@
 //! root, an absolute target, an untracked or non-directory component, or an
 //! exhausted budget fails, naming the hook; nothing unresolved passes.
 
-#![expect(dead_code, reason = "check::run calls it from 05-06 task 2")]
-
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{Problem, ProblemKind};

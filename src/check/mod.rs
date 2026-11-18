@@ -15,7 +15,7 @@ pub use hooks::HookStatus;
 
 use std::collections::BTreeSet;
 
-use crate::git::{ChangeKind, Git, ObjectId, Repo, TreeChange, c_quote};
+use crate::git::{ChangeKind, Git, MODE_SYMLINK, ObjectId, Repo, TreeChange, c_quote};
 use crate::model::manifest::{Entry, EntryKind, covers, encode_path};
 use crate::model::{self, Model, RepoModel};
 
@@ -69,10 +69,6 @@ pub enum ProblemKind {
     RedundantBuiltin,
     /// A file under the hooks directory not committed executable, or a
     /// symlink there that does not resolve to one (DIV-03).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "check::run reports it from 05-06 task 2")
-    )]
     HookNotExecutable,
 }
 
@@ -117,13 +113,15 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     // From the integration tip, so `Added` is a workspace-only path (D-01).
     let changes = repo.tree_diff(&model.integration.tip, &model.workspace_tip)?;
     let carried = carried_only_paths(repo, git, &model)?;
-    let problems = evaluate(&model, &changes, &carried);
+    let mut problems = evaluate(&model, &changes, &carried);
+    let (hooks, hook_problems) = check_hooks(repo, git, &model)?;
+    problems.extend(hook_problems);
     Ok(Report {
         configured,
         workspace_branch: model.workspace_branch.clone(),
         workspace_tip: model.workspace_tip.clone(),
         integration: model.integration.clone(),
-        hooks: HookStatus::NotSet,
+        hooks,
         problems,
     })
 }
@@ -156,6 +154,41 @@ fn carried_only_paths(
         .zip(found)
         .filter_map(|(path, entry)| entry.map(|_| path.to_vec()))
         .collect())
+}
+
+/// What the check makes of git's effective `core.hooksPath`, and the hook
+/// problems under it, sorted by path (D-03). An unset value or one that does
+/// not normalise reads nothing more; otherwise one listing of the workspace
+/// tip's tree, and one blob read for the link text of every symlink in it
+/// when the directory is there and the listing holds one.
+fn check_hooks(
+    repo: &Repo,
+    git: &Git,
+    model: &Model,
+) -> Result<(HookStatus, Vec<Problem>), model::Error> {
+    let Some(value) = repo.hooks_path(git)? else {
+        return Ok((HookStatus::NotSet, Vec::new()));
+    };
+    let dir = match hooks::normalise(&value) {
+        Ok(dir) => dir,
+        Err(status) => return Ok((status, Vec::new())),
+    };
+    let listing = repo.list_tree(git, &model.workspace_tip)?;
+    let status = hooks::at_tip(&value, dir, &listing, &model.workspace_branch);
+    let HookStatus::Checked { dir } = &status else {
+        return Ok((status, Vec::new()));
+    };
+    let links: Vec<ObjectId> = listing
+        .iter()
+        .filter(|entry| entry.mode == MODE_SYMLINK)
+        .map(|entry| entry.id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let texts = repo.read_blobs(git, &links)?;
+    let targets = links.into_iter().zip(texts).collect();
+    let problems = hooks::evaluate_hooks(dir, &listing, &targets);
+    Ok((status, problems))
 }
 
 /// The problems in `changes`, the diff from the integration tip to the
