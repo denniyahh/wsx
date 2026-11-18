@@ -18,6 +18,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 
 const REPO_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const TMP_ROOT: &str = env!("CARGO_TARGET_TMPDIR");
@@ -31,14 +34,131 @@ struct Scan {
     findings: Vec<String>,
 }
 
+/// Names whose appearance anywhere in a literal is a finding.
+const NAMED: [&str; 4] = [
+    "ROADMAP.md",
+    "STATE.md",
+    ".planning/config.json",
+    "devflow.toml",
+];
+
+/// Directory names that are a finding only as a whole path component.
+const COMPONENTS: [&str; 2] = [".claude", ".codex"];
+
 /// Scans every `*.rs` file under `root` for literals naming a GSD, devflow
-/// or agent file.
+/// or agent file. Files are read in sorted order; one that is not UTF-8 or
+/// that the lexer refuses is a finding.
 fn scan(root: &Path) -> Scan {
-    let _ = root;
-    Scan {
-        files: 0,
-        findings: Vec::new(),
+    let mut paths = Vec::new();
+    collect_rs_files(root, &mut paths);
+    paths.sort();
+    let mut findings = Vec::new();
+    for path in &paths {
+        let relative = path.strip_prefix(root).unwrap_or(path).display();
+        let bytes = fs::read(path).expect("read a source file");
+        let tokens = String::from_utf8(bytes)
+            .map_err(|error| error.to_string())
+            .and_then(|text| TokenStream::from_str(&text).map_err(|error| error.to_string()));
+        match tokens {
+            Ok(tokens) => {
+                let mut literals = Vec::new();
+                collect_literals(tokens, &mut literals);
+                for literal in literals {
+                    if let Some(name) = forbidden_name(&literal) {
+                        findings.push(format!(
+                            "{relative}: literal {literal} names {name}, a GSD, devflow or agent file wsx must not read (IF-02)"
+                        ));
+                    }
+                }
+            }
+            Err(error) => findings.push(format!("cannot tokenize {relative}: {error}")),
+        }
     }
+    Scan {
+        files: paths.len(),
+        findings,
+    }
+}
+
+/// Every file under `dir` whose name ends in `.rs`, recursively.
+fn collect_rs_files(dir: &Path, paths: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read a source directory") {
+        let entry = entry.expect("read a directory entry");
+        let kind = entry.file_type().expect("read an entry's type");
+        if kind.is_dir() {
+            collect_rs_files(&entry.path(), paths);
+        } else if entry.file_name().to_string_lossy().ends_with(".rs") {
+            paths.push(entry.path());
+        }
+    }
+}
+
+/// The source text of every literal in `stream`, groups included, except
+/// inside doc attributes.
+fn collect_literals(stream: TokenStream, literals: &mut Vec<String>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    let mut at = 0;
+    while at < trees.len() {
+        if let Some(after) = doc_attribute_end(&trees, at) {
+            at = after;
+            continue;
+        }
+        match &trees[at] {
+            TokenTree::Group(group) => collect_literals(group.stream(), literals),
+            TokenTree::Literal(literal) => literals.push(literal.to_string()),
+            TokenTree::Ident(_) | TokenTree::Punct(_) => {}
+        }
+        at += 1;
+    }
+}
+
+/// When `trees[start]` opens a doc attribute (`#` or `# !`, then a bracket
+/// group whose first token is `doc`), the index just past it.
+fn doc_attribute_end(trees: &[TokenTree], start: usize) -> Option<usize> {
+    let TokenTree::Punct(hash) = trees.get(start)? else {
+        return None;
+    };
+    if hash.as_char() != '#' {
+        return None;
+    }
+    let mut at = start + 1;
+    if let Some(TokenTree::Punct(bang)) = trees.get(at)
+        && bang.as_char() == '!'
+    {
+        at += 1;
+    }
+    let TokenTree::Group(group) = trees.get(at)? else {
+        return None;
+    };
+    if group.delimiter() != Delimiter::Bracket {
+        return None;
+    }
+    match group.stream().into_iter().next()? {
+        TokenTree::Ident(ident) if ident == "doc" => Some(at + 1),
+        _ => None,
+    }
+}
+
+/// The forbidden name `literal` holds, if any.
+fn forbidden_name(literal: &str) -> Option<&'static str> {
+    NAMED
+        .into_iter()
+        .find(|name| literal.contains(name))
+        .or_else(|| {
+            COMPONENTS
+                .into_iter()
+                .find(|name| holds_component(literal, name))
+        })
+}
+
+/// Whether `name` appears in `literal` with a quote or a slash on both sides.
+fn holds_component(literal: &str, name: &str) -> bool {
+    let bytes = literal.as_bytes();
+    let bounds = |byte: Option<&u8>| matches!(byte, Some(b'"' | b'/'));
+    literal.match_indices(name).any(|(at, _)| {
+        let before = at.checked_sub(1).and_then(|index| bytes.get(index));
+        bounds(before) && bounds(bytes.get(at + name.len()))
+    })
 }
 
 /// The `*.rs` files under `root`, counted by an iterative walk written
