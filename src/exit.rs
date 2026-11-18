@@ -39,9 +39,13 @@ impl ExitClass {
     }
 
     /// The class's name as the documentation and the JSON output write it.
-    // `cfg_attr(not(test), ...)`: the binary reads the name first in the JSON
-    // output; the tests read it, which would leave the expectation unfulfilled.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by --json, 05-02"))]
+    // `cfg_attr(not(test), ...)`: the JSON failure object carries the kind and
+    // the exit code, not the class name, so only the tests read it, which
+    // would leave an unconditional expectation unfulfilled.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the docs test reads it; --json writes the code")
+    )]
     pub fn name(self) -> &'static str {
         match self {
             ExitClass::Success => "success",

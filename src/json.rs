@@ -10,8 +10,6 @@
 //! when the bytes are UTF-8, else `{"hex": <lowercase hex of the bytes>}`.
 //! Nothing is converted lossily, so a consumer always gets the exact bytes.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "first caller in 05-02 Task 2"))]
-
 /// A JSON value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {

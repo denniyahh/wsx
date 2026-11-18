@@ -2,22 +2,33 @@
 //! command, renders its output and errors, and turns the result into the
 //! exit code (D-06, `docs/exit-codes.md`).
 //!
-//! Grammar: `wsx --version`, alone, or `wsx <name>` for a name in
-//! `commands::COMMANDS`. Anything else is a usage error: nothing on stdout,
-//! the problem and the usage lines on stderr, exit 2. wsx never prompts and
-//! never reads stdin here.
+//! Grammar: `wsx --version`, alone, or `wsx <name> [--json]` for a name in
+//! `commands::COMMANDS`, `--json` at most once. Anything else is a usage
+//! error, exit 2: the problem and the usage lines on stderr, and nothing on
+//! stdout, unless the first argument names a command and `--json` is among
+//! the arguments after it, when stdout carries that command's failure object
+//! (D-08). wsx never prompts and never reads stdin here.
+//!
+//! `Sinks` decides where each line goes: diagnostics to stderr, the verdict
+//! to stdout, or to stderr with `--json`, and the JSON object to stdout,
+//! once, last.
 
 pub mod commands;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::process::ExitCode;
 
 use crate::check::{self, report};
 use crate::exit::{self, ExitClass};
 use crate::git::{self, Git, Repo};
+use crate::json::Value;
 use crate::model;
 
 use commands::{COMMANDS, CommandId, CommandSpec};
+
+/// The flag that asks for the JSON object on stdout.
+const JSON_FLAG: &str = "--json";
 
 /// Runs wsx with `args`, the arguments after the program name.
 pub fn run(args: Vec<OsString>) -> ExitCode {
@@ -26,17 +37,13 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             println!("wsx {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(Parsed::Command(spec)) => match spec.id {
-            CommandId::Check => run_check(spec),
-        },
-        Err(problem) => {
-            eprintln!("wsx: {problem}");
-            eprintln!("usage: wsx --version");
-            for spec in COMMANDS {
-                eprintln!("usage: wsx {}", spec.name);
+        Ok(Parsed::Command { spec, json }) => {
+            let sinks = Sinks { json };
+            match spec.id {
+                CommandId::Check => run_check(spec, &sinks),
             }
-            ExitCode::from(ExitClass::Usage.code())
         }
+        Err(usage) => usage_error(&usage),
     }
 }
 
@@ -44,63 +51,175 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
 enum Parsed {
     /// `wsx --version`.
     Version,
-    /// A command from the table.
-    Command(&'static CommandSpec),
+    /// A command from the table, with or without `--json`.
+    Command {
+        spec: &'static CommandSpec,
+        json: bool,
+    },
+}
+
+/// Why argv is not accepted.
+struct Usage {
+    /// The problem, for the message.
+    problem: String,
+    /// The command whose failure object stdout carries: set when the first
+    /// argument names a command and `--json` follows it.
+    json_for: Option<&'static CommandSpec>,
 }
 
 /// `arg` for a usage message, C-quoted so no control byte reaches the
-/// terminal raw.
-fn shown(arg: &str) -> String {
-    String::from_utf8_lossy(&git::c_quote(arg.as_bytes())).into_owned()
+/// terminal raw; C-quoting leaves only ASCII, so nothing is lost.
+fn shown(arg: &OsStr) -> String {
+    String::from_utf8_lossy(&git::c_quote(arg.as_encoded_bytes())).into_owned()
 }
 
 /// Parses `args` per the grammar, or says why they are not accepted.
-fn parse(args: &[OsString]) -> Result<Parsed, String> {
-    let words = args
+fn parse(args: &[OsString]) -> Result<Parsed, Usage> {
+    let plain = |problem: String| Usage {
+        problem,
+        json_for: None,
+    };
+    let Some((first, rest)) = args.split_first() else {
+        return Err(plain("no command given".to_owned()));
+    };
+    if first == "--version" && rest.is_empty() {
+        return Ok(Parsed::Version);
+    }
+    let spec = COMMANDS
         .iter()
-        .map(|arg| arg.to_str())
-        .collect::<Option<Vec<&str>>>()
-        .ok_or_else(|| "an argument is not valid UTF-8".to_owned())?;
-    match words.as_slice() {
-        [] => Err("no command given".to_owned()),
-        ["--version"] => Ok(Parsed::Version),
-        [word, rest @ ..] => {
-            let spec = COMMANDS
-                .iter()
-                .find(|spec| spec.name == *word)
-                .ok_or_else(|| format!("unknown command {}", shown(word)))?;
-            match rest {
-                [] => Ok(Parsed::Command(spec)),
-                [extra, ..] => Err(format!(
-                    "{} takes no argument, got {}",
-                    spec.name,
-                    shown(extra)
-                )),
-            }
+        .find(|spec| first == spec.name)
+        .ok_or_else(|| plain(format!("unknown command {}", shown(first))))?;
+    let json = rest.iter().any(|arg| arg == JSON_FLAG);
+    let refused = |problem: String| Usage {
+        problem,
+        json_for: json.then_some(spec),
+    };
+    let mut seen = false;
+    for arg in rest {
+        if arg != JSON_FLAG {
+            return Err(refused(format!(
+                "{} takes no argument but {JSON_FLAG}, got {}",
+                spec.name,
+                shown(arg)
+            )));
         }
+        if seen {
+            return Err(refused(format!("{JSON_FLAG} is given more than once")));
+        }
+        seen = true;
+    }
+    Ok(Parsed::Command { spec, json })
+}
+
+/// Reports `usage`: the problem and the usage lines on stderr, then, when
+/// `--json` was asked for after a command, its failure object; exit 2.
+fn usage_error(usage: &Usage) -> ExitCode {
+    eprintln!("wsx: {}", usage.problem);
+    eprintln!("usage: wsx --version");
+    for spec in COMMANDS {
+        eprintln!("usage: wsx {} [{JSON_FLAG}]", spec.name);
+    }
+    let class = ExitClass::Usage;
+    match usage.json_for {
+        Some(spec) => Sinks { json: true }.finish(class, || {
+            failure(spec, "usage", usage.problem.clone(), class)
+        }),
+        None => ExitCode::from(class.code()),
     }
 }
 
-/// Runs `wsx check` in the current directory's repository: diagnostics to
-/// stderr, the verdict to stdout, an error to stderr with its class's code.
-fn run_check(spec: &CommandSpec) -> ExitCode {
+/// Where each line of a run goes (D-08).
+struct Sinks {
+    /// Whether the run prints its JSON object.
+    json: bool,
+}
+
+impl Sinks {
+    /// A diagnostic line: stderr.
+    fn diagnostic(&self, line: &str) {
+        eprintln!("{line}");
+    }
+
+    /// The verdict line: stdout, or stderr when stdout carries the object.
+    fn verdict(&self, line: &str) {
+        if self.json {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+
+    /// Ends the run as `class`; with `--json`, first writes `object`'s
+    /// rendering and a newline to stdout in one write. A failed write is
+    /// reported on stderr and exits as the operating-system failure it is.
+    fn finish(&self, class: ExitClass, object: impl FnOnce() -> Value) -> ExitCode {
+        if self.json {
+            let mut rendered = object().render();
+            rendered.push('\n');
+            let mut stdout = std::io::stdout().lock();
+            if let Err(err) = stdout
+                .write_all(rendered.as_bytes())
+                .and_then(|()| stdout.flush())
+            {
+                eprintln!("wsx: cannot write the JSON object to stdout: {err}");
+                return ExitCode::from(ExitClass::GitFailed.code());
+            }
+        }
+        ExitCode::from(class.code())
+    }
+}
+
+/// The object every `--json` run prints: the command's name and schema
+/// version from its `COMMANDS` entry, then `payload`.
+fn envelope(spec: &CommandSpec, payload: Vec<(&'static str, Value)>) -> Value {
+    let mut members = vec![
+        ("command", Value::Str(spec.name.to_owned())),
+        ("schema_version", Value::Int(i64::from(spec.schema_version))),
+    ];
+    members.extend(payload);
+    Value::Object(members)
+}
+
+/// `spec`'s failure object: `error` with the error's `kind`, its `message`
+/// and the exit code of `class`.
+fn failure(spec: &CommandSpec, kind: &str, message: String, class: ExitClass) -> Value {
+    envelope(
+        spec,
+        vec![(
+            "error",
+            Value::Object(vec![
+                ("kind", Value::Str(kind.to_owned())),
+                ("message", Value::Str(message)),
+                ("exit_code", Value::Int(i64::from(class.code()))),
+            ]),
+        )],
+    )
+}
+
+/// Runs `wsx check` in the current directory's repository: diagnostics and
+/// errors to stderr, the verdict through `sinks`, then the object with
+/// `--json`; exits with the outcome's class.
+fn run_check(spec: &CommandSpec, sinks: &Sinks) -> ExitCode {
     match check_here() {
         Ok(report) => {
             let human = report::human(&report);
             for line in &human.diagnostics {
-                eprintln!("{line}");
+                sinks.diagnostic(line);
             }
-            println!("{}", human.verdict);
+            sinks.verdict(&human.verdict);
             let class = if report.problems.is_empty() {
                 ExitClass::Success
             } else {
                 ExitClass::Problems
             };
-            ExitCode::from(class.code())
+            sinks.finish(class, || envelope(spec, report::json(&report)))
         }
         Err(err) => {
-            eprintln!("wsx {}: {err}", spec.name);
-            ExitCode::from(exit::classify(&err).class.code())
+            sinks.diagnostic(&format!("wsx {}: {err}", spec.name));
+            let classified = exit::classify(&err);
+            sinks.finish(classified.class, || {
+                failure(spec, classified.kind, err.to_string(), classified.class)
+            })
         }
     }
 }

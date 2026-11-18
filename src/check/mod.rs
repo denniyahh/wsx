@@ -53,7 +53,6 @@ pub enum ProblemKind {
 
 impl ProblemKind {
     /// The kind's name as the JSON output writes it (D-11).
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by --json, 05-02"))]
     pub fn name(self) -> &'static str {
         match self {
             ProblemKind::UndeclaredAdded => "undeclared_added",
