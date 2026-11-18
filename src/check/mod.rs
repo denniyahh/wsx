@@ -10,12 +10,17 @@
 
 pub mod hooks;
 pub mod report;
+pub mod staleness;
 
 pub use hooks::HookStatus;
+pub use staleness::{Staleness, TimeRead};
 
 use std::collections::BTreeSet;
+use std::time::SystemTime;
 
-use crate::git::{ChangeKind, Git, MODE_SYMLINK, ObjectId, Repo, TreeChange, c_quote};
+use crate::git::{
+    ChangeKind, Git, MODE_SYMLINK, ObjectId, Repo, TreeChange, c_quote, epoch_seconds,
+};
 use crate::model::manifest::{Entry, EntryKind, covers, encode_path};
 use crate::model::{self, Model, RepoModel};
 
@@ -31,6 +36,8 @@ pub struct Report {
     pub workspace_tip: ObjectId,
     /// The integration branch and the tip the check compared.
     pub integration: model::Integration,
+    /// How stale the integration ref is (D-12); never a problem (D-13).
+    pub staleness: Staleness,
     /// What the check made of `core.hooksPath` (D-03).
     pub hooks: HookStatus,
     /// Every problem found, in D-05's order.
@@ -116,11 +123,15 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     let mut problems = evaluate(&model, &changes, &carried);
     let (hooks, hook_problems) = check_hooks(repo, git, &model)?;
     problems.extend(hook_problems);
+    // One clock reading, as whole unix seconds, for every age of the run.
+    let now = epoch_seconds(SystemTime::now());
+    let staleness = Staleness::unread(&model.integration.full_ref, now);
     Ok(Report {
         configured,
         workspace_branch: model.workspace_branch.clone(),
         workspace_tip: model.workspace_tip.clone(),
         integration: model.integration.clone(),
+        staleness,
         hooks,
         problems,
     })

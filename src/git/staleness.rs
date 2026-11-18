@@ -116,7 +116,7 @@ impl Repo {
 
 /// `time` in whole seconds since the epoch, negative before it, saturating
 /// at the bounds of `i64`.
-fn epoch_seconds(time: SystemTime) -> i64 {
+pub(crate) fn epoch_seconds(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
         Err(before) => i64::try_from(before.duration().as_secs()).map_or(i64::MIN, |secs| -secs),

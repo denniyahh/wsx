@@ -177,31 +177,161 @@ fn problem_json(problem: &Problem) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::staleness::{Source, Staleness, TimeRead, time_of};
     use crate::git::ObjectId;
     use crate::model::Integration;
 
-    /// The line `human` prints for a report holding `problem` alone,
-    /// against `refs/remotes/origin/develop`.
-    fn line_of(kind: ProblemKind, path: &[u8], detail: Option<&str>) -> String {
-        let report = Report {
+    /// The integration ref of the fixtures.
+    const ORIGIN_DEVELOP: &[u8] = b"refs/remotes/origin/develop";
+
+    /// The clock reading of the staleness tests.
+    const NOW: i64 = 1_800_000_000;
+
+    /// A configured report against `full_ref` with no `core.hooksPath`.
+    fn report_of(full_ref: &[u8], staleness: Staleness, problems: Vec<Problem>) -> Report {
+        Report {
             configured: true,
             workspace_branch: b"workspace/dev".to_vec(),
             workspace_tip: ObjectId::for_test("1111111111111111111111111111111111111111"),
             integration: Integration {
                 branch: b"develop".to_vec(),
-                full_ref: b"refs/remotes/origin/develop".to_vec(),
+                full_ref: full_ref.to_vec(),
                 tip: ObjectId::for_test("2222222222222222222222222222222222222222"),
             },
+            staleness,
             hooks: HookStatus::NotSet,
-            problems: vec![Problem {
+            problems,
+        }
+    }
+
+    /// Staleness that applies, with `ref_moved_at` and `fetched_at`.
+    fn applying(ref_moved_at: TimeRead, fetched_at: TimeRead) -> Staleness {
+        Staleness {
+            applies: true,
+            ref_moved_at,
+            fetched_at,
+            now: NOW,
+        }
+    }
+
+    /// The one diagnostic `human` prints for a report with no problem
+    /// against `full_ref`: the staleness line.
+    fn staleness_line(full_ref: &[u8], staleness: Staleness) -> String {
+        let mut diagnostics = human(&report_of(full_ref, staleness, Vec::new())).diagnostics;
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the staleness line alone: {diagnostics:?}"
+        );
+        diagnostics.remove(0)
+    }
+
+    /// The staleness object of the JSON payload of a report with no problem.
+    fn staleness_json(staleness: Staleness) -> Value {
+        json(&report_of(ORIGIN_DEVELOP, staleness, Vec::new()))
+            .into_iter()
+            .find(|(key, _)| *key == "staleness")
+            .map(|(_, value)| value)
+            .expect("a staleness key")
+    }
+
+    /// The line `human` prints for a report holding `problem` alone,
+    /// against `refs/remotes/origin/develop`: the last diagnostic, after the
+    /// header.
+    fn line_of(kind: ProblemKind, path: &[u8], detail: Option<&str>) -> String {
+        let report = report_of(
+            ORIGIN_DEVELOP,
+            applying(TimeRead::At(NOW), TimeRead::At(NOW)),
+            vec![Problem {
                 kind,
                 path: path.to_vec(),
                 detail: detail.map(str::to_owned),
             }],
-        };
+        );
         let mut diagnostics = human(&report).diagnostics;
-        assert_eq!(diagnostics.len(), 2, "the header and one problem line");
-        diagnostics.remove(1)
+        let line = diagnostics.pop().expect("a problem line");
+        assert!(
+            diagnostics
+                .last()
+                .is_some_and(|header| header.starts_with("wsx check: workspace/dev differs from")),
+            "the header before the one problem line: {diagnostics:?}"
+        );
+        line
+    }
+
+    /// Both times read: each with its age and its source.
+    #[test]
+    fn staleness_line_names_both_times() {
+        assert_eq!(
+            staleness_line(
+                ORIGIN_DEVELOP,
+                applying(TimeRead::At(NOW - 90), TimeRead::At(NOW - 7200))
+            ),
+            "wsx check: integration ref refs/remotes/origin/develop: last moved 1m 30s ago \
+             (reflog); last fetch 2h 0m ago (FETCH_HEAD)"
+        );
+    }
+
+    /// Neither time there: each reason in its place.
+    #[test]
+    fn staleness_line_says_what_is_missing() {
+        let staleness = applying(
+            time_of(Source::Reflog(ORIGIN_DEVELOP), Ok::<_, &str>(None)),
+            time_of(Source::FetchHead, Ok::<_, &str>(None)),
+        );
+        assert_eq!(
+            staleness_line(ORIGIN_DEVELOP, staleness),
+            "wsx check: integration ref refs/remotes/origin/develop: no reflog for \
+             refs/remotes/origin/develop; no FETCH_HEAD"
+        );
+    }
+
+    /// A local integration branch: staleness does not apply.
+    #[test]
+    fn local_branch_line_says_staleness_does_not_apply() {
+        let local = b"refs/heads/develop";
+        assert_eq!(
+            staleness_line(local, Staleness::unread(local, NOW)),
+            "wsx check: integration ref refs/heads/develop is a local branch; staleness does \
+             not apply"
+        );
+    }
+
+    /// A time 10 s after now: age -10 in JSON, as it is, and 0s in the line.
+    #[test]
+    fn staleness_json_reports_a_future_time_as_a_negative_age() {
+        let future = || applying(TimeRead::At(NOW + 10), TimeRead::At(NOW + 10));
+        assert_eq!(
+            staleness_json(future()),
+            Value::Object(vec![
+                ("applies", Value::Bool(true)),
+                ("reason", Value::Null),
+                ("ref_moved_at", Value::Int(NOW + 10)),
+                ("ref_moved_age_seconds", Value::Int(-10)),
+                ("ref_moved_reason", Value::Null),
+                ("fetched_at", Value::Int(NOW + 10)),
+                ("fetched_age_seconds", Value::Int(-10)),
+                ("fetched_reason", Value::Null),
+            ])
+        );
+        assert_eq!(
+            staleness_line(ORIGIN_DEVELOP, future()),
+            "wsx check: integration ref refs/remotes/origin/develop: last moved 0s ago \
+             (reflog); last fetch 0s ago (FETCH_HEAD)"
+        );
+    }
+
+    /// No problem and both times a year old: the verdict is still that every
+    /// difference is declared.
+    #[test]
+    fn staleness_never_changes_the_verdict() {
+        let year = 365 * 86_400;
+        let old = applying(TimeRead::At(NOW - year), TimeRead::At(NOW - year));
+        assert_eq!(
+            human(&report_of(ORIGIN_DEVELOP, old, Vec::new())).verdict,
+            "wsx check: every difference between workspace/dev and refs/remotes/origin/develop \
+             is declared"
+        );
     }
 
     /// Each kind's line is the check contract's text (05-01).
