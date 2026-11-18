@@ -1243,6 +1243,36 @@ mod tests {
         assert!(!read.defines_remote(b"g"));
     }
 
+    /// A `.git/config` that exists but cannot be resolved (a symlink to itself)
+    /// fails the read naming it, never reads as a repository with no config
+    /// of its own. git refuses such a config itself, so a fake git prints the
+    /// one record a real git would have to print for the read to get there.
+    #[test]
+    fn config_read_with_an_unresolvable_own_config_file_is_an_error() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-looped-own-file").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let own = repo.join(".git/config");
+        std::fs::remove_file(&own).unwrap_or_else(|err| panic!("remove {}: {err}", own.display()));
+        std::os::unix::fs::symlink(&own, &own)
+            .unwrap_or_else(|err| panic!("symlink {}: {err}", own.display()));
+        let body = "if [ \"$1\" = --version ]; then echo 'git version 2.54.0'; exit 0; fi\nprintf 'global\\0file:/g\\0remote.g.url\\nu\\0'";
+        let helper = Git::for_repo(testing::fake_git(&scratch, body), &found);
+
+        match found.read_config(&helper) {
+            Err(Error::Io { what, .. }) => assert!(
+                what.contains(".git/config"),
+                "the error does not name the config file: {what}"
+            ),
+            Err(other) => panic!("expected Io naming .git/config, got {other:?}"),
+            Ok(read) => panic!("expected Io naming .git/config, got a read: {read:?}"),
+        }
+    }
+
     /// A config file git cannot parse fails the read with git's own failure,
     /// never an empty answer.
     #[test]
