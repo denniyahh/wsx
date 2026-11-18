@@ -72,6 +72,24 @@ Evidence is from the gsd-security-auditor run at `4e64219` (ASVS L1: mitigation 
 | T-04-26 | Repudiation | 04-10 obligations | medium | mitigate | eight Phase 5/6/8/12 obligation lines in STATE.md `### Blockers/Concerns` | closed |
 | T-04-30 | Tampering | 04-11 replacement refs | medium | mitigate | guard runs first in `root_entry`; `replacement_chain_fails_closed`, `replacement_cycle_fails_closed`, `symbolic_replacement_fails_closed` and controls (limit: Repo reads before `resolve` are unguarded; Phase 5 obligation in STATE.md). **Reopened by code review CR-01 (04-REVIEW.md):** the guard lists only refs directly under the replace base, but git 2.56.0 also applies a nested `refs/replace/<dir>/<hex>` (reproduced by the orchestrator, with direct-ref and no-ref controls); per the reviewer's gix 0.90.0 probe, gix does not, so wsx and git can read different `.wsx.conf` bytes with no error. WR-01: a replace base without a trailing `/` makes the guard check nothing | open — below high threshold (non-blocking) |
 | T-04-39 | Tampering | 04-11 removal commands | medium | mitigate | `ref_word` quotes the ref name (applies T-04-36); `replacement_fix_commands_quote_a_ref_name_for_the_shell` | closed |
+| T-04-40 | Denial of service | 04-12 `refuse_replace_refs`, repo-wide | low | accept | see Accepted Risks Log | closed |
+| T-04-44 | Denial of service | 04-12 `packed_refs_name_the_base` | low | accept | see Accepted Risks Log | closed |
+| T-04-55 | Tampering | 04-13 `Repo::refuse_replace_refs`, linked worktree | high | mitigate | an entry in `<git_dir>/refs/replace` when the git dir is not the common dir stops the model before any object read (`private_replace_ref_in_a_linked_worktree_fails_closed`, git's answer asserted first, and the control that removing it resolves) | closed |
+| T-04-56 | Denial of service | 04-13 the same check | low | accept | see Accepted Risks Log | closed |
+| T-04-57 | Elevation of privilege | 04-14 `parse_config_z` own-file filter | high | mitigate | scope `local` and a canonical origin equal to the common dir's `config`, pinned on a byte fixture with every other source and by the ported differentials (`included_key_is_not_read`, `worktree_config_key_is_not_read`, `command_line_config_key_is_not_read`, `global_source_branch_does_not_configure`) | closed |
+| T-04-58 | Tampering | 04-14 `parse_config_z` record split | medium | mitigate | an incomplete record or a missing final NUL is `GitBadOutput`; values are kept as raw bytes in file order, so D-18's `KeyRepeated` still sees every value | closed |
+| T-04-59 | Denial of service | 04-14 `read_config` failure | low | accept | see Accepted Risks Log | closed |
+| T-04-60 | Tampering | 04-15 `build`, `integration`, `candidates` exact filter | high | mitigate | every decision compares a record's full name with the expected bytes; `nested_ref_under_a_rung_name_does_not_satisfy_the_rung` and `glob_bytes_in_a_remote_name_are_refused` (rung names through `check_full_ref_name`) pin it with git's superset asserted first | closed |
+| T-04-61 | Denial of service | 04-15 `list_refs` on a fifo | high | mitigate | refs are only listed, never read by name (D-29); `fifo_ref_is_skipped_without_hanging` runs `resolve` in a child killed after 10 s; every git child is also stopped after 10 s (D-39; `config_read_stops_on_a_fifo_branch_under_an_onbranch_include`) | closed |
+| T-04-62 | Information disclosure | 04-15 refs git reaches only by name | low | accept | see Accepted Risks Log | closed |
+| T-04-63 | Tampering | 04-15 a linked worktree's private refs | high | mitigate | git does not list them, so they are never candidates (`private_branch_in_a_linked_worktree_is_not_a_candidate`, WR-01) | closed |
+| T-04-64 | Information disclosure | 04-16 `read_tips` in a partial clone | medium | mitigate | `NO_LAZY_FETCH` first on the batch argv; `partial_clone_manifest_is_unreadable_without_a_fetch` with the scratch control that fails it when the flag is replaced | closed |
+| T-04-65 | Denial of service | 04-16 `Git::run_with_input` | high | mitigate | the buffer is written from a thread and the pipe dropped before `wait_with_output`; `run_with_input_feeds_exactly_the_buffer_then_eof` runs in a child killed after 30 s; `Git::run` keeps null stdin (`children_get_null_stdin`) | closed |
+| T-04-66 | Tampering | 04-16 entry classification | high | mitigate | kind from `%(objectmode)`; a symlink is `ManifestNotABlob` (`symlink_manifest_fails_closed`), never its link text parsed | closed |
+| T-04-67 | Tampering | 04-16 `parse_batch` | medium | mitigate | positional answers, exact byte counts, nothing left over; any other shape is `GitBadOutput` (`parse_batch_refuses_a_short_read`) | closed |
+| T-04-68 | Denial of service | 04-16 a huge `.wsx.conf` | low | accept | see Accepted Risks Log | closed |
+| T-04-69 | Elevation of privilege | 04-17 `read_config` under `GIT_CONFIG` | high | mitigate | drop (D-38): the config child runs without `GIT_CONFIG`; `git_config_variable_does_not_unconfigure_a_repo`, `run_without_var_hides_only_that_variable` | closed |
+| T-04-70 | Repudiation | 04-18 the mutation and gate evidence | medium | mitigate | the pass head is recorded and compared with HEAD; tested mutants equal the listed ones; both checks shown failing on doctored copies; the container gate is required (evidence in 04-18-SUMMARY) | closed |
 | T-04-32 | Tampering | 04-11 replace ref after open | low | accept | see Accepted Risks Log | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -87,6 +105,12 @@ Evidence is from the gsd-security-auditor run at `4e64219` (ASVS L1: mitigation 
 | AR-04-01 | T-04-37 | A ref changed between two reads inside `ref_commit` needs a concurrent writer of the user's own refs during one run, which can already move any ref wsx reads; git has no multi-ref snapshot; no test can place the change without a seam that exists for no other reason. The one-`find_ref` source check is a lint, not evidence | plan-time disposition (04-01, third-review replan `09bdc2b`); no separate owner sign-off recorded | 2026-11-05 |
 | AR-04-02 | T-04-38 | Same reasoning as T-04-37, applied to `integration` and `found`; the source check is a lint only | plan-time disposition (04-07, third-review replan `09bdc2b`); no separate owner sign-off recorded | 2026-11-05 |
 | AR-04-03 | T-04-32 | A replace ref changed during one run; git has no snapshot to read against; stated in the guard's doc comment and in `resolve`'s consistency contract | owner (second review, finding 7) | 2026-11-03 |
+| AR-04-04 | T-04-40 | D-22 as amended 2026-11-16: any entry under `refs/replace/` (a team's replacements fetched there, a stale `.lock`, an empty subdirectory), any `packed-refs` text naming it, or another replace base stops every command in a configured repo (a `GIT_REPLACE_REF_BASE` other than `refs/replace/` in every repo, from `Repo:: | plan-time disposition (04-12); no separate owner sign-off recorded | 2026-11-18 |
+| AR-04-05 | T-04-44 | `packed-refs` is read whole twice per `resolve` (in `build` and again in `root_entry`), a cost that grows with the file, as gix's own reads of it do; a non-replace ref whose name holds `refs/replace/` past its start is refused too, a shape no git command writes for refs it creates under its usual names | plan-time disposition (04-12); no separate owner sign-off recorded | 2026-11-18 |
+| AR-04-06 | T-04-56 | a stray entry in a worktree's private `refs/replace`, which git ignores, stops a configured repo from that worktree until removed; the message names the directory, and its remedy says such entries go by hand (D-22's accepted over-refusal) | plan-time disposition (04-13); no separate owner sign-off recorded | 2026-11-18 |
+| AR-04-07 | T-04-59 | config git cannot parse fails `resolve` in any repository, configured or not; git refuses every command there too, so a push never reaches the guard | plan-time disposition (04-14); no separate owner sign-off recorded | 2026-11-18 |
+| AR-04-08 | T-04-62 | a `refs/…`-target symlink reads as absent (D-29): a missing `wsx.sourceBranch` fails loudly, a symlinked `<remote>/HEAD` gives D-09's error with its fix | plan-time disposition (04-15); no separate owner sign-off recorded | 2026-11-18 |
+| AR-04-09 | T-04-68 | the blob arrives whole before the 64 KiB check, as `find_blob` read it; it is on the user's own branch (ASVS L1, research G10) | plan-time disposition (04-16); no separate owner sign-off recorded | 2026-11-18 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -111,3 +135,11 @@ What the audit does not establish: depth beyond L1 (no end-to-end trace; no prod
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-11-08
+
+## Security Audit 2026-11-18
+
+| Metric | Count |
+|---|---|
+| Threats found | 18 |
+| Closed | 18 |
+| Open | 0 |
