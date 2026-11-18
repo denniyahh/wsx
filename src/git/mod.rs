@@ -16,12 +16,6 @@
 //! Every refusal names its cause: an `Error` renders a message a user can act
 //! on without reading wsx's source.
 
-// Nothing in `main` calls this module until phase 5's `wsx check`, which
-// removes this attribute. `cfg_attr(not(test), ...)`: the tests use every
-// item, so on the test target the expectation would be unfulfilled. The
-// reason is short so rustfmt keeps the attribute on one line.
-#![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
-
 mod config;
 mod objects;
 mod quote;
@@ -61,6 +55,10 @@ pub struct ObjectId(String);
 
 impl ObjectId {
     /// The wsx form of a gix object id: its lowercase hex.
+    // `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+    // tests use it, so on the test target the expectation would be
+    // unfulfilled. The reason is short so rustfmt keeps it on one line.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     fn from_gix(id: &gix::oid) -> ObjectId {
         ObjectId(id.to_hex().to_string())
     }
@@ -184,6 +182,7 @@ pub enum Error {
     ImplicitWorkTree { git_dir: PathBuf, reason: String },
     /// The linked worktree `worktree`, registered in `git_dir`, no longer
     /// exists: `git worktree list` shows it as prunable.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
     StaleWorktree { worktree: PathBuf, git_dir: PathBuf },
     /// An operating-system call failed; `what` names the call and its subject.
     Io {

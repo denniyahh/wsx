@@ -20,6 +20,10 @@ use super::{Error, Git, NO_LAZY_FETCH, ObjectId};
 /// git's tree entry mode of a directory.
 pub const MODE_TREE: u32 = 0o040000;
 /// git's tree entry mode of a regular file.
+// `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+// tests use it, so on the test target the expectation would be
+// unfulfilled. The reason is short so rustfmt keeps it on one line.
+#[cfg_attr(not(test), expect(dead_code, reason = "not called by any command yet"))]
 pub const MODE_BLOB: u32 = 0o100644;
 /// git's tree entry mode of an executable file.
 pub const MODE_EXECUTABLE: u32 = 0o100755;

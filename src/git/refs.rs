@@ -156,6 +156,10 @@ impl Repo {
     /// The commit `id` names, peeling annotated tags as git's
     /// `<id>^{commit}` does. No ref is read and no revspec is parsed: `id`
     /// is decoded as hex, so a name or a short prefix is refused.
+    // `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+    // tests use it, so on the test target the expectation would be
+    // unfulfilled. The reason is short so rustfmt keeps it on one line.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     pub fn peel_commit(&self, id: &ObjectId) -> Result<ObjectId, Error> {
         self.peeled_commit(id)
             .map(|commit| ObjectId::from_gix(&commit.id))
@@ -164,6 +168,7 @@ impl Repo {
     /// The commit `id` peels to, as gix's commit. A decode failure is
     /// `ObjectId::to_gix`'s error; a missing object, or one that does not
     /// peel to a commit, is `Error::Gix` naming `id`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     fn peeled_commit(&self, id: &ObjectId) -> Result<gix::Commit<'_>, Error> {
         let gix_id = id.to_gix(self.repo.object_hash())?;
         self.repo

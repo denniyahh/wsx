@@ -15,6 +15,10 @@ use super::{Error, ObjectId};
 
 /// How far two revisions have diverged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+// tests use it, so on the test target the expectation would be
+// unfulfilled. The reason is short so rustfmt keeps it on one line.
+#[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 13"))]
 pub struct AheadBehind {
     /// Commits reachable from the first revision and not from the second
     /// (`git rev-list --count second..first`).
@@ -55,6 +59,7 @@ impl Repo {
     /// picks first; the tests pin that it equals `git merge-base`'s on one
     /// such history, which shows gix can match git there, not that it always
     /// does.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
     pub fn merge_base(&self, one: &ObjectId, two: &ObjectId) -> Result<Option<ObjectId>, Error> {
         let one_id = self.commit_id(one)?;
         let two_id = self.commit_id(two)?;
@@ -72,6 +77,7 @@ impl Repo {
     /// Takes object ids, each peeled to its commit as `range_walk` peels
     /// them. gix has no ahead/behind query, so each side is a walk from one
     /// commit with the other hidden, as `git rev-list --count` counts.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 13"))]
     pub fn ahead_behind(&self, first: &ObjectId, second: &ObjectId) -> Result<AheadBehind, Error> {
         let (first, second) = (std::slice::from_ref(first), std::slice::from_ref(second));
         Ok(AheadBehind {
@@ -88,6 +94,7 @@ impl Repo {
     /// `Repo::peel_commit`. Every id is peeled before any walk, so an id
     /// that does not peel is refused even with no tips, as git refuses it;
     /// no tips is otherwise the empty set, without a walk.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     pub fn range_walk(
         &self,
         tips: &[ObjectId],
@@ -180,12 +187,14 @@ impl Repo {
 
     /// The commits the object ids `ids` name, in order, as gix's ids: each
     /// through `commit_id`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     fn commit_ids(&self, ids: &[ObjectId]) -> Result<Vec<gix::ObjectId>, Error> {
         ids.iter().map(|id| self.commit_id(id)).collect()
     }
 
     /// The commit the object id `id` names, as gix's id: `id` peeled with
     /// `Repo::peel_commit`, then decoded.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     fn commit_id(&self, id: &ObjectId) -> Result<gix::ObjectId, Error> {
         self.peel_commit(id)?.to_gix(self.repo.object_hash())
     }
@@ -235,6 +244,7 @@ fn entry_class(mode: gix::object::tree::EntryMode) -> gix::object::tree::EntryKi
 }
 
 /// `ids` as one space-separated line of hex for a message.
+#[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
 fn render_ids(ids: &[ObjectId]) -> String {
     ids.iter()
         .map(ToString::to_string)

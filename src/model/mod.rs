@@ -9,11 +9,6 @@
 //! Every refusal names its cause and the fix: an `Error` renders a message a
 //! user can act on without reading wsx's source.
 
-// Nothing in `main` calls this module until phase 5's `wsx check`, which
-// removes this attribute. `cfg_attr(not(test), ...)`: the tests use every
-// item, so on the test target the expectation would be unfulfilled.
-#![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]
-
 pub mod manifest;
 
 use std::collections::BTreeSet;
@@ -734,6 +729,10 @@ impl Model {
     /// The paths that never reach a shared branch: `.wsx.conf`, then the
     /// worktree directory, then each `only` path in file order, duplicates
     /// kept. A `modified` path is shared, so it is not listed.
+    // `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+    // tests use it, so on the test target the expectation would be
+    // unfulfilled. The reason is short so rustfmt keeps it on one line.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     pub fn personal_paths(&self) -> Vec<&[u8]> {
         let mut paths = self.builtins().to_vec();
         paths.extend(
@@ -747,6 +746,7 @@ impl Model {
     }
 
     /// Whether some entry of `personal_paths()` covers `path`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 6"))]
     pub fn is_personal(&self, path: &[u8]) -> bool {
         self.personal_paths()
             .into_iter()

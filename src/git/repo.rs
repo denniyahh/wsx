@@ -24,6 +24,10 @@ pub struct Repo {
     /// The index this repository uses: inside a hook, the hook's
     /// `GIT_INDEX_FILE`. Its parent directory is canonical; the file itself
     /// may not exist (a fresh repository, or a lock file a commit removes).
+    // `cfg_attr(not(test), ...)` on each item no command reaches yet: the
+    // tests use it, so on the test target the expectation would be
+    // unfulfilled. The reason is short so rustfmt keeps it on one line.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 11"))]
     index_path: PathBuf,
 }
 
@@ -149,6 +153,7 @@ impl Repo {
 
     /// The index file this repository reads and writes, which a hook's
     /// `GIT_INDEX_FILE` overrides; the parent directory is canonical.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 11"))]
     pub fn index_path(&self) -> &Path {
         &self.index_path
     }
@@ -165,6 +170,7 @@ impl Repo {
     /// fails the whole list closed as `Error::StaleWorktree` naming it. A
     /// sibling git would refuse as owned by another user is
     /// `Error::ForeignOwner` naming it (see `refuse_untrusted_sibling`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
     pub fn siblings(&self) -> Result<Vec<Repo>, Error> {
         let mut opened = vec![self.repo.main_repo().map_err(|err| self.list_failed(err))?];
         for proxy in self.repo.worktrees().map_err(|err| self.list_failed(err))? {
@@ -197,6 +203,7 @@ impl Repo {
 
     /// The error for a gix failure to list or open this repository's
     /// worktrees.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
     fn list_failed(&self, err: impl std::fmt::Display) -> Error {
         Error::Gix {
             what: format!("list worktrees of {}", self.git_dir.display()),
@@ -387,6 +394,7 @@ fn trusted_only_through_sudo_uid(repo: &gix::Repository) -> bool {
 /// opens anyway, as `Error::StaleWorktree` naming the worktree and its git
 /// dir. Any other failure to read the directory is left to
 /// canonicalisation.
+#[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
 fn refuse_missing_worktree(repo: &gix::Repository) -> Result<(), Error> {
     let Some(workdir) = repo.workdir() else {
         return Ok(());
@@ -412,6 +420,7 @@ fn refuse_missing_worktree(repo: &gix::Repository) -> Result<(), Error> {
 /// One divergence from git is accepted: a foreign bare sibling listed in
 /// `safe.directory` is still refused, because gix applies `safe.directory`
 /// to a sibling only through its worktree. The stricter direction.
+#[cfg_attr(not(test), expect(dead_code, reason = "first caller in phase 7"))]
 fn refuse_untrusted_sibling(repo: &gix::Repository) -> Result<(), Error> {
     refuse_untrusted(repo)?;
     if repo.workdir().is_some() {
