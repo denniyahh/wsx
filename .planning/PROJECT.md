@@ -50,6 +50,7 @@ cut that silently drops code, is the unacceptable failure.
 - ✓ Black-box harness against the vendored shell oracle and Rust, with explicit expectations and positive/negative controls — Phase 2 (Rust sides enabled by phases 5-10)
 - ✓ Git adapter: gix 0.90 reads equal to git's, every history change through the `git` binary (hooks and signing run), discovery correct inside hooks and from any worktree, reftable and foreign-owned repos refused — Phase 3
 - ✓ Reads take commit ids, never names, so a ref named like `describe` output (`rel-1-g<hex>`) can no longer resolve to another commit than git's; gix's revspec parsers are banned by clippy and its `mailmap` feature by cargo-deny — Phase 03.1
+- ✓ One repo model per command: integration and workspace branches, base and push remotes, and the personal-path list from the workspace tip's `.wsx.conf` in the object database; a configured repo with a missing or invalid manifest fails closed — Phase 4 (CONF-01..05, CONF-07)
 
 ### Active
 
@@ -129,6 +130,7 @@ cut that silently drops code, is the unacceptable failure.
 | Scenarios declare their repo config; the oracle runs wherever it implements the behaviour | wsx is config-driven (owner, 2026-10-26); devflow-shaped configs are the oracle's only reference | ✓ Good (Phase 2) |
 | Where gix and git would read a different repository, wsx refuses instead of guessing | Fail closed over silent divergence: relative repo paths, object-store and common-dir variables, an underivable implicit worktree, `SUDO_UID` as non-root (Phase 3 review, 2026-10-27) | ✓ Good (Phase 3); exit codes in phase 5 |
 | The git layer reads by commit id; names are read only as an exact ref | gix's revspec parser tries hex prefixes and describe output before refs, where git reads refs first (Phase 03.1, 2026-11-03); the reftable backstop inside `resolve` was retired with it (owner, 2026-11-03) | ✓ Good (Phase 03.1); exact `refs/heads/<branch>` reads in Phases 4 and 8 |
+| Refs, ref listings, config and the manifest blob are read through the `git` binary; gix reads objects by id only | gix's ref and config reads needed parity code that kept diverging from git; the replace-ref refusal now guards gix object reads (owner pivot 2026-11-17, D-24..D-26) | ✓ Good (Phase 4: at most 4 batched git children per resolve) |
 | PR branches are cut with no upstream | The oracle's tracking of `<base>/develop` is an accident of `git branch -f` that breaks pull/push on the PR branch (owner, 2026-10-26) | — Pending (Phase 9) |
 
 ## Evolution
@@ -149,4 +151,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-04 after Phase 03.1*
+*Last updated: 2026-11-18 after Phase 4*

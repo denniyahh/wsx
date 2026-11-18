@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Oracle harness** - Hermetic scenario suite over the vendored shell oracle and the Rust binary, with recorded expectations and the hard-case matrix (completed 2026-10-26)
 - [x] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal (completed 2026-10-27)
 - [x] **Phase 03.1: Resolve ref names as git does** (INSERTED) - `Repo`'s reads take commit ids; gix's revspec parser is banned from the git layer (completed 2026-11-04)
-- [ ] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths
+- [x] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths (completed 2026-11-18)
 - [ ] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins
 - [ ] **Phase 6: Pre-push guard** - Fail-closed push guard over the real pushed refs, every commit in the range and the tip tree
 - [ ] **Phase 7: Workspace sync** - `wsx sync` by real merge from any worktree, with integration-rewrite detection
@@ -186,7 +186,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The personal-path list comes from `<workspace tip>:.wsx.conf` in the object database. An uncommitted edit to the working-tree file changes nothing, and a clean PR-branch checkout without the file resolves the same list. The only built-ins are `.wsx.conf` and the worktree directory: an undeclared `.planning` or `CLAUDE.md` is not personal, and once declared it is
   5. A repo with `wsx.sourceBranch` set but a missing or invalid manifest object fails closed with the reason; a repo without `wsx.sourceBranch` is reported as not configured
 
-**Plans**: 18/18 plans executed
+**Plans**: 18/18 plans complete
 **Wave 1**
 - [x] 04-01-PLAN.md — Tracer: `model::resolve` on a real repo through config, remote check, exact ref read, tip's `.wsx.conf`, parser and path list; full `model::Error`; the model suite under the runner-`GIT_DIR` check
 - [x] 04-02-PLAN.md — Harness fixture writes bare `wsx.baseRef`, `wsx.baseRemote` and `wsx.pushRemote` (D-02, D-08), whole harness suite run
@@ -394,7 +394,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 2. Oracle harness | 15/15 | Complete    | 2026-10-26 |
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
-| 4. Repo model | 18/18 | In Progress | - |
+| 4. Repo model | 18/18 | Complete    | 2026-11-18 |
 | 5. Divergence check and command contract | 0/TBD | Not started | - |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |
