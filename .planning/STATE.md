@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: executing
-stopped_at: Completed 05-05-PLAN.md
-last_updated: "2026-11-18T21:06:03.611Z"
+stopped_at: Completed 05-06-PLAN.md
+last_updated: "2026-11-18T21:28:01.259Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 6369e2f600aca40ea4082476712c8398351bb4f2
+state_head: 11c20c6e13662bc44f0dc8e0ed1e18c21801c349
 progress:
   total_phases: 16
   completed_phases: 5
   total_plans: 63
-  completed_plans: 59
+  completed_plans: 60
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Phase: 05 (Divergence check and command contract) — READY TO EXECUTE
-Plan: 6 of 9
+Plan: 7 of 9
 Status: Ready to execute
 Last activity: 2026-11-18 — Phase 04 complete, transitioned to Phase 5
 
@@ -118,6 +118,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 05 P03 | 16 min | 2 tasks | 7 files |
 | Phase 05 P04 | 13 min | 2 tasks | 3 files |
 | Phase 05 P05 | 12 min | 2 tasks | 5 files |
+| Phase 05 P06 | 17 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -247,6 +248,8 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-04: the stale-only lookup sits in carried_only_paths, called from run after model::resolve; evaluate stays pure
 - [Phase 05]: 05-04: manifest entries are deduplicated on (kind, path), first kept, before redundancy and staleness are judged
 - [Phase 05]: 05-05: IF-02 source rules are proc-macro2 token scans of src/ (doc attributes skipped, unlexable files are findings, no allowlist); a command in COMMANDS needs an enabled no-GSD run with a devflow parity control expecting the same exit
+- [Phase 05]: 05-06: symlink blobs are read only once the hooks directory is Checked at the tip
+- [Phase 05]: 05-06: a committed symlink in a harness fixture is removed from the working tree after its commit, because the outcome observer records regular files only
 
 ### Pending Todos
 
@@ -288,6 +291,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-18T21:06:02.608Z
-Stopped at: Completed 05-05-PLAN.md
+Last session: 2026-11-18T21:27:56.323Z
+Stopped at: Completed 05-06-PLAN.md
 Resume file: None
