@@ -85,11 +85,19 @@ impl Repo {
         }
         let stdout = output.stdout;
         let own = self.common_dir().join("config");
-        let own_config = std::fs::canonicalize(&own).map_err(|source| Error::Io {
-            what: format!("canonicalize {}", own.display()),
-            source,
-        })?;
-        parse_config_z(&stdout, cwd, &own_config).map_err(|problem| Error::GitBadOutput {
+        // No file of its own (git works without one) means no record is the
+        // repository's own, so every `wsx` key is unset.
+        let own_config = match std::fs::canonicalize(&own) {
+            Ok(path) => Some(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::Io {
+                    what: format!("canonicalize {}", own.display()),
+                    source,
+                });
+            }
+        };
+        parse_config_z(&stdout, cwd, own_config.as_deref()).map_err(|problem| Error::GitBadOutput {
             argv: READ_ARGS.iter().map(OsString::from).collect(),
             problem,
         })
@@ -108,12 +116,17 @@ const READ_ARGS: [&str; 6] = [
 ];
 
 /// The `ConfigRead` of `git config -z --show-scope --show-origin` output
-/// read in `cwd`, `own_config` being the repository's own file, canonical.
+/// read in `cwd`, `own_config` being the repository's own file, canonical,
+/// or `None` when it has none.
 /// Each record is `scope NUL origin NUL key [LF value] NUL`; a key with no LF
 /// is one empty value. Records `read_config` does not keep are skipped. A
 /// last record that is not a full triple, or output not ending in NUL, is
 /// `Err` naming the problem.
-fn parse_config_z(stdout: &[u8], cwd: &Path, own_config: &Path) -> Result<ConfigRead, String> {
+fn parse_config_z(
+    stdout: &[u8],
+    cwd: &Path,
+    own_config: Option<&Path>,
+) -> Result<ConfigRead, String> {
     let Some(body) = stdout.strip_suffix(b"\0") else {
         return Err("the output does not end in NUL, so its last record is incomplete".to_owned());
     };
@@ -185,13 +198,14 @@ const GIT_SCOPES: [&[u8]; 7] = [
 ];
 
 /// Whether `origin` is `file:<path>` and `<path>`, resolved against `cwd`
-/// when relative, canonicalises to `own_config`; `None` when `origin` is not
+/// when relative, canonicalises to `own_config` (never, when that is `None`);
+/// `None` when `origin` is not
 /// `file:` or its path cannot be canonicalised, so the caller cannot tell
 /// whose key it is.
-fn is_own_file(origin: &[u8], cwd: &Path, own_config: &Path) -> Option<bool> {
+fn is_own_file(origin: &[u8], cwd: &Path, own_config: Option<&Path>) -> Option<bool> {
     let path = origin.strip_prefix(b"file:")?;
     let found = cwd.join(OsStr::from_bytes(path)).canonicalize().ok()?;
-    Some(found == own_config)
+    Some(own_config == Some(found.as_path()))
 }
 
 #[cfg(test)]
@@ -851,7 +865,7 @@ mod tests {
             .join(".git/config")
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}/.git/config: {err}", repo.display()));
-        parse_config_z(stdout, repo, &own)
+        parse_config_z(stdout, repo, Some(&own))
     }
 
     /// `parsed`, failing the test on `Err`.
