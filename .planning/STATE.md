@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: executing
-stopped_at: Completed 05-07-PLAN.md
-last_updated: "2026-11-18T21:45:25.626Z"
+stopped_at: Completed 05-08-PLAN.md
+last_updated: "2026-11-18T22:16:45.743Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 1947247ae55fa84567d9a7c97c6dc588a98fbe04
+state_head: 27fd7ee201442455a257f1459e24c1b94cc4f78f
 progress:
   total_phases: 16
   completed_phases: 5
   total_plans: 63
-  completed_plans: 61
+  completed_plans: 62
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Phase: 05 (Divergence check and command contract) — READY TO EXECUTE
-Plan: 8 of 9
+Plan: 9 of 9
 Status: Ready to execute
 Last activity: 2026-11-18 — Phase 04 complete, transitioned to Phase 5
 
@@ -120,6 +120,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 05 P05 | 12 min | 2 tasks | 5 files |
 | Phase 05 P06 | 17 min | 2 tasks | 6 files |
 | Phase 05 P07 | 13 min | 2 tasks | 7 files |
+| Phase 05 P08 | 15min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -253,6 +254,8 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-06: a committed symlink in a harness fixture is removed from the working tree after its commit, because the outcome observer records regular files only
 - [Phase 05]: 05-07: run reads the clock once via git::epoch_seconds; staleness::read owns the applies branch and maps every read answer, errors included, through time_of, so staleness never reaches the exit code (D-13)
 - [Phase 05]: 05-07: the staleness line follows the not-configured and hooks notices and precedes the problems header; the staleness JSON object sits between integration and hooks
+- [Phase 05]: 05-08: jsonschema 0.61.2 (dev-only, default features off) validates --json output; deny.toml allows MIT-0 for borrow-or-share 0.2.4 (jsonschema -> fluent-uri -> borrow-or-share), operator decision
+- [Phase 05]: 05-08: a pinned schema file never changes; any change is a new <name>.v<N+1>.schema.json with its own pin in SCHEMA_PINS, old file and pin kept
 
 ### Pending Todos
 
@@ -294,6 +297,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-18T21:45:24.655Z
-Stopped at: Completed 05-07-PLAN.md
+Last session: 2026-11-18T22:16:44.870Z
+Stopped at: Completed 05-08-PLAN.md
 Resume file: None
