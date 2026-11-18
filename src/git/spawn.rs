@@ -311,12 +311,17 @@ impl Git {
     /// other git command, `git push` included, reads the repository's config
     /// (04-17, the operator). No other child loses a variable its target
     /// would keep.
+    ///
+    /// It returns the child's whole `Output`, whatever its exit, so the
+    /// caller can tell git's exit 1 for "no key matched" (nothing printed)
+    /// from an exit 1 after records; only a refused version check or a child
+    /// that cannot be started is `Err`.
     pub fn run_without_var<I, S>(
         &self,
         worktree: &Path,
         args: I,
         var: &str,
-    ) -> Result<Vec<u8>, Error>
+    ) -> Result<Output, Error>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -328,7 +333,10 @@ impl Git {
         self.ensure_version(worktree)?;
         let mut command = self.command(worktree, &argv)?;
         command.env_remove(var);
-        finish(command, argv, worktree)
+        command.output().map_err(|source| Error::Io {
+            what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
+            source,
+        })
     }
 
     /// Runs `git <args>` in `worktree` as `run` does, with `input` on its
@@ -859,7 +867,8 @@ mod tests {
 
         let without = lines(
             git.run_without_var(&scratch.root, ["status"], "GIT_CONFIG")
-                .unwrap_or_else(|err| panic!("run_without_var: {err}")),
+                .unwrap_or_else(|err| panic!("run_without_var: {err}"))
+                .stdout,
         );
         assert!(
             !without.iter().any(|line| line.starts_with("GIT_CONFIG=")),

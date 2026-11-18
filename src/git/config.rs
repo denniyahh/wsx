@@ -57,8 +57,8 @@ impl Repo {
     /// origin, includes too: the set `git remote add` refuses with exit 3
     /// (D-36, A2).
     ///
-    /// git's exit 1 with empty stderr means no key matched and is an empty
-    /// read; any other failure is `Error::GitFailed`, and output that does
+    /// git's exit 1 with nothing on stdout or stderr means no key matched and
+    /// is an empty read; any other failure is `Error::GitFailed`, and output that does
     /// not parse is `Error::GitBadOutput`, never fewer keys (CONF-07). The
     /// read is as fresh as the call: unlike gix's config snapshot, frozen when
     /// `Repo::discover` opened the repository, a value set later is seen.
@@ -70,15 +70,20 @@ impl Repo {
     /// repository's config (04-17, the operator).
     pub fn read_config(&self, git: &Git) -> Result<ConfigRead, Error> {
         let cwd = self.worktree().unwrap_or(self.git_dir());
-        let stdout = match git.run_without_var(cwd, READ_ARGS, "GIT_CONFIG") {
-            Ok(stdout) => stdout,
-            Err(Error::GitFailed {
-                status: Some(1),
-                stderr,
-                ..
-            }) if stderr.is_empty() => return Ok(ConfigRead::default()),
-            Err(err) => return Err(err),
-        };
+        let output = git.run_without_var(cwd, READ_ARGS, "GIT_CONFIG")?;
+        let nothing_matched =
+            output.status.code() == Some(1) && output.stderr.is_empty() && output.stdout.is_empty();
+        if nothing_matched {
+            return Ok(ConfigRead::default());
+        }
+        if !output.status.success() {
+            return Err(Error::GitFailed {
+                argv: READ_ARGS.iter().map(OsString::from).collect(),
+                status: output.status.code(),
+                stderr: output.stderr,
+            });
+        }
+        let stdout = output.stdout;
         let own = self.common_dir().join("config");
         let own_config = std::fs::canonicalize(&own).map_err(|source| Error::Io {
             what: format!("canonicalize {}", own.display()),
@@ -126,14 +131,29 @@ fn parse_config_z(stdout: &[u8], cwd: &Path, own_config: &Path) -> Result<Config
         ));
     }
     let mut read = ConfigRead::default();
-    for &[scope, origin, entry] in records {
+    for (index, &[scope, origin, entry]) in records.iter().enumerate() {
+        let number = index + 1;
+        if !GIT_SCOPES.contains(&scope) {
+            return Err(format!(
+                "record {number} has scope {}, which git does not print",
+                scope.escape_ascii()
+            ));
+        }
         let (key, value) = match entry.iter().position(|byte| *byte == b'\n') {
             Some(at) => (&entry[..at], &entry[at + 1..]),
             None => (entry, &b""[..]),
         };
         if let Some(var) = key.strip_prefix(b"wsx.") {
-            if !var.contains(&b'.') && scope == b"local" && is_own_file(origin, cwd, own_config) {
-                read.values.push((key.to_vec(), value.to_vec()));
+            if !var.contains(&b'.') && scope == b"local" {
+                let own = is_own_file(origin, cwd, own_config).ok_or_else(|| {
+                    format!(
+                        "record {number} has origin {}, not a config file that can be resolved",
+                        origin.escape_ascii()
+                    )
+                })?;
+                if own {
+                    read.values.push((key.to_vec(), value.to_vec()));
+                }
             }
         } else if let Some(name) = remote_name(key)
             && (scope == b"local" || scope == b"worktree")
@@ -153,15 +173,25 @@ fn remote_name(key: &[u8]) -> Option<&[u8]> {
     Some(&rest[..dot]).filter(|name| !name.is_empty())
 }
 
+/// The scopes `git config --show-scope` prints.
+const GIT_SCOPES: [&[u8]; 7] = [
+    b"system",
+    b"global",
+    b"local",
+    b"worktree",
+    b"command",
+    b"submodule",
+    b"unknown",
+];
+
 /// Whether `origin` is `file:<path>` and `<path>`, resolved against `cwd`
-/// when relative, canonicalises to `own_config`. A path that cannot be
-/// canonicalised is not the own file.
-fn is_own_file(origin: &[u8], cwd: &Path, own_config: &Path) -> bool {
-    origin.strip_prefix(b"file:").is_some_and(|path| {
-        cwd.join(OsStr::from_bytes(path))
-            .canonicalize()
-            .is_ok_and(|found| found == own_config)
-    })
+/// when relative, canonicalises to `own_config`; `None` when `origin` is not
+/// `file:` or its path cannot be canonicalised, so the caller cannot tell
+/// whose key it is.
+fn is_own_file(origin: &[u8], cwd: &Path, own_config: &Path) -> Option<bool> {
+    let path = origin.strip_prefix(b"file:")?;
+    let found = cwd.join(OsStr::from_bytes(path)).canonicalize().ok()?;
+    Some(found == own_config)
 }
 
 #[cfg(test)]
