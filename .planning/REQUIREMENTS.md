@@ -71,11 +71,11 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Configuration and manifest
 
-- [ ] **CONF-01**: `.wsx.conf` on the workspace branch declares `only <path>` (workspace-only) and `modified <path>` (a shared file deliberately changed). Paths are raw bytes, written C-quoted the way git quotes them when they contain special bytes (newline, quote, backslash, non-ASCII), so any git path round-trips (proptest: newline, non-UTF-8, spaces, prefix boundaries). A path matches itself and anything under it, never a mere name prefix (`.planning` ≠ `.planningX`). Unknown line kinds are an error naming the line
-- [ ] **CONF-02**: The only built-in personal paths are wsx's own: `.wsx.conf` and the worktree directory. Every other personal path (agent dirs, `.planning`, `scratch`, …) is declared in the manifest; `wsx init` presets can write the common ones (MIG-01). The guard, the cut, the divergence check and `status` all read that single resolved list (fixes the oracle's three diverging, agent-specific lists). A repo-specific file like root `CLAUDE.md` is personal only if declared: devflow declares it, wsx doesn't
-- [ ] **CONF-03**: The integration branch is resolved from `wsx.baseRef`, falling back to a chain that prefers `develop`, then `next`, then the remote default branch. It's never taken blindly from `origin/HEAD`
-- [ ] **CONF-04**: The base remote (where the integration branch lives) and the push remote (where PR branches go) are configured separately, so fork layouts work (gsd-core: `upstream/next` base, `origin` push). Both default to `origin`
-- [ ] **CONF-05**: The workspace branch is resolved from `wsx.sourceBranch`, which `wsx init`/`wsx migrate` write. With no config, wsx falls back to the only local `workspace/*` or `personal/*` branch, ignoring branches recorded as made by `wsx new`. Zero or several candidates is an error that lists them (gsd-core has `personal/workspace` and `personal/workspace-backup`)
+- [x] **CONF-01**: `.wsx.conf` on the workspace branch declares `only <path>` (workspace-only) and `modified <path>` (a shared file deliberately changed). Paths are raw bytes, written C-quoted the way git quotes them when they contain special bytes (newline, quote, backslash, non-ASCII), so any git path round-trips (proptest: newline, non-UTF-8, spaces, prefix boundaries). A path matches itself and anything under it, never a mere name prefix (`.planning` ≠ `.planningX`). Unknown line kinds are an error naming the line
+- [x] **CONF-02**: The only built-in personal paths are wsx's own: `.wsx.conf` and the worktree directory. Every other personal path (agent dirs, `.planning`, `scratch`, …) is declared in the manifest; `wsx init` presets can write the common ones (MIG-01). The guard, the cut, the divergence check and `status` all read that single resolved list (fixes the oracle's three diverging, agent-specific lists). A repo-specific file like root `CLAUDE.md` is personal only if declared: devflow declares it, wsx doesn't
+- [x] **CONF-03**: The integration branch is resolved from `wsx.baseRef`, falling back to a chain that prefers `develop`, then `next`, then the remote default branch. It's never taken blindly from `origin/HEAD`
+- [x] **CONF-04**: The base remote (where the integration branch lives) and the push remote (where PR branches go) are configured separately, so fork layouts work (gsd-core: `upstream/next` base, `origin` push). Both default to `origin`
+- [x] **CONF-05**: The workspace branch is resolved from `wsx.sourceBranch`, which `wsx init`/`wsx migrate` write. With no config, wsx falls back to the only local `workspace/*` or `personal/*` branch, ignoring branches recorded as made by `wsx new`. Zero or several candidates is an error that lists them (gsd-core has `personal/workspace` and `personal/workspace-backup`)
 - [ ] **CONF-06**: Branch names are chosen by the caller: a human, or an orchestrator such as devflow. wsx reads no phase concept or branch template from any other tool. Worktrees live under `wsx.worktreeDir` (default `.worktrees/`), named after the branch
 - [x] **CONF-07**: The authoritative manifest is `<workspace-branch tip>:.wsx.conf`, read from the object database, never the working tree. Guard, cut, check and status use it from any checkout, including clean PR branches that don't carry it. A repo is "configured" when local git config has `wsx.sourceBranch`. Once configured, a missing or invalid manifest object fails closed
 
@@ -236,11 +236,11 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | HARN-04 | Phase 1 | Complete |
 | HARN-05 | Phase 2 | Complete |
 | HARN-06 | Phase 2 | Complete |
-| CONF-01 | Phase 4 | Gaps Found |
-| CONF-02 | Phase 4 | Gaps Found |
-| CONF-03 | Phase 4 | Gaps Found |
-| CONF-04 | Phase 4 | Gaps Found |
-| CONF-05 | Phase 4 | Gaps Found |
+| CONF-01 | Phase 4 | Complete |
+| CONF-02 | Phase 4 | Complete |
+| CONF-03 | Phase 4 | Complete |
+| CONF-04 | Phase 4 | Complete |
+| CONF-05 | Phase 4 | Complete |
 | CONF-06 | Phase 8 | Pending |
 | CONF-07 | Phase 4 | Complete |
 | WSYNC-01 | Phase 7 | Pending |
