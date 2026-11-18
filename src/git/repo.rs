@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
 use std::time::Duration;
 
 use gix::sec::trust::DefaultForLevel;
@@ -39,9 +41,9 @@ impl Repo {
     }
 
     /// `discover` with `deadline` as the limit on opening the repository.
-    fn discover_within(start: &Path, _deadline: Duration) -> Result<Repo, Error> {
+    fn discover_within(start: &Path, deadline: Duration) -> Result<Repo, Error> {
         super::refs::refuse_replace_base_env()?;
-        let mut repo = Repo::open_gix(start)?;
+        let mut repo = Repo::open_gix_within(start, deadline)?;
         refuse_at_ceiling(start, &repo)?;
         refuse_object_store_env()?;
         refuse_untrusted(&repo)?;
@@ -50,6 +52,40 @@ impl Repo {
         refuse_relative_repo_env(&repo)?;
         apply_implicit_worktree(&mut repo)?;
         Repo::from_gix(repo)
+    }
+
+    /// `open_gix` within `deadline`: gix reads the config, `packed-refs` and
+    /// loose replace refs in-process while it opens the repository, and a fifo
+    /// at any of them would block that read forever (D-39). A probe open runs
+    /// first on its own thread, abandoned after `deadline` as
+    /// `Error::OpenTimedOut`; only when it finished does the open the caller
+    /// keeps run here (gix's repository is not `Send` in this build, so the
+    /// probe's cannot be handed over). An abandoned probe stays blocked until
+    /// the process exits, which a refusing run does at once. A fifo planted
+    /// between the two opens is not caught: that needs a concurrent writer of
+    /// the user's own git dir during one run (as T-04-37 accepts for refs).
+    fn open_gix_within(start: &Path, deadline: Duration) -> Result<gix::Repository, Error> {
+        let (sender, probed) = mpsc::channel();
+        let owned = start.to_path_buf();
+        thread::spawn(move || {
+            let _ = sender.send(Repo::open_gix(&owned).map(drop));
+        });
+        match probed.recv_timeout(deadline) {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(Error::OpenTimedOut {
+                    start: start.to_path_buf(),
+                    after: deadline,
+                });
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(Error::NotARepo {
+                    start: start.to_path_buf(),
+                    reason: "the probe open panicked".to_owned(),
+                });
+            }
+        }
+        Repo::open_gix(start)
     }
 
     /// The only gix open or discover call in wsx. Trust is mapped without a

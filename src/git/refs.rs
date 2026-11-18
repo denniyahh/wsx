@@ -297,6 +297,22 @@ fn holds_an_entry(dir: &Path) -> Result<bool, Error> {
 /// a byte search rather than a record parser. A missing `path` holds nothing;
 /// any other failure to read it is `Error::ReplaceRefsUnreadable` naming it.
 fn packed_refs_name_the_base(path: &Path) -> Result<bool, Error> {
+    let unreadable = |source| Error::ReplaceRefsUnreadable {
+        path: path.to_path_buf(),
+        source,
+    };
+    // A fifo or other special file there would block the read forever, so
+    // only a regular file is opened (D-39).
+    match std::fs::metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(unreadable(source)),
+        Ok(meta) if !meta.is_file() => {
+            return Err(unreadable(std::io::Error::other(
+                "not a regular file, so wsx does not open it",
+            )));
+        }
+        Ok(_) => {}
+    }
     match std::fs::read(path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(Error::ReplaceRefsUnreadable {
