@@ -48,6 +48,9 @@ pub struct TipObjects {
 enum BatchAnswer {
     /// git printed `<request> missing`.
     Missing,
+    /// git printed `<id> submodule`: the request named a gitlink whose
+    /// commit this repository does not hold, so there are no bytes.
+    Submodule,
     /// git printed the object: its id, type, mode (empty for a request that
     /// is not `<tree-ish>:<path>`) and bytes.
     Found {
@@ -60,7 +63,9 @@ enum BatchAnswer {
 
 /// The `count` answers in `stdout`, in request order: answer i belongs to
 /// request i, so the echoed request text is never parsed back. A header
-/// ending in ` missing` is `Missing`; any other header is exactly four
+/// ending in ` missing` is `Missing`, and `<full hex id> submodule` (git's
+/// answer for a gitlink whose commit is absent) is `Submodule`; any other
+/// header is exactly four
 /// space-separated fields (a full hex id, a type, a decimal size and a mode
 /// that may be empty), followed by exactly that many bytes and one LF.
 /// Anything else, a short read or a byte after the last answer included, is
@@ -81,6 +86,11 @@ fn parse_batch(stdout: &[u8], count: usize) -> Result<Vec<BatchAnswer>, String> 
             continue;
         }
         let fields: Vec<&[u8]> = header.split(|&byte| byte == b' ').collect();
+        if let [id, b"submodule"] = fields.as_slice() {
+            ObjectId::from_hex(id).ok_or_else(|| bad("an id that is not full hex"))?;
+            answers.push(BatchAnswer::Submodule);
+            continue;
+        }
         let [id, kind, size, mode] = fields.as_slice() else {
             return Err(bad("a header that is not four fields"));
         };
@@ -152,6 +162,13 @@ fn peeled_commit(
             request: request.to_vec(),
         }),
         BatchAnswer::Found { id, kind, .. } if kind == b"commit" => Ok(id),
+        BatchAnswer::Submodule => Err(Error::GitBadOutput {
+            argv: argv.to_vec(),
+            problem: format!(
+                "{} answered as a submodule, not a commit",
+                String::from_utf8_lossy(request)
+            ),
+        }),
         BatchAnswer::Found { kind, .. } => Err(Error::GitBadOutput {
             argv: argv.to_vec(),
             problem: format!(
@@ -177,6 +194,7 @@ fn manifest_entry(
         problem,
     };
     match entry {
+        BatchAnswer::Submodule => Ok(RootEntry::NotABlob { kind: "submodule" }),
         BatchAnswer::Found {
             kind, mode, data, ..
         } => match mode.as_slice() {
@@ -206,6 +224,10 @@ fn manifest_entry(
                     }),
                 }
             }
+            BatchAnswer::Submodule => Err(bad(format!(
+                "{} answered as a submodule, not a tree",
+                String::from_utf8_lossy(&requests.tree)
+            ))),
             BatchAnswer::Found { kind, .. } => Err(bad(format!(
                 "{} answered with a {}, not a tree",
                 String::from_utf8_lossy(&requests.tree),
@@ -466,6 +488,41 @@ mod tests {
         ) {
             Ok(manifest) => assert_eq!(manifest, RootEntry::NotABlob { kind: "submodule" }),
             Err(err) => panic!("expected the submodule entry, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_batch_reads_a_submodule_answer() {
+        let stdout = format!("{COMMIT} submodule\n");
+        assert_eq!(
+            parse_batch(stdout.as_bytes(), 1),
+            Ok(vec![BatchAnswer::Submodule])
+        );
+    }
+
+    #[test]
+    fn commit_peel_answered_as_a_submodule_is_bad_output() {
+        match peeled_commit(BatchAnswer::Submodule, b"ws^{commit}", &batch_argv()) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, "ws^{commit} answered as a submodule, not a commit");
+            }
+            other => panic!("expected GitBadOutput for a submodule answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_entry_beside_a_submodule_root_is_bad_output() {
+        match manifest_entry(
+            BatchAnswer::Missing,
+            BatchAnswer::Submodule,
+            &requests(),
+            b".wsx.conf",
+            &batch_argv(),
+        ) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, "ws^{tree} answered as a submodule, not a tree");
+            }
+            other => panic!("expected GitBadOutput for a submodule root, got {other:?}"),
         }
     }
 
