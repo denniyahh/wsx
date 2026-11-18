@@ -17,7 +17,7 @@ findings:
     title: "The `RefsNamespace` refusal gives a cause that is no longer true"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A repository without `.git/config` fails `resolve` as soon as any global `remote.*` or `wsx.*` key prints"
   - id: IN-01
     severity: info
@@ -39,7 +39,7 @@ findings:
     severity: warning
     disposition: open
     title: "A symbolic workspace branch is followed, though a symbolic integration rung is refused"
-open: 8
+open: 7
 total: 9
 recorded: 2026-11-18T05:12:18.204Z
 ---
@@ -51,7 +51,7 @@ recorded: 2026-11-18T05:12:18.204Z
 | CR-01 | critical | fixed | d8cae67 (test 3d44c24): discover's open held to CHILD_DEADLINE, special packed-refs refused unopened |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
+| WR-03 | warning | fixed | 9b996b1 (test before it; verification gap 1): no own keys when the repository has no config file |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |

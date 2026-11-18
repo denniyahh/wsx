@@ -1,8 +1,8 @@
 ---
 phase: 04-repo-model
-verified: 2026-11-18T05:53:56Z
-status: gaps_found
-score: 48/50 must-haves verified (4/5 roadmap success criteria; 44/45 applicable plan truths of 04-12 to 04-18; 04-01 to 04-11 regression-checked by the full suite)
+verified: 2026-11-18T06:21:12Z
+status: human_needed
+score: 50/50 must-haves verified (5/5 roadmap success criteria; 45/45 applicable plan truths of 04-12 to 04-18; 04-01 to 04-11 regression-checked by the full suite)
 covered_files:
   - ".planning/phases/04-repo-model/04-01-PLAN.md"
   - ".planning/phases/04-repo-model/04-01-SUMMARY.md"
@@ -54,62 +54,49 @@ covered_files:
   - "src/model/manifest.rs"
   - "src/model/mod.rs"
   - "tests/harness/fixture.rs"
-covered_digest: "v4:sha256:5512018c33b67ee61b90331492b8ba5c9d2301b6f603c5cfdcc3dbd001bb433a"
+covered_digest: "v4:sha256:9c405c82cc427266b0ae461a73fa4e3e0cb929b539eed743fa319c4907b185de"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 100/101
+  previous_score: 48/50
   gaps_closed:
-    - "04-11 (CONF-07): a replacement gix and git follow differently is refused, rather than read (nested replace ref refs/replace/<dir>/<hex>)"
+    - "Roadmap SC 5 (CONF-07, D-16): a repo without wsx.sourceBranch is reported as not configured, now also with no .git/config file and a global remote.* or wsx.* record"
+    - "04-18: a fresh full cargo-mutants pass, run after the last commit touching src/, leaves no missed or timed-out mutant"
   gaps_remaining: []
   regressions: []
-gaps:
-  - truth: "Roadmap SC 5 (CONF-07, D-16): a repo without wsx.sourceBranch is reported as not configured"
-    status: partial
-    reason: "In a repository whose .git/config file is missing (git still operates it: git status exits 0), any global remote.* or wsx.* record makes resolve fail with 'canonicalize <work>/.git/config: No such file or directory' instead of reporting not configured. Code review WR-03, reproduced by the verifier at 7a4201e in a scratch copy through model::tests' state_child: own config present -> state=not-configured (control); removed -> state=failed. The regex ^(wsx|remote)\\. also matches a global remote.pushDefault, so no wsx key is needed. Phase 6's guard would then refuse pushes in an unconfigured repo, where GUARD-03 says it exits 0."
-    artifacts:
-      - path: "src/git/config.rs"
-        issue: "read_config canonicalizes <common dir>/config whenever git printed any record (lines 86-91), whether or not a local wsx.* record needs it; NotFound is not mapped to 'no own records'"
-    missing:
-      - "Treat a missing own config file as one that matches no record (own_config as Option, is_own_file Some(false) when None), or canonicalize lazily on the first local wsx.* record"
-      - "A model test: repo_with_remote, a global [remote \"up\"] url, .git/config removed; assert git status exits 0 first, then child_state == not-configured; control with the file present"
-  - truth: "04-18: a fresh full cargo-mutants pass, run after the last commit touching src/, leaves no missed or timed-out mutant outside target/gsd/04-18-equivalent-mutants.txt"
-    status: failed
-    reason: "The recorded pass ran at 128f281 (target/gsd/04-18-pass-head.txt is 32ab917); six src commits followed it (7c2e83c, f1b7ee7, 35cc024, 1961ac7, 3d44c24, d8cae67: the C3, C2 and CR-01 fixes). The verifier ran 04-18's own invocation (nextest, the same -E filter, -j 2, --timeout 300) with --in-diff over 5765862..HEAD -- src: 43 mutants, 37 caught, 5 unviable, 1 missed. The equivalent-mutant allowlist is empty."
-    artifacts:
-      - path: "src/git/refs.rs"
-        issue: "MISSED src/git/refs.rs:307:21 'replace match guard err.kind() == std::io::ErrorKind::NotFound with true in packed_refs_name_the_base': no test makes metadata() of packed-refs fail with anything but NotFound, so the CR-01 fix's refusal of an unreadable packed-refs could become 'no replace refs' (fail open) unnoticed"
-    missing:
-      - "A git::refs unit test where metadata(packed-refs) fails with a non-NotFound error (for example a self-referencing symlink, ELOOP) and refuse_replace_refs returns ReplaceRefsUnreadable naming it"
-      - "A fresh mutation pass on the new tip over 04-18-files.txt plus src/git/repo.rs, without --iterate, tested set equal to the listed set, 0 missed"
 deferred:
-  - truth: "Every command resolves the model (no production caller of model::resolve yet; src/model/mod.rs:15 carries expect(dead_code, reason = \"no caller until phase 5\"))"
+  - truth: "Every command resolves the model (no production caller of model::resolve yet; src/model/mod.rs carries expect(dead_code, reason = \"no caller until phase 5\"))"
     addressed_in: "Phase 5"
     evidence: "Phase 5 goal: 'it sets the versioned JSON and exit-code contract every later command must join'; STATE.md obligation: every wsx command gets its model from model::resolve or require before any other Repo read"
+human_verification:
+  - test: "04-18 prohibition 'MUST NOT edit STATE.md by hand; only the gsd-tools state verbs' (test tier, no wired enforcement): confirm from commit 962cd70"
+    expected: "Recommended resolution (verifier, from the diff): upheld. 962cd70's STATE.md diff is exactly the verbs' shape: two blocker lines removed in place (state.resolve-blocker x2), three appended at the list's end (state.add-blocker x3), one decision appended at the end of Decisions (state.add-decision), plus last_updated and state_head bumped; +6/-4 lines, nothing rewritten in place"
+    why_human: "A test-tier prohibition with no enforcement is flagged by policy, never green; a hand edit producing the same lines cannot be excluded after the fact"
 ---
 
 # Phase 4: Repo model Verification Report
 
 **Phase Goal:** Every command resolves one repo model: the integration branch, the workspace branch, the base and push remotes, and a single personal-path list read from the workspace branch tip's `.wsx.conf`
-**Verified:** 2026-11-18T05:53:56Z
-**Status:** gaps_found
-**Re-verification:** Yes, after gap closure (04-12 to 04-18, the git-binary pivot D-23 to D-36, and the post-04-18 fixes for diff review C2, C3, C4 and code review CR-01)
+**Verified:** 2026-11-18T06:21:12Z
+**Status:** human_needed (one policy-flagged prohibition, answerable from the evidence below; no gap)
+**Re-verification:** Yes, after closure of the two gaps in the report committed at 8191252
 
 ## Verdict
 
-The gap from the last verification is closed: a nested replace ref (and every other replace-ref shape) now stops
-`resolve` before any object read, and the model's objects are read by git itself (`cat-file --batch`), so the
-manifest bytes are git's. The model is real and layered: config, refs and objects each come from one git child,
-four children per resolve, p95 23 to 34 ms on the four R3 repos at HEAD. Two gaps remain, both small:
+Both gaps are closed at aca0250, checked by the verifier, not taken from the commits:
 
-1. **SC 5 fails in one layout (reproduced).** An unconfigured repository with no `.git/config` file fails
-   `resolve` as soon as any global `remote.*` or `wsx.*` key exists, instead of reading as not configured.
-   This is code review WR-03, still `open` in 04-REVIEW-DISPOSITION.md. It fails loud, not silent, and the layout
-   is rare (git init and clone always write the file); if the operator accepts it, the override below records that.
-2. **The mutation pass is not fresh at HEAD.** The fixes after 04-18's pass added code a mutant survives in: the
-   CR-01 fix's non-NotFound `metadata` branch for `packed-refs` has no test, so turning that refusal into
-   "no replace refs" would pass every gate.
+1. **SC 5 holds in the missing-`.git/config` layout.** The verifier's own end-to-end reproduction (a scratch test
+   through `model::tests`' `state_child`: `repo_with_remote`, a global `[remote "up"]` url, `.git/config` removed,
+   `git status` exit 0 asserted first) gives `not-configured` at HEAD. Negative control: the same test on the
+   8191252 tree fails with `left: "failed: canonicalize .../work/.git/config: No such file or directory (os error 2)"`.
+2. **The mutation pass is fresh at HEAD.** `target/gsd/04-review-mutants/mutants.out`: 46 listed, outcomes 41 caught,
+   5 unviable, 0 missed, 0 timeout; written 01:15, after d61cf32 (01:11), and `git diff d61cf32 aca0250 -- src tests
+   Cargo.*` is empty. The previously missed `refs.rs:307:21` guard mutants (`true` and `false`) and the new
+   `config.rs:92:25` NotFound guard mutants (`true` and `false`) are all in `caught.txt`. Not re-run, per the orchestrator.
+
+The status is `human_needed` only because one test-tier prohibition (04-18, STATE.md through the verbs) has no wired
+enforcement; the evidence settles it (see Human Verification).
 
 ## Goal Achievement
 
@@ -117,63 +104,73 @@ four children per resolve, p95 23 to 34 ms on the four R3 repos at HEAD. Two gap
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Proptest round trip of any git path C-quoted; `.planning` covers `.planning/x` not `.planningX`; unknown line kind is an error naming the line | VERIFIED | `any_git_path_round_trips`, `property_runs_its_configured_cases`, `unknown_kind_names_the_line`, `covers_matches_a_literal_pathspec` PASS in the verifier's `scripts/check.sh all` at 7a4201e (707 run, 707 passed) |
-| 2 | Chain develop, next, remote default; `wsx.baseRef` overrides; fork remotes base=upstream push=origin; both default origin | VERIFIED | `develop_beats_the_remote_default`, `next_follows_develop`, `remote_default_follows_next`, `base_ref_overrides_the_chain`, `fork_layout_resolves_each_remote`, `remotes_default_to_origin`, plus the D-34 `%(symref)` tests (`remote_head_chain_inside_the_remote_resolves`, `..._into_a_local_branch_is_not_a_default`, `remote_head_cycle_is_not_a_default`) PASS |
-| 3 | `wsx.sourceBranch` names the workspace; else the only `workspace/*`/`personal/*`; zero or several is an error listing them | VERIFIED | `source_branch_names_the_workspace`, `only_candidate_is_inferred`, `several_candidates_are_listed`, `zero_candidates_are_an_error`, `private_branch_in_a_linked_worktree_is_not_a_candidate`, `corrupt_candidate_ref_is_skipped_as_git_skips_it` PASS |
-| 4 | List from `<tip>:.wsx.conf` in the object database; working-tree edit changes nothing; clean checkout same list; only the two built-ins | VERIFIED | `working_tree_edit_changes_nothing`, `clean_checkout_resolves_the_same_list`, `undeclared_path_is_not_personal`, `declared_path_is_personal`, `partial_clone_manifest_is_unreadable_without_a_fetch` PASS; `build` (mod.rs:523-566) reads the manifest only from `read_tips` over the listed tip id, after `refuse_replace_refs` (mod.rs:533) |
-| 5 | `wsx.sourceBranch` set + missing/invalid manifest fails closed with the reason; no key is reported not configured | PARTIAL (gap) | The named cases hold: `missing_manifest_fails_closed`, `invalid_manifest_fails_closed`, `no_source_branch_is_not_configured`, `global_source_branch_does_not_configure` PASS. Counterexample reproduced: own `.git/config` removed plus a global `[remote "up"]`, `git status` exits 0 and `state=failed: canonicalize .../.git/config: No such file or directory`; the same layout with the file present gives `state=not-configured` |
+| 1 | Proptest round trip of any git path C-quoted; `.planning` covers `.planning/x` not `.planningX`; unknown line kind is an error naming the line | VERIFIED (regression) | Verifier's `scripts/check.sh all` at aca0250: exit 0, `==> check.sh: all OK`, 710 run, 710 passed, 63 skipped |
+| 2 | Chain develop, next, remote default; `wsx.baseRef` overrides; fork remotes base=upstream push=origin; both default origin | VERIFIED (regression) | Same run; no src change touches refs listing or chain code (diff since 8191252: `config.rs` read path, one new test in `refs.rs`) |
+| 3 | `wsx.sourceBranch` names the workspace; else the only `workspace/*`/`personal/*`; zero or several is an error listing them | VERIFIED (regression) | Same run |
+| 4 | List from `<tip>:.wsx.conf` in the object database; working-tree edit changes nothing; clean checkout same list; only the two built-ins | VERIFIED (regression) | Same run |
+| 5 | `wsx.sourceBranch` set + missing/invalid manifest fails closed with the reason; no key is reported not configured | VERIFIED (gap closed) | `read_config` maps a NotFound canonicalize of the own config to `None` (config.rs:90-99) and `is_own_file` then answers `Some(false)` for every record (config.rs:205-209); any other canonicalize error still fails naming the file. Tests `config_read_without_an_own_config_file_keeps_no_keys` (with a present-file control) and `config_read_with_an_unresolvable_own_config_file_is_an_error` (self-symlink, `Error::Io` naming `.git/config`) PASS. End-to-end through the model: verifier's scratch reproduction PASS at HEAD, FAIL with the canonicalize error at 8191252 |
 
-### Previous gap (re-verified in full)
+**Score:** 50/50 truths verified (0 present, behavior-unverified)
+
+### Previous gaps (re-verified in full)
 
 | Truth | Status | Evidence |
 |-------|--------|----------|
-| 04-11: a replacement gix and git follow differently is refused, and wsx never reads manifest bytes other than git's | VERIFIED (closed) | `nested_replacement_fails_closed`, `packed_nested_replacement_fails_closed`, `single_replacement_fails_closed`, `private_replace_ref_in_a_linked_worktree_fails_closed` PASS. `refuse_replace_refs` (refs.rs:227-262) refuses on presence: any entry in `refs/replace` (common dir and a linked worktree's own) or the text `refs/replace/` anywhere in `packed-refs`, so nesting depth no longer matters. It runs in `build` before `read_tips`, the one object read, and the read itself is git's `cat-file`, so the bytes are git's even without the guard |
+| SC 5 in the missing-`.git/config` layout (WR-03) | VERIFIED (closed) | Above. The suite pins it at the `read_config` level (no own keys); the model step from "no own keys" to `NotConfigured` is the existing `no_source_branch_is_not_configured` path, and the verifier's reproduction joins the two |
+| 04-18: fresh mutation pass after the last src commit, 0 missed | VERIFIED (closed) | Above. New test `packed_refs_whose_metadata_fails_are_unreadable` (self-symlink `packed-refs`, control asserts `metadata` fails with a non-NotFound error, then `ReplaceRefsUnreadable` naming the path) PASS and kills both `refs.rs:307:21` mutants |
 
 ### Plan truths, 04-12 to 04-18
 
-44 of 45 applicable truths VERIFIED (04-17's "under refuse" and "under accept" truths are not applicable: D-38 chose
-drop). Method: every backticked identifier longer than 12 characters in all 18 plans' frontmatter and in the previous
-report (266 names) was checked against the 707 PASS lines of the verifier's full run. The 52 not found are all
-function or helper names, tests the plans delete (`root_entry_*`, `refs_directly_under_matches_for_each_ref`,
-`find_ref_*`, 04-11's replacement-read tests), the four D-34 renames' old names, or `git_config_variable_is_refused`
-(the refuse option D-38 rejected). None is a test a current truth needs.
-
-| Plan | Truth | Status | Evidence |
-|------|-------|--------|----------|
-| 04-15, 04-16, 04-18 | D-25 inventory: deleted items absent, present at 4234f31 | VERIFIED | `ref_commit`, `refs_directly_under`, `SYMREF_MAX_DEPTH`, `RefTarget`, `root_entry`, `TreeNotSorted`, `local_config_values`, `remote_configured`: rg exit 1 at HEAD, git grep exit 0 at 4234f31. The one `fn find_ref` hit at HEAD is a gix trait impl inside a test double (repo.rs:1099), not the deleted `Repo::find_ref` |
-| 04-14 | Config through one `git config -z --show-scope --show-origin` child; model reads config once | VERIFIED | `resolve` calls `repo.read_config(git)?` once (mod.rs:373); no `gix::` in `src/model` (rg exit 1; control `src/git` exit 0) |
-| 04-16 | Four children per resolve | VERIFIED | `resolve_spawns_four_git_children_in_its_own_worktree`, `..._aimed_at_another_worktree_adds_the_env_var_query`, `resolve_without_one_candidate_skips_the_object_read` PASS |
-| 04-17 | Operator answered before code; drop implemented | VERIFIED | STATE decision committed 383c74b at 17:14, RED 14745d8 at 18:34; D-38 in CONTEXT; `read_config` is the only non-test caller of `run_without_var` (config.rs:73); `git_config_variable_does_not_unconfigure_a_repo`, `run_without_var_hides_only_that_variable` PASS |
-| 04-18 | D-26 latency, four children, p95 < 100 ms | VERIFIED (re-measured at HEAD) | 04-18's probe run by the verifier on a `git archive` of 7a4201e, release build: devflow p95 31.4 ms, wsx 23.3, gsd-core 29.8, gsd-pi 34.1, all `children=4`, `over_budget=0`. One run; p50 is about twice 04-18's figures (taken before the deadline poll loop landed and on a less loaded host), still well under budget |
-| 04-18 | STATE obligations (read order, exit codes, grafts and shallow, pivot decision) | VERIFIED | STATE.md:258 holds the `info/grafts` obligation; `refuse_replace_refs` and `model::resolve` lines present |
-| 04-18 | Fresh mutation pass after the last src commit, 0 missed | FAILED (gap) | See gaps: 1 missed of 43 in the post-pass fixes |
-| 04-18 | `all`, `deps`, `coverage`, container `all` exit 0 on the tip | VERIFIED (container executor-reported) | Verifier at 7a4201e: `check.sh all` exit 0 (`==> check.sh: all OK`), `deps` exit 0, `coverage` exit 0 (93.41% lines). Container: recorded as passing after the CR-01 fix (04-DIFF-REVIEW-R1.md); `git diff d8cae67 HEAD` touches only four `.planning` files. Not re-run, per the orchestrator |
-| post-04-18 | D-39: every git child stopped past 10 s; gix's open bounded; special `packed-refs` refused unopened | VERIFIED | `run_stops_a_child_past_its_deadline`, `run_with_input_stops_a_child_past_its_deadline`, `run_without_var_stops_a_child_past_its_deadline`, `run_keeps_a_child_within_its_deadline`, `config_read_stops_on_a_fifo_branch_under_an_onbranch_include`, `discover_stops_on_a_fifo_config`, `discover_stops_on_a_fifo_packed_refs`, `packed_refs_that_are_a_fifo_are_refused_unopened` PASS |
+Unchanged from the previous report (44 VERIFIED there) plus the closed mutation-pass truth: 45/45 applicable VERIFIED.
+04-17's "under refuse" and "under accept" truths remain not applicable (D-38 chose drop). Regression evidence: the
+verifier's full run at aca0250 (710 passed).
 
 ### Rulings on the executors' human_judgment items
 
 | Item | Ruling | Basis |
 |------|--------|-------|
-| 04-15 D5: `require_passes_a_git_failure_through` re-pointed to a new fixture, against the "no D-01 to D-21 test changes beyond four" prohibition | Within the prohibition's intent; no change needed (decided by verifier) | The old trigger (a `garbage` loose ref under `refs/heads/workspace/`) can no longer produce a git failure, because D-35 makes the listing skip a corrupt ref as git does (pinned by `corrupt_candidate_ref_is_skipped_as_git_skips_it`). The asserted behaviour (D-16: `require` passes a non-replacement `Error::Git` through rather than wrapping it as not configured) is unchanged, and the new fixture asserts git's refusal first (`git_cannot_verify` on a blob rung) |
-| 04-16 deviations: the same test's and `require_wraps_an_unreadable_manifest_as_not_configured`'s inner error changed; `git::objects::tests::` added to `DISCOVERING_SUITES` in testing.rs, outside Task 2's list | Acceptable (decided by verifier) | Both tests keep their outer assertion (passed through unwrapped; wrapped as not configured, with the restore control); only the inner cause moved from a deleted gix error to git's `ObjectMissing`. D-37 names only `unsorted_tree_manifest_fails_closed`, so these two are an extension of its rule by the executor, not covered by it literally; the operator may want D-37 widened to say so. The `DISCOVERING_SUITES` line is test registration an existing meta-test requires, not a behaviour change |
+| 04-15 D5: `require_passes_a_git_failure_through` re-pointed to a new fixture | Within the prohibition's intent (decided by verifier) | The old trigger can no longer produce a git failure (D-35 skips a corrupt ref as git does); the asserted D-16 behaviour is unchanged and the new fixture asserts git's refusal first |
+| 04-16: the inner error of `require_passes_a_git_failure_through` and `require_wraps_an_unreadable_manifest_as_not_configured` changed; `git::objects::tests::` added to `DISCOVERING_SUITES` | Acceptable, now covered by the decision record (decided by verifier) | D-37 widened at aca0250 (04-CONTEXT.md) names both tests and their new inner causes; outer behaviour unchanged. The `DISCOVERING_SUITES` line is test registration an existing meta-test requires |
 
 ### Prohibitions
 
+All rulings of the previous report stand (no code they rest on changed, except the 04-13 "must not blame
+`.wsx.conf` for the guard's own read failures" hole, now closed by `packed_refs_whose_metadata_fails_are_unreadable`).
+The one open item:
+
 | Plan | Prohibition | Ruling | Basis |
 |------|-------------|--------|-------|
-| 04-12 | Must not read manifest bytes other than the ones git reads | Upheld | Presence guard before the only object read; the read is git's own `cat-file` |
-| 04-13 | Must not read any object through gix while a replace-ref store holds an entry (test tier) | Upheld | The model calls no gix object read (04-16); guard tests PASS |
-| 04-13 | Must not blame `.wsx.conf` for the guard's own read failures (test tier) | Upheld | `unreadable_replace_dir_blames_the_replace_refs`, `unreadable_private_replace_dir_blames_the_replace_refs` PASS. The missed mutant above is the one hole: an unreadable `packed-refs` other than a fifo or directory is untested |
-| 04-14 | Global, system, include, worktree or command values must not configure a repo (test tier) | Upheld | `parse_config_z_keeps_only_the_own_local_file`, `global_source_branch_does_not_configure`, `included_source_branch_does_not_configure` PASS |
-| 04-14 | No config read through gix; no backstop (test tier) | Upheld | Inventory above |
-| 04-14 | Malformed config output is not fewer keys (test tier) | Upheld | `parse_config_z_refuses_a_truncated_record`, `parse_config_z_refuses_a_scope_git_does_not_print`, `parse_config_z_refuses_a_local_key_whose_origin_cannot_be_resolved` PASS |
-| 04-15 | No by-name ref read; exact-name filter (test tier) | Upheld | `fifo_ref_is_skipped_without_hanging`, `nested_ref_under_a_rung_name_does_not_satisfy_the_rung` PASS |
-| 04-15 | No D-01 to D-21 test change beyond four (judgment) | Upheld | Ruling above |
-| 04-16 | Only `run_with_input` gets stdin; no network; no symlink text as manifest; at most four children (test tier) | Upheld | `run_with_input_feeds_exactly_the_buffer_then_eof`, `children_get_null_stdin`, `partial_clone_manifest_is_unreadable_without_a_fetch`, `symlink_manifest_fails_closed`, the child-count tests PASS |
-| 04-17 | No option before the operator's answer (judgment) | Upheld | Commit order above |
-| 04-17 | Only `GIT_CONFIG` on the config child loses a variable (test tier) | Upheld | Single non-test caller; `run_without_var_hides_only_that_variable` PASS |
-| 04-18 | Must not weaken a production check to make a mutant equivalent; no timeout as a pass (judgment) | Upheld | Equivalent list is empty; 04-18's pass recorded 0 timeouts |
-| 04-18 | Must not edit STATE.md by hand (test tier) | Unverified, flagged | No enforcement is wired and a verb-written line cannot be told from a hand-written one after the fact; the evidence is the SUMMARY's claim only. Human review recommended |
+| 04-18 | Must not edit STATE.md by hand (test tier) | Unverified by policy, flagged; evidence says upheld | No enforcement wired. 962cd70's diff has the verbs' shape exactly (removals in place, appends at list ends, `last_updated` and `state_head` bumped, +6/-4); the other 04-18-era STATE commits (5765862, 3bc206a) are plan-completion and decision records |
+
+### Required Artifacts
+
+| Artifact | Expected | Status | Details |
+|----------|----------|--------|---------|
+| `src/git/config.rs` | Own config optional in the config read | VERIFIED | `Option<&Path>` threaded through `parse_config_z` and `is_own_file`; error path kept for non-NotFound |
+| `src/git/refs.rs` | Test for non-NotFound `packed-refs` metadata | VERIFIED | Test present and passing; production code unchanged since 8191252 |
+| `04-CONTEXT.md` D-37 | Widened to the two 04-16 tests | VERIFIED | Lines 205-207 |
+
+### Behavioral Spot-Checks
+
+| Behavior | Command | Result | Status |
+|----------|---------|--------|--------|
+| Project gate | `scripts/check.sh all` | exit 0, 710 passed | PASS |
+| SC 5, no own config, through the model | scratch test `zz_verifier_no_own_config_is_not_configured` on a `git archive` of HEAD, `--no-tests=fail -E 'test(=...)'` | PASS | PASS |
+| Negative control for the above | same test on a `git archive` of 8191252 (sources touched to force a rebuild; the first attempt reused HEAD's binary and was discarded) | FAIL, `failed: canonicalize .../.git/config: No such file or directory` | PASS (control bites) |
+
+### Requirements Coverage
+
+| Requirement | Source Plans | Status | Evidence |
+|-------------|--------------|--------|----------|
+| CONF-01 | 04-03, 04-04, 04-18 | SATISFIED | SC 1 |
+| CONF-02 | 04-09, 04-16, 04-18 | SATISFIED | SC 4 |
+| CONF-03 | 04-07, 04-15, 04-18 | SATISFIED | SC 2 |
+| CONF-04 | 04-06, 04-14, 04-17, 04-18 | SATISFIED | SC 2; D-38 |
+| CONF-05 | 04-08, 04-14, 04-15, 04-18 | SATISFIED | SC 3 |
+| CONF-07 | 04-01, 04-09, 04-11 to 04-18 | SATISFIED | SC 4 and SC 5 (gap closed) |
+
+No orphaned requirement: REQUIREMENTS.md maps CONF-01 to CONF-05 and CONF-07 to Phase 4, each claimed by a plan;
+CONF-06 maps to Phase 8.
 
 ### Deferred Items
 
@@ -181,54 +178,25 @@ function or helper names, tests the plans delete (`root_entry_*`, `refs_directly
 |---|------|-------------|----------|
 | 1 | "Every command resolves" the model: no production caller yet | Phase 5 | Phase 5 goal sets the contract "every later command must join"; STATE.md obligation that every command takes its model from `model::resolve`/`require` first |
 
-### Requirements Coverage
-
-| Requirement | Source Plans | Status | Evidence |
-|-------------|--------------|--------|----------|
-| CONF-01 | 04-03, 04-04, 04-18 | SATISFIED | SC 1 |
-| CONF-02 | 04-09, 04-16, 04-18 | SATISFIED | SC 4; `personal_paths` hard-codes only `.wsx.conf` and the worktree dir |
-| CONF-03 | 04-07, 04-15, 04-18 | SATISFIED | SC 2 |
-| CONF-04 | 04-06, 04-14, 04-17, 04-18 | SATISFIED | SC 2; D-38 |
-| CONF-05 | 04-08, 04-14, 04-15, 04-18 | SATISFIED | SC 3 |
-| CONF-07 | 04-01, 04-09, 04-11 to 04-18 | PARTIAL | SC 4 holds; SC 5 fails in the missing-`.git/config` layout (gap 1); REQUIREMENTS.md already marks it Complete |
-
-No orphaned requirement: REQUIREMENTS.md maps CONF-01 to CONF-05 and CONF-07 to Phase 4 and every one is claimed by a plan;
-CONF-06 maps to Phase 8.
-
 ### Anti-Patterns and open review findings
 
-No `TBD`, `FIXME`, `XXX`, `TODO` or `HACK` in `src` or `tests/harness` (rg exit 1).
-
-04-REVIEW-DISPOSITION.md leaves 8 of 9 findings `open` (recorded, not triaged). Besides WR-03 (gap 1):
-
-| Finding | Severity | Effect on this phase |
-|---------|----------|----------------------|
-| WR-01: `collect` waits for pipe EOF and kills only the direct child | Warning | The reviewer says no phase-4 child starts a descendant; it bites later phases that run `git push`, `commit` or hooks through `Git`. Needs a disposition before those phases |
-| WR-02: the `RefsNamespace` refusal gives a cause that is no longer true | Warning | Wrong error text, behaviour unchanged |
-| WR-04: a symbolic workspace branch is followed, a symbolic rung refused | Warning | An inconsistency; SC 3's named cases hold |
-| IN-01 to IN-04 | Info | Early error returns in `collect` leave a child running without its deadline (IN-01) is the one that weakens D-39 |
+No debt markers added (the diff since 8191252 adds none). `04-REVIEW-DISPOSITION.md` still lists WR-03 as `open`
+(line 54) although 9b996b1 fixes it; the record is stale, not the code. The other open findings (WR-01, WR-02,
+WR-04, IN-01 to IN-04) are unchanged from the previous report and none blocks this phase's criteria.
 
 ### Human Verification Required
 
-None that blocks the status. One flagged prohibition (04-18, STATE.md edited only through the verbs) has no
-evidence beyond the SUMMARY.
+### 1. 04-18 STATE.md edited only through the verbs
+
+**Test:** Compare 962cd70's STATE.md diff with the output shape of `state.resolve-blocker`, `state.add-blocker` and `state.add-decision`.
+**Expected:** Upheld: the diff is removals in place, appends at the ends of Blockers and Decisions, and the verbs' `last_updated`/`state_head` bump; no in-place rewrite.
+**Why human:** Policy: a test-tier prohibition without wired enforcement is never auto-green. The verifier's recommended resolution is "upheld, decided on the diff shape".
 
 ### Gaps Summary
 
-Both gaps come from code added after the last full gate: gap 1 from 04-14's config read, gap 2 from the
-post-04-18 fixes. Each closes with one code change and one test, then a fresh mutation pass on the new tip.
-
-If the operator accepts gap 1 as a rare layout rather than fixing it, add to this frontmatter:
-
-```yaml
-overrides:
-  - must_have: "Roadmap SC 5 (CONF-07, D-16): a repo without wsx.sourceBranch is reported as not configured"
-    reason: "Only a repository with no .git/config file is affected; it fails loud, never open"
-    accepted_by: "{name}"
-    accepted_at: "{ISO timestamp}"
-```
+None. Both previous gaps are closed with code, tests and a fresh mutation pass at HEAD.
 
 ---
 
-_Verified: 2026-11-18T05:53:56Z_
+_Verified: 2026-11-18T06:21:12Z_
 _Verifier: Claude (gsd-verifier)_
