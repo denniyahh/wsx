@@ -44,11 +44,24 @@ pub struct Problem {
     pub detail: Option<String>,
 }
 
-/// The kinds of problem the check reports (D-11).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The kinds of problem the check reports, in D-11's order, which is the
+/// order D-05 sorts ties in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProblemKind {
     /// A path only the workspace branch has, which no `only` entry covers.
     UndeclaredAdded,
+    /// A shared path the workspace branch changes, which no `modified`
+    /// entry names.
+    UndeclaredModified,
+    /// A shared path the workspace branch deletes, which no `modified`
+    /// entry names.
+    UndeclaredDeleted,
+    /// An `only` entry whose path the integration branch carries.
+    StaleOnly,
+    /// A `modified` entry that covers no difference between the branches.
+    StaleModified,
+    /// An entry a built-in personal path already covers.
+    RedundantBuiltin,
 }
 
 impl ProblemKind {
@@ -56,6 +69,11 @@ impl ProblemKind {
     pub fn name(self) -> &'static str {
         match self {
             ProblemKind::UndeclaredAdded => "undeclared_added",
+            ProblemKind::UndeclaredModified => "undeclared_modified",
+            ProblemKind::UndeclaredDeleted => "undeclared_deleted",
+            ProblemKind::StaleOnly => "stale_only",
+            ProblemKind::StaleModified => "stale_modified",
+            ProblemKind::RedundantBuiltin => "redundant_builtin",
         }
     }
 }
@@ -71,7 +89,7 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     let model = resolved.require()?;
     // From the integration tip, so `Added` is a workspace-only path (D-01).
     let changes = repo.tree_diff(&model.integration.tip, &model.workspace_tip)?;
-    let problems = evaluate(&model, &changes);
+    let problems = evaluate(&model, &changes, &BTreeSet::new());
     Ok(Report {
         configured,
         workspace_branch: model.workspace_branch.clone(),
@@ -82,9 +100,15 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
 }
 
 /// The problems in `changes`, the diff from the integration tip to the
-/// workspace tip, judged against `model`'s built-ins and manifest; every
-/// problem of the run, sorted by path bytes.
-pub fn evaluate(model: &Model, changes: &[TreeChange]) -> Vec<Problem> {
+/// workspace tip, judged against `model`'s built-ins and manifest; `carried`
+/// holds the `only` paths the integration tip's tree has. Every problem of
+/// the run, in D-05's order.
+pub fn evaluate(
+    model: &Model,
+    changes: &[TreeChange],
+    carried: &BTreeSet<Vec<u8>>,
+) -> Vec<Problem> {
+    let _ = carried;
     let builtins = model.builtins();
     let mut problems = Vec::new();
     for change in changes {
@@ -126,6 +150,14 @@ mod tests {
 
     /// A model with `worktree_dir` and one `only` entry per path in `only`.
     fn model_with(worktree_dir: &[u8], only: &[&[u8]]) -> Model {
+        let entries: Vec<(EntryKind, &[u8])> =
+            only.iter().map(|path| (EntryKind::Only, *path)).collect();
+        model_of(worktree_dir, &entries)
+    }
+
+    /// A model with `worktree_dir` and one manifest entry per item of
+    /// `entries`, in order.
+    fn model_of(worktree_dir: &[u8], entries: &[(EntryKind, &[u8])]) -> Model {
         Model {
             workspace_branch: b"workspace/dev".to_vec(),
             workspace_tip: ObjectId::for_test("1111111111111111111111111111111111111111"),
@@ -138,26 +170,63 @@ mod tests {
             push_remote: Some(b"origin".to_vec()),
             worktree_dir: worktree_dir.to_vec(),
             manifest: Manifest {
-                entries: only
+                entries: entries
                     .iter()
                     .enumerate()
-                    .map(|(index, path)| Entry {
-                        kind: EntryKind::Only,
+                    .map(|(index, (kind, path))| Entry {
+                        kind: kind.clone(),
                         path: path.to_vec(),
                         line: index + 1,
-                        text: [&b"only "[..], path].concat(),
+                        text: [kind_word(kind), b" ", path].concat(),
                     })
                     .collect(),
             },
         }
     }
 
+    /// The keyword a manifest line of `kind` starts with.
+    fn kind_word(kind: &EntryKind) -> &'static [u8] {
+        match kind {
+            EntryKind::Only => b"only",
+            EntryKind::Modified => b"modified",
+        }
+    }
+
     /// An `Added` change at `path`.
     fn added(path: &[u8]) -> TreeChange {
+        change(ChangeKind::Added, path)
+    }
+
+    /// A change of `kind` at `path`.
+    fn change(kind: ChangeKind, path: &[u8]) -> TreeChange {
         TreeChange {
-            kind: ChangeKind::Added,
+            kind,
             path: path.to_vec(),
         }
+    }
+
+    /// No carried `only` path.
+    fn none() -> BTreeSet<Vec<u8>> {
+        BTreeSet::new()
+    }
+
+    /// The carried set holding `paths`.
+    fn carrying(paths: &[&[u8]]) -> BTreeSet<Vec<u8>> {
+        paths.iter().map(|path| path.to_vec()).collect()
+    }
+
+    /// The kinds and paths `evaluate` finds in `changes` against a model
+    /// with the worktree directory `.worktrees` and `entries`.
+    fn judge(
+        entries: &[(EntryKind, &[u8])],
+        changes: &[TreeChange],
+        carried: &BTreeSet<Vec<u8>>,
+    ) -> Vec<(&'static str, Vec<u8>)> {
+        found(&evaluate(
+            &model_of(b".worktrees", entries),
+            changes,
+            carried,
+        ))
     }
 
     /// The kinds and paths of `problems`.
@@ -175,11 +244,15 @@ mod tests {
     fn added_path_under_a_builtin_is_not_a_problem() {
         let changes = [added(b".worktrees/x")];
         assert_eq!(
-            found(&evaluate(&model_with(b".worktrees", &[]), &changes)),
+            found(&evaluate(
+                &model_with(b".worktrees", &[]),
+                &changes,
+                &none()
+            )),
             []
         );
         assert_eq!(
-            found(&evaluate(&model_with(b".other", &[]), &changes)),
+            found(&evaluate(&model_with(b".other", &[]), &changes, &none())),
             [("undeclared_added", b".worktrees/x".to_vec())]
         );
     }
@@ -190,13 +263,18 @@ mod tests {
     fn added_path_is_declared_only_by_a_covering_only_entry() {
         let changes = [added(b"notes/a")];
         assert_eq!(
-            found(&evaluate(&model_with(b".worktrees", &[b"notes"]), &changes)),
+            found(&evaluate(
+                &model_with(b".worktrees", &[b"notes"]),
+                &changes,
+                &none()
+            )),
             []
         );
         assert_eq!(
             found(&evaluate(
                 &model_with(b".worktrees", &[b"notesX"]),
-                &changes
+                &changes,
+                &none()
             )),
             [("undeclared_added", b"notes/a".to_vec())]
         );
@@ -207,7 +285,7 @@ mod tests {
     #[test]
     fn problems_are_sorted_by_path_bytes() {
         let changes = [added(b"b"), added(b"a"), added(b"\xFF"), added(b"A")];
-        let paths: Vec<Vec<u8>> = evaluate(&model_with(b".worktrees", &[]), &changes)
+        let paths: Vec<Vec<u8>> = evaluate(&model_with(b".worktrees", &[]), &changes, &none())
             .into_iter()
             .map(|problem| problem.path)
             .collect();
@@ -218,6 +296,198 @@ mod tests {
                 b"a".to_vec(),
                 b"b".to_vec(),
                 b"\xFF".to_vec()
+            ]
+        );
+    }
+
+    /// A modified shared file is declared only by a `modified` entry equal
+    /// to its path: not by a prefix of it (`READ`, itself then stale) and
+    /// not by an `only` entry.
+    #[test]
+    fn modified_shared_file_must_be_declared_exactly() {
+        let changes = [change(ChangeKind::Modified, b"README.md")];
+        assert_eq!(
+            judge(&[], &changes, &none()),
+            [("undeclared_modified", b"README.md".to_vec())]
+        );
+        assert_eq!(
+            judge(&[(EntryKind::Modified, b"README.md")], &changes, &none()),
+            []
+        );
+        assert_eq!(
+            judge(&[(EntryKind::Modified, b"READ")], &changes, &none()),
+            [
+                ("undeclared_modified", b"README.md".to_vec()),
+                ("stale_modified", b"READ".to_vec())
+            ]
+        );
+        assert_eq!(
+            judge(&[(EntryKind::Only, b"README.md")], &changes, &none()),
+            [("undeclared_modified", b"README.md".to_vec())]
+        );
+    }
+
+    /// A type change (a file become a symlink, say) is a modification.
+    #[test]
+    fn type_change_is_an_undeclared_modification() {
+        let changes = [change(ChangeKind::TypeChanged, b"x")];
+        assert_eq!(
+            judge(&[], &changes, &none()),
+            [("undeclared_modified", b"x".to_vec())]
+        );
+        assert_eq!(judge(&[(EntryKind::Modified, b"x")], &changes, &none()), []);
+    }
+
+    /// A deleted shared file is declared by a `modified` entry equal to its
+    /// path.
+    #[test]
+    fn deleted_shared_file_must_be_declared_modified() {
+        let changes = [change(ChangeKind::Deleted, b"src/a.txt")];
+        assert_eq!(
+            judge(&[], &changes, &none()),
+            [("undeclared_deleted", b"src/a.txt".to_vec())]
+        );
+        assert_eq!(
+            judge(&[(EntryKind::Modified, b"src/a.txt")], &changes, &none()),
+            []
+        );
+    }
+
+    /// A change under a built-in personal path is never a problem; under
+    /// another worktree directory the same deletion is undeclared (control).
+    #[test]
+    fn change_under_a_builtin_is_never_a_problem() {
+        let changes = [
+            change(ChangeKind::Modified, b".wsx.conf"),
+            change(ChangeKind::Deleted, b".worktrees/x"),
+        ];
+        assert_eq!(judge(&[], &changes, &none()), []);
+        assert_eq!(
+            found(&evaluate(&model_of(b".other", &[]), &changes, &none())),
+            [("undeclared_deleted", b".worktrees/x".to_vec())]
+        );
+    }
+
+    /// An `only` entry whose path the integration tip carries is stale.
+    #[test]
+    fn only_entry_the_integration_branch_carries_is_stale() {
+        let entries = [(EntryKind::Only, &b"shared"[..])];
+        assert_eq!(
+            judge(&entries, &[], &carrying(&[b"shared"])),
+            [("stale_only", b"shared".to_vec())]
+        );
+        assert_eq!(judge(&entries, &[], &none()), []);
+    }
+
+    /// A `modified` entry that covers no change is stale.
+    #[test]
+    fn modified_entry_that_no_longer_differs_is_stale() {
+        let entries = [(EntryKind::Modified, &b"README.md"[..])];
+        assert_eq!(
+            judge(&entries, &[], &none()),
+            [("stale_modified", b"README.md".to_vec())]
+        );
+        assert_eq!(
+            judge(
+                &entries,
+                &[change(ChangeKind::Modified, b"README.md")],
+                &none()
+            ),
+            []
+        );
+    }
+
+    /// `modified docs` declares `docs` alone, as the oracle's `grep -Fxq`,
+    /// but covers a change below it, as the oracle's pathspec: the change
+    /// is undeclared and the entry is not stale.
+    #[test]
+    fn modified_entry_declares_its_own_path_and_covers_below_it() {
+        assert_eq!(
+            judge(
+                &[(EntryKind::Modified, b"docs")],
+                &[change(ChangeKind::Modified, b"docs/a")],
+                &none()
+            ),
+            [("undeclared_modified", b"docs/a".to_vec())]
+        );
+    }
+
+    /// An entry a built-in covers is redundant and gets no stale check,
+    /// although the `only` path is carried and the `modified` path is
+    /// unchanged.
+    #[test]
+    fn declaration_under_a_builtin_is_redundant_and_nothing_else() {
+        let model = model_of(
+            b".worktrees",
+            &[
+                (EntryKind::Only, b".worktrees/x"),
+                (EntryKind::Modified, b".wsx.conf"),
+            ],
+        );
+        assert_eq!(
+            evaluate(&model, &[], &carrying(&[b".worktrees/x"])),
+            [
+                Problem {
+                    kind: ProblemKind::RedundantBuiltin,
+                    path: b".worktrees/x".to_vec(),
+                    detail: Some(
+                        "only .worktrees/x is already personal as the built-in .worktrees"
+                            .to_owned()
+                    ),
+                },
+                Problem {
+                    kind: ProblemKind::RedundantBuiltin,
+                    path: b".wsx.conf".to_vec(),
+                    detail: Some(
+                        "modified .wsx.conf is already personal as the built-in .wsx.conf"
+                            .to_owned()
+                    ),
+                },
+            ]
+        );
+    }
+
+    /// An exact duplicate declaration is judged once; a different path is
+    /// still judged on its own (control).
+    #[test]
+    fn exact_duplicate_declarations_report_once() {
+        let twice = [
+            (EntryKind::Modified, &b"README.md"[..]),
+            (EntryKind::Modified, &b"README.md"[..]),
+        ];
+        assert_eq!(
+            judge(&twice, &[], &none()),
+            [("stale_modified", b"README.md".to_vec())]
+        );
+        let distinct = [
+            (EntryKind::Modified, &b"README.md"[..]),
+            (EntryKind::Modified, &b"README"[..]),
+        ];
+        assert_eq!(
+            judge(&distinct, &[], &none()),
+            [
+                ("stale_modified", b"README".to_vec()),
+                ("stale_modified", b"README.md".to_vec())
+            ]
+        );
+    }
+
+    /// Undeclared changes come before stale declarations, each group in
+    /// path-byte order, whatever order the changes and entries arrive in.
+    #[test]
+    fn problems_are_grouped_then_sorted() {
+        let entries = [
+            (EntryKind::Only, &b"a"[..]),
+            (EntryKind::Only, &b".worktrees/z"[..]),
+        ];
+        let changes = [added(b"b"), change(ChangeKind::Modified, b"a")];
+        assert_eq!(
+            judge(&entries, &changes, &carrying(&[b"a"])),
+            [
+                ("undeclared_modified", b"a".to_vec()),
+                ("undeclared_added", b"b".to_vec()),
+                ("redundant_builtin", b".worktrees/z".to_vec()),
+                ("stale_only", b"a".to_vec())
             ]
         );
     }

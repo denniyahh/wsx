@@ -33,13 +33,32 @@ fn encoded(path: &[u8]) -> String {
     String::from_utf8_lossy(&encode_path(path)).into_owned()
 }
 
-/// The line that reports `problem`, without its indent.
-fn problem_line(problem: &Problem) -> String {
+/// The line that reports `problem`, without its indent; `integration` is
+/// the integration ref, quoted.
+fn problem_line(problem: &Problem, integration: &str) -> String {
+    let path = quoted(&problem.path);
+    let entry = encoded(&problem.path);
     match problem.kind {
-        ProblemKind::UndeclaredAdded => format!(
-            "undeclared workspace-only path: {} (declare: only {})",
-            quoted(&problem.path),
-            encoded(&problem.path)
+        ProblemKind::UndeclaredAdded => {
+            format!("undeclared workspace-only path: {path} (declare: only {entry})")
+        }
+        ProblemKind::UndeclaredModified => format!(
+            "undeclared change to a shared file: {path} (move it to the integration branch, \
+             or declare: modified {entry})"
+        ),
+        ProblemKind::UndeclaredDeleted => format!(
+            "undeclared deletion of a shared file: {path} (restore it, or declare: modified \
+             {entry})"
+        ),
+        ProblemKind::StaleOnly => {
+            format!("stale declaration: only {entry}, but {integration} carries it")
+        }
+        ProblemKind::StaleModified => {
+            format!("stale declaration: modified {entry}, but it matches {integration}")
+        }
+        ProblemKind::RedundantBuiltin => format!(
+            "redundant declaration: {}",
+            problem.detail.as_deref().unwrap_or_default()
         ),
     }
 }
@@ -72,7 +91,7 @@ pub fn human(report: &Report) -> Human {
         report
             .problems
             .iter()
-            .map(|problem| format!("  {}", problem_line(problem))),
+            .map(|problem| format!("  {}", problem_line(problem, &integration))),
     );
     let noun = if count == 1 { "problem" } else { "problems" };
     Human {
@@ -121,4 +140,71 @@ fn problem_json(problem: &Problem) -> Value {
             problem.detail.clone().map_or(Value::Null, Value::Str),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::ObjectId;
+    use crate::model::Integration;
+
+    /// The line `human` prints for a report holding `problem` alone,
+    /// against `refs/remotes/origin/develop`.
+    fn line_of(kind: ProblemKind, path: &[u8], detail: Option<&str>) -> String {
+        let report = Report {
+            configured: true,
+            workspace_branch: b"workspace/dev".to_vec(),
+            workspace_tip: ObjectId::for_test("1111111111111111111111111111111111111111"),
+            integration: Integration {
+                branch: b"develop".to_vec(),
+                full_ref: b"refs/remotes/origin/develop".to_vec(),
+                tip: ObjectId::for_test("2222222222222222222222222222222222222222"),
+            },
+            problems: vec![Problem {
+                kind,
+                path: path.to_vec(),
+                detail: detail.map(str::to_owned),
+            }],
+        };
+        let mut diagnostics = human(&report).diagnostics;
+        assert_eq!(diagnostics.len(), 2, "the header and one problem line");
+        diagnostics.remove(1)
+    }
+
+    /// Each kind's line is the check contract's text (05-01).
+    #[test]
+    fn every_kind_renders_its_contract_line() {
+        assert_eq!(
+            line_of(ProblemKind::UndeclaredAdded, b"notes/a", None),
+            "  undeclared workspace-only path: notes/a (declare: only notes/a)"
+        );
+        assert_eq!(
+            line_of(ProblemKind::UndeclaredModified, b"README.md", None),
+            "  undeclared change to a shared file: README.md (move it to the integration \
+             branch, or declare: modified README.md)"
+        );
+        assert_eq!(
+            line_of(ProblemKind::UndeclaredDeleted, b"src/a.txt", None),
+            "  undeclared deletion of a shared file: src/a.txt (restore it, or declare: \
+             modified src/a.txt)"
+        );
+        assert_eq!(
+            line_of(ProblemKind::StaleOnly, b"shared", None),
+            "  stale declaration: only shared, but refs/remotes/origin/develop carries it"
+        );
+        assert_eq!(
+            line_of(ProblemKind::StaleModified, b"README.md", None),
+            "  stale declaration: modified README.md, but it matches \
+             refs/remotes/origin/develop"
+        );
+        assert_eq!(
+            line_of(
+                ProblemKind::RedundantBuiltin,
+                b".worktrees/x",
+                Some("only .worktrees/x is already personal as the built-in .worktrees")
+            ),
+            "  redundant declaration: only .worktrees/x is already personal as the built-in \
+             .worktrees"
+        );
+    }
 }
