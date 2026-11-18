@@ -200,6 +200,7 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::process::Output;
+    use std::time::{Duration, Instant};
 
     use gix::bstr::ByteSlice;
 
@@ -1115,6 +1116,66 @@ mod tests {
             Err(other) => panic!("expected GitFailed with exit 1, got {other:?}"),
             Ok(read) => panic!("expected GitFailed with exit 1, got a read: {read:?}"),
         }
+    }
+
+    /// A fifo where git reads a ref while it evaluates an `includeIf "onbranch:"`
+    /// blocks git itself; the read is stopped at the helper's deadline and
+    /// fails, never hangs. Control: the same fifo without the include reads.
+    #[test]
+    fn config_read_stops_on_a_fifo_branch_under_an_onbranch_include() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-fifo-onbranch").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        append_config(&repo, b"[wsx]\n\tsourceBranch = dev\n");
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let deadline = Duration::from_secs(1);
+        let helper = Git::for_repo(scratch.env.clone(), &found).with_deadline(deadline);
+        let branch = repo.join(".git/refs/heads/main");
+        std::fs::remove_file(&branch)
+            .unwrap_or_else(|err| panic!("remove {}: {err}", branch.display()));
+        let made = testing::command("mkfifo", &repo, &scratch.env)
+            .arg(&branch)
+            .output()
+            .unwrap_or_else(|err| panic!("mkfifo {}: {err}", branch.display()));
+        assert_eq!(made.status.code(), Some(0), "mkfifo: {made:?}");
+        let control = found
+            .read_config(&helper)
+            .unwrap_or_else(|err| panic!("control read_config: {err}"));
+        assert_eq!(
+            control.values(KEY),
+            [b"dev".to_vec()],
+            "control: no include, the fifo is not read"
+        );
+
+        write(&repo.join(".git/include.conf"), b"").unwrap_or_else(|err| panic!("{err}"));
+        append_config(
+            &repo,
+            b"[includeIf \"onbranch:main\"]\n\tpath = include.conf\n",
+        );
+        let hung = testing::command("timeout", &repo, &scratch.env)
+            .args(["3", "git", "config", "--get-regexp", r"^(wsx|remote)\."])
+            .output()
+            .unwrap_or_else(|err| panic!("timeout git config: {err}"));
+        assert_eq!(
+            hung.status.code(),
+            Some(124),
+            "git itself does not block here: {hung:?}"
+        );
+
+        let started = Instant::now();
+        match found.read_config(&helper) {
+            Err(Error::GitTimedOut { after, .. }) => assert_eq!(after, deadline),
+            Err(other) => panic!("expected GitTimedOut, got {other:?}"),
+            Ok(read) => panic!("expected GitTimedOut, got a read: {read:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the read was stopped after {:?}",
+            started.elapsed()
+        );
     }
 
     /// A config file git cannot parse fails the read with git's own failure,

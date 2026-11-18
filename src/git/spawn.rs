@@ -6,16 +6,19 @@
 //! environment plus that snapshot and runs in an explicit working directory.
 //! Every child but `run_with_input`'s reads stdin from `/dev/null`; that one
 //! gets a fixed buffer and then EOF, so no git child can stop to wait for
-//! input.
+//! input. Every child is killed once it runs past `CHILD_DEADLINE`, so no
+//! read can hang the run.
 //! Arguments pass through `Command::args`, never through a shell.
 
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::repo::Repo;
 use super::{Error, render_argv};
@@ -30,6 +33,11 @@ const MIN_GIT_VERSION: (u32, u32) = (2, 54);
 /// config file or ref should be) stops the run instead of hanging it (D-29,
 /// the operator, 2026-11-18).
 const CHILD_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How often `collect` looks for the exit of a child that has closed its
+/// output: git exits as it closes them, so a short interval adds no time a
+/// spawn notices (1 ms added about 0.8 ms per child on the host, 2026-11-18).
+const EXIT_POLL: Duration = Duration::from_micros(50);
 
 /// The first line of `output`, trimmed, lossily decoded.
 fn first_line(output: &[u8]) -> String {
@@ -80,13 +88,142 @@ fn reported_version(output: &[u8]) -> String {
 /// Runs `command` (whose arguments are `argv`) in `worktree` and returns its
 /// stdout. A child that cannot be started is `Error::Io`; one that does not
 /// exit 0, a signal-killed one included, is `Error::GitFailed` carrying its
-/// argv, exit code (`None` for a signal) and stderr.
-fn finish(mut command: Command, argv: Vec<OsString>, worktree: &Path) -> Result<Vec<u8>, Error> {
-    let output = command.output().map_err(|source| Error::Io {
-        what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
+/// argv, exit code (`None` for a signal) and stderr; one still running after
+/// `deadline` is killed and is `Error::GitTimedOut`.
+fn finish(
+    command: Command,
+    argv: Vec<OsString>,
+    worktree: &Path,
+    deadline: Duration,
+) -> Result<Vec<u8>, Error> {
+    let finished = collect(command, &argv, worktree, deadline, None)?;
+    exited_zero(finished.output, argv)
+}
+
+/// What `collect` saw of a child that ended within its deadline.
+struct Finished {
+    /// The child's exit status, stdout and stderr.
+    output: Output,
+    /// How writing its stdin went; `Ok` when it was given none.
+    written: std::io::Result<()>,
+}
+
+/// Which pipe a reader thread drained.
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// Starts `command` with stdout and stderr piped and, when `input` is given,
+/// its bytes on stdin followed by EOF, and waits at most `deadline` for the
+/// child to exit. Each pipe is drained on its own thread, so no output size
+/// can block the child against the wait. A child still running at the
+/// deadline is killed and reaped and is `Error::GitTimedOut`; a child that
+/// cannot be started, read or waited on is `Error::Io` naming `argv`.
+fn collect(
+    mut command: Command,
+    argv: &[OsString],
+    worktree: &Path,
+    deadline: Duration,
+    input: Option<Vec<u8>>,
+) -> Result<Finished, Error> {
+    let started = Instant::now();
+    let io_failed = |what: &str, source: std::io::Error| Error::Io {
+        what: format!("{what} git {} in {}", render_argv(argv), worktree.display()),
         source,
-    })?;
-    exited_zero(output, argv)
+    };
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|source| io_failed("spawn", source))?;
+    let writer = match input {
+        Some(bytes) => {
+            let Some(mut pipe) = child.stdin.take() else {
+                return Err(io_failed(
+                    "open the stdin of",
+                    std::io::Error::other("the child has no stdin pipe"),
+                ));
+            };
+            // The pipe moves into the writer and drops when it returns,
+            // which closes the child's stdin.
+            Some(thread::spawn(move || pipe.write_all(&bytes)))
+        }
+        None => None,
+    };
+    let (sender, drained) = mpsc::channel();
+    if let Some(mut pipe) = child.stdout.take() {
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = pipe.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send((Stream::Stdout, read));
+        });
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = pipe.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send((Stream::Stderr, read));
+        });
+    }
+    let timed_out = |child: &mut Child| {
+        // Best effort: the child may have exited since the last look, and
+        // either way the run fails with the limit.
+        let _ = child.kill();
+        let _ = child.wait();
+        Error::GitTimedOut {
+            argv: argv.to_vec(),
+            after: deadline,
+        }
+    };
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    for _ in 0..2 {
+        let left = deadline.saturating_sub(started.elapsed());
+        match drained.recv_timeout(left) {
+            Ok((stream, read)) => {
+                let bytes = read.map_err(|source| io_failed("read the output of", source))?;
+                match stream {
+                    Stream::Stdout => stdout = bytes,
+                    Stream::Stderr => stderr = bytes,
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => return Err(timed_out(&mut child)),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(io_failed(
+                    "read the output of",
+                    std::io::Error::other("an output reader panicked"),
+                ));
+            }
+        }
+    }
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|source| io_failed("wait for", source))?
+        {
+            break status;
+        }
+        if started.elapsed() >= deadline {
+            return Err(timed_out(&mut child));
+        }
+        thread::sleep(EXIT_POLL);
+    };
+    let written = match writer.map(thread::JoinHandle::join) {
+        None | Some(Ok(Ok(()))) => Ok(()),
+        Some(Ok(Err(source))) => Err(source),
+        Some(Err(_)) => Err(std::io::Error::other("the stdin writer panicked")),
+    };
+    Ok(Finished {
+        output: Output {
+            status,
+            stdout,
+            stderr,
+        },
+        written,
+    })
 }
 
 /// The stdout of a child that exited 0; any other exit, a signal-killed one
@@ -241,7 +378,12 @@ impl Git {
             .into_iter()
             .map(OsString::from)
             .collect();
-        let stdout = finish(self.base_command(worktree, &argv), argv.clone(), worktree)?;
+        let stdout = finish(
+            self.base_command(worktree, &argv),
+            argv.clone(),
+            worktree,
+            self.deadline,
+        )?;
         let names: Vec<OsString> = stdout
             .split(u8::is_ascii_whitespace)
             .filter(|name| !name.is_empty())
@@ -287,7 +429,12 @@ impl Git {
             return Ok(());
         }
         let argv = vec![OsString::from("--version")];
-        let stdout = finish(self.base_command(worktree, &argv), argv, worktree)?;
+        let stdout = finish(
+            self.base_command(worktree, &argv),
+            argv,
+            worktree,
+            self.deadline,
+        )?;
         match parse_git_version(&stdout) {
             Some(version) if version >= MIN_GIT_VERSION => {
                 self.version_checked.get_or_init(|| ());
@@ -318,7 +465,7 @@ impl Git {
             .collect();
         self.ensure_version(worktree)?;
         let command = self.command(worktree, &argv)?;
-        finish(command, argv, worktree)
+        finish(command, argv, worktree, self.deadline)
     }
 
     /// Runs `git <args>` in `worktree` as `run` does, with `var` removed
@@ -351,10 +498,7 @@ impl Git {
         self.ensure_version(worktree)?;
         let mut command = self.command(worktree, &argv)?;
         command.env_remove(var);
-        command.output().map_err(|source| Error::Io {
-            what: format!("spawn git {} in {}", render_argv(&argv), worktree.display()),
-            source,
-        })
+        Ok(collect(command, &argv, worktree, self.deadline, None)?.output)
     }
 
     /// Runs `git <args>` in `worktree` as `run` does, with `input` on its
@@ -367,7 +511,7 @@ impl Git {
     /// A child that cannot be started or waited on is `Error::Io` naming the
     /// argv; one that does not exit 0 is `Error::GitFailed` exactly as `run`
     /// reports it; a failed write with an exit 0 is `Error::Io` naming the
-    /// argv.
+    /// argv; one past the deadline is `Error::GitTimedOut`, as for `run`.
     pub fn run_with_input<I, S>(
         &self,
         worktree: &Path,
@@ -383,44 +527,24 @@ impl Git {
             .map(|arg| arg.as_ref().to_os_string())
             .collect();
         self.ensure_version(worktree)?;
-        let mut command = self.command(worktree, &argv)?;
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let io_failed = |what: &str, source: std::io::Error| Error::Io {
+        let command = self.command(worktree, &argv)?;
+        let finished = collect(
+            command,
+            &argv,
+            worktree,
+            self.deadline,
+            Some(input.to_vec()),
+        )?;
+        let stdout = exited_zero(finished.output, argv.clone())?;
+        finished.written.map_err(|source| Error::Io {
             what: format!(
-                "{what} git {} in {}",
+                "write stdin to git {} in {}",
                 render_argv(&argv),
                 worktree.display()
             ),
             source,
-        };
-        let mut child = command
-            .spawn()
-            .map_err(|source| io_failed("spawn", source))?;
-        let Some(mut pipe) = child.stdin.take() else {
-            return Err(io_failed(
-                "open the stdin of",
-                std::io::Error::other("the child has no stdin pipe"),
-            ));
-        };
-        let (output, written) = std::thread::scope(|scope| {
-            // The pipe moves into the writer and drops when it returns, which
-            // closes the child's stdin.
-            let writer = scope.spawn(move || pipe.write_all(input));
-            (child.wait_with_output(), writer.join())
-        });
-        let output = output.map_err(|source| io_failed("wait for", source))?;
-        let stdout = exited_zero(output, argv.clone())?;
-        match written {
-            Ok(Ok(())) => Ok(stdout),
-            Ok(Err(source)) => Err(io_failed("write stdin to", source)),
-            Err(_) => Err(io_failed(
-                "write stdin to",
-                std::io::Error::other("the stdin writer panicked"),
-            )),
-        }
+        })?;
+        Ok(stdout)
     }
 }
 
