@@ -35,7 +35,9 @@ can be challenged at plan review.
 - **D-03:** DIV-03 reads modes from the workspace tip's tree, not the index (the oracle uses
   `ls-files -s`, i.e. the index). `core.hooksPath` is git's effective value, read through the git
   binary (Phase 4 D-23). It counts only when it is a relative path naming a directory tracked in that
-  tree. A `120000` entry passes only when its target resolves, within the tree, to a `100755` blob.
+  tree. A `120000` entry passes only when its target resolves, within the tree, to a `100755` blob;
+  resolution follows symlinked directories inside the tree, with a hop limit (owner, 2026-11-18, at plan
+  review).
   Everything else under the directory that is not `100755` fails, naming the path and its mode.
   `scripts/*.sh` outside the hooks directory is not checked (DIV-03, success criterion 3).
 - **D-04:** In a repo that is not configured (no `wsx.sourceBranch`), `wsx check` follows Phase 4 D-16
@@ -101,7 +103,8 @@ can be challenged at plan review.
   ref's remote-tracking ref (`refs/remotes/<baseRemote>/<branch>`), read through the git binary; null
   with the reason stated ("no reflog for <ref>") when there is none. `fetched_at`: the mtime of
   `FETCH_HEAD`, which is repo-wide and changes with any fetch; null with the reason stated when the file
-  is absent. Reason for the amendment: on git 2.56.1 a fresh clone writes no reflog entry for the
+  is absent. Git keeps one `FETCH_HEAD` per worktree, so "repo-wide" means the newest `FETCH_HEAD` across
+  the main worktree and every linked worktree (owner, 2026-11-18, at plan review). Reason for the amendment: on git 2.56.1 a fresh clone writes no reflog entry for the
   remote-tracking ref, and a fetch that brings nothing new writes `FETCH_HEAD` but no reflog entry
   (reproduced in a scratch repo), so reflog alone reports "never fetched" after a clone and
   over-reports staleness against a quiet upstream. When the integration ref is a local branch (no base

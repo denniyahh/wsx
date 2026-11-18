@@ -247,7 +247,29 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. `wsx check --json` matches a versioned, documented schema, and its exit codes are documented. A contract test enumerates the command tree and fails for any command without a pinned schema or whose output drifts from it (control: a field change without a version bump fails), so every later command must join the contract
   5. A source-scan test fails on any read of `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml` or `.claude`/`.codex` settings (control: a planted read trips it), and every command runs in a repo that has none of those files
 
-**Plans**: TBD
+**Plans**: 9 plans
+**Wave 1**
+- [ ] 05-01-PLAN.md — Tracer: `wsx check` end to end for added paths (command table, read order, five scenarios); every error's D-06 class and kind; `docs/exit-codes.md`; reftable and replace refs exit 5
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05-02-PLAN.md — `--json`: one versioned object for every outcome, D-09 hex bytes, failure object, D-04 inferred branch; `serde_json` dev-only
+- [ ] 05-03-PLAN.md — Git reads: NUL-framed tree lookups, tree listing, blobs, effective `core.hooksPath`, reflog and `FETCH_HEAD` times
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05-04-PLAN.md — Undeclared modified and deleted, stale `only`/`modified`, redundant built-in, D-05 order, feature-worktree case (D-02)
+- [ ] 05-05-PLAN.md — IF-02 source scan with planted-read control; every command runs in a repo without agent files (D-15)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05-06-PLAN.md — Hook modes from the committed tree under `core.hooksPath`, symlinks resolved in the tree (DIV-03)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 05-07-PLAN.md — Staleness: both D-12 times, never a failure, unreachable-remote scenario (DIV-04)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 05-08-PLAN.md — `docs/json/check.v1.schema.json`, validation of every command's output, pinned hashes and table coverage with controls
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 05-09-PLAN.md — Item-level dead-code expectations; fresh mutation pass, coverage, deps and container gates
 
 ### Phase 6: Pre-push guard
 
