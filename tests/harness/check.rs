@@ -330,9 +330,8 @@ fn to_reftable(fixture: &mut Fixture) -> Result<(), String> {
 const REFTABLE_REASON: &str = "gix cannot read reftable refs; wsx refuses a reftable repository with a message naming reftable";
 
 /// GIT-03 `regression:`, a guard with both controls (HARN-05). The subject
-/// is the devflow preset with `work` migrated to reftable. wsx refuses it
-/// (exit 1 is a placeholder until IF-01 fixes the exit code in phase 5),
-/// and the oracle's record is what the vendored check was observed to do on
+/// is the devflow preset with `work` migrated to reftable. wsx refuses it:
+/// wsx exits 5, the refused class (D-06), and the oracle's record is what the vendored check was observed to do on
 /// the same repository.
 ///
 /// The known-positive control is the files-backend preset with an undeclared
@@ -343,7 +342,8 @@ fn reftable_refused() -> Scenario {
     Scenario::new(
         "reftable_refused",
         check_in_work(RepoConfig::devflow(), to_reftable)
-            .expect(verdict(1))
+            .expect(verdict(5))
+            .rust_stderr(b"'reftable' storage format")
             .class(Class::Regression {
                 reason: REFTABLE_REASON,
             })
@@ -353,7 +353,78 @@ fn reftable_refused() -> Scenario {
         Role::KnownPositive,
         check_in_work(RepoConfig::devflow(), add_note)
             .expect(verdict(1))
-            .oracle_stderr(UNDECLARED_NOTE),
+            .oracle_stderr(UNDECLARED_NOTE)
+            .rust_stderr(UNDECLARED_NOTE_WSX),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+}
+
+/// Fixture step: `work` gains a replace ref that replaces the workspace tip
+/// with the integration tip. The step then lists `refs/replace/` and fails
+/// unless exactly one ref is there, so a `git replace` that silently did
+/// nothing cannot leave the scenario running without one.
+fn add_replace_ref(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.git_ok(
+        WORK,
+        [
+            "replace",
+            "refs/heads/workspace/dev",
+            "refs/remotes/origin/develop",
+        ],
+    )?;
+    let listed = fixture.git_ok(
+        WORK,
+        ["for-each-ref", "--format=%(refname)", "refs/replace/"],
+    )?;
+    if listed
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .count()
+        == 1
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "after git replace, work lists {:?} under refs/replace/, not one ref",
+            String::from_utf8_lossy(&listed)
+        ))
+    }
+}
+
+/// Why wsx refuses a repository holding a replace ref on purpose.
+const REPLACE_REFS_REASON: &str = "wsx reads no object while a replace ref exists (phase 4 D-22)";
+
+/// `regression:`, a guard with both controls (HARN-05). The subject is the
+/// devflow preset whose `work` holds a replace ref swapping the workspace
+/// tip for the integration tip. wsx reads no object while a replace ref
+/// exists, so it refuses the repository: exit 5, the refused class (D-06).
+/// The oracle's record is what the vendored check was observed to do on the
+/// same repository.
+///
+/// The known-positive control is the preset with an undeclared
+/// `notes/todo.md`, which must be refused; the clean control is the
+/// unmodified preset, which must pass: the subject's only difference from it
+/// is the replace ref.
+fn replace_refs_refused() -> Scenario {
+    Scenario::new(
+        "replace_refs_refused",
+        check_in_work(RepoConfig::devflow(), add_replace_ref)
+            .expect(verdict(5))
+            .rust_stderr(b"refusing the replace refs")
+            .class(Class::Regression {
+                reason: REPLACE_REFS_REASON,
+            })
+            .oracle(OracleSide::Recorded(verdict(0))),
+    )
+    .control(
+        Role::KnownPositive,
+        check_in_work(RepoConfig::devflow(), add_note)
+            .expect(verdict(1))
+            .oracle_stderr(UNDECLARED_NOTE)
+            .rust_stderr(UNDECLARED_NOTE_WSX),
     )
     .control(
         Role::Clean,
@@ -367,5 +438,6 @@ scenarios! {
     fork_layout: oracle, rust_enabled;
     no_gsd_repo: oracle, rust_enabled;
     no_gsd_custom_personal_path: rust_only, rust_enabled;
-    reftable_refused: oracle, rust = "Rust side not enabled until phase 5";
+    reftable_refused: oracle, rust_enabled;
+    replace_refs_refused: oracle, rust_enabled;
 }
