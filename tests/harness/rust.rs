@@ -2,7 +2,7 @@
 //!
 //! Every Rust side is disabled in phase 2, so these command lines are best
 //! guesses. The phase that enables a Rust side (5-10) revises the line for its
-//! action in the same commit.
+//! action in the same commit. Phase 5 enabled check, whose line is final.
 
 use std::ffi::OsString;
 use std::process::Stdio;

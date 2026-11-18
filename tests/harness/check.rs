@@ -51,6 +51,16 @@ fn verdict(exit: i32) -> Outcome {
 const UNDECLARED_NOTE: &[u8] = b"diverges from origin/develop in ways .workspace-divergence does \
       not declare:\n  undeclared workspace-only path: notes/todo.md (declare: only notes/todo.md)\n";
 
+/// What wsx prints refusing the undeclared `notes/todo.md`: wsx's pinned
+/// reason for the Rust side.
+const UNDECLARED_NOTE_WSX: &[u8] =
+    b"undeclared workspace-only path: notes/todo.md (declare: only notes/todo.md)\n";
+
+/// What wsx prints refusing the undeclared `scratch/y.md`: wsx's pinned
+/// reason for the Rust side.
+const UNDECLARED_SCRATCH_WSX: &[u8] =
+    b"undeclared workspace-only path: scratch/y.md (declare: only scratch/y.md)\n";
+
 /// The oracle's self-test for the divergence check (HARN-01), a guard with
 /// both controls (HARN-05). The subject declares `only notes` and carries
 /// `notes/todo.md`, so every difference from the integration branch is
@@ -70,7 +80,8 @@ fn self_test() -> Scenario {
         Role::KnownPositive,
         check_in_work(RepoConfig::devflow(), add_note)
             .expect(verdict(1))
-            .oracle_stderr(UNDECLARED_NOTE),
+            .oracle_stderr(UNDECLARED_NOTE)
+            .rust_stderr(UNDECLARED_NOTE_WSX),
     )
     .control(
         Role::Clean,
@@ -140,7 +151,8 @@ fn quoted_personal_names() -> Scenario {
         Role::KnownPositive,
         check_in_work(RepoConfig::devflow(), add_note)
             .expect(verdict(1))
-            .oracle_stderr(UNDECLARED_NOTE),
+            .oracle_stderr(UNDECLARED_NOTE)
+            .rust_stderr(UNDECLARED_NOTE_WSX),
     )
     .control(
         Role::Clean,
@@ -178,7 +190,8 @@ fn fork_layout() -> Scenario {
                 b"diverges from upstream/develop in ways .workspace-divergence does not \
                   declare:\n  undeclared workspace-only path: notes/todo.md (declare: only \
                   notes/todo.md)\n",
-            ),
+            )
+            .rust_stderr(UNDECLARED_NOTE_WSX),
     )
     .control(
         Role::Clean,
@@ -249,7 +262,8 @@ fn no_gsd_repo() -> Scenario {
             .expect(verdict(1))
             .oracle_stderr(
                 b"undeclared workspace-only path: scratch/y.md (declare: only scratch/y.md)\n",
-            ),
+            )
+            .rust_stderr(UNDECLARED_SCRATCH_WSX),
     )
     .control(
         Role::Clean,
@@ -284,7 +298,9 @@ fn no_gsd_custom_personal_path() -> Scenario {
     )
     .control(
         Role::KnownPositive,
-        rust_only_no_gsd_check(add_scratch).expect(verdict(1)),
+        rust_only_no_gsd_check(add_scratch)
+            .expect(verdict(1))
+            .rust_stderr(UNDECLARED_SCRATCH_WSX),
     )
     .control(
         Role::Clean,
@@ -346,10 +362,10 @@ fn reftable_refused() -> Scenario {
 }
 
 scenarios! {
-    self_test: oracle, rust = "Rust side not enabled until phase 5";
-    quoted_personal_names: oracle, rust = "Rust side not enabled until phase 5";
-    fork_layout: oracle, rust = "Rust side not enabled until phase 5";
-    no_gsd_repo: oracle, rust = "Rust side not enabled until phase 5";
-    no_gsd_custom_personal_path: rust_only, rust = "Rust side not enabled until phase 5";
+    self_test: oracle, rust_enabled;
+    quoted_personal_names: oracle, rust_enabled;
+    fork_layout: oracle, rust_enabled;
+    no_gsd_repo: oracle, rust_enabled;
+    no_gsd_custom_personal_path: rust_only, rust_enabled;
     reftable_refused: oracle, rust = "Rust side not enabled until phase 5";
 }
