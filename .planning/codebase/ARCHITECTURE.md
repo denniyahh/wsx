@@ -1,196 +1,165 @@
 ---
-last_mapped_commit: 5e4217fb6a940bf5ca5f53685fd2245097150676
-last_mapped_at: 2026-10-17
+last_mapped_commit: a686ea156dac3e4c93d9f9d180ee4a35e340c4f5
+last_mapped_at: 2026-11-18
 ---
-<!-- refreshed: 2026-10-17 -->
-
+<!-- refreshed: 2026-11-18 -->
 # Architecture
 
-**Analysis Date:** 2026-10-17
+**Analysis Date:** 2026-11-18
 
 ## System Overview
 
 ```text
-┌──────────────────────────────────────────────────────────────────────┐
-│                         Invokers (outside wsx)                        │
-├───────────────────┬──────────────────────┬───────────────────────────┤
-│ Interactive shell │ Git hooks via Husky  │ Agent session hooks       │
-│ `wsx <cmd>`       │ `integrations/       │ `integrations/claude/...` │
-│ fish `git` wrapper│  husky-init.sh`      │ `integrations/copilot/...`│
-│ `shell/fish/...`  │ -> `wsx hook <name>` │ -> `wsx hook session-*`   │
-└─────────┬─────────┴──────────┬───────────┴─────────────┬─────────────┘
-          ▼                    ▼                         ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  CLI: build_parser() / main()  `bin/wsx:1100-1181`                    │
-│  argparse subcommands -> cmd_* (`bin/wsx:614-1092`)                   │
-└─────────┬────────────────────────────────────────────────────────────┘
-          ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Context `bin/wsx:122`  (git roots, source worktree, manifest, base)  │
-├──────────────────────────────┬───────────────────────────────────────┤
-│ Planner plan() `bin/wsx:356` │ Ignore + guard `bin/wsx:496-606`      │
-│ Executor apply() `:419`      │ (per-worktree core.excludesFile)      │
-└──────────────┬───────────────┴──────────────────┬────────────────────┘
-               ▼                                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ Filesystem: source worktree files, dev worktree files,               │
-│ `<git-dir>/wsx/base.json`, `<git-dir>/wsx/backups/`,                  │
-│ `<common-dir>/info/exclude.wsx-<id>`, `*.wsx-remote` conflict markers │
-│ git: `git` subprocess via git()/git_ok() `bin/wsx:77-114`            │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                 CLI entry  `src/main.rs`                     │
+│   argv parse (today: only `--version`; exit 0 / 2 usage)     │
+└────────────────────────────┬────────────────────────────────┘
+                             │ (no caller yet; wired by phase 5 `wsx check`)
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│            Repository model  `src/model/`                    │
+│  `resolve()` -> RepoModel{Configured | NotConfigured}        │
+│  `manifest.rs`: `.wsx.conf` parse / normalise / covers()     │
+└────────────────────────────┬────────────────────────────────┘
+                             │ wsx-owned types only (ObjectId, raw bytes)
+                             ▼
+┌──────────────────────────────┬──────────────────────────────┐
+│ Reads via gix                │ Writes/reads via git binary  │
+│ `src/git/repo.rs` (Repo)     │ `src/git/spawn.rs` (Git)     │
+│ `reads.rs` `objects.rs`      │ `config.rs` `refs.rs`        │
+└──────────────────────────────┴──────────────────────────────┘
+                             │
+                             ▼
+              Git repository on disk (object db, refs, config)
+
+Test side (no runtime coupling):
+  `tests/harness/`  scenario harness: oracle (`tests/oracle/*.sh`) vs `wsx` binary
+  `bin/wsx` + `tests/sandbox.sh`  frozen Python 0.1.0, reference only
 ```
 
 ## Component Responsibilities
 
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| git helpers | Run `git` subprocesses; parse `git worktree list` | `bin/wsx:77-114` (`git`, `git_ok`, `list_worktrees`) |
-| `Context` | Resolve root/git-dir/common-dir, branch, source branch (`wsx.sourceBranch`, default `personal-workspace`), source worktree; load/validate `.wsx.conf`; load/save `base.json` atomically | `bin/wsx:122-229` |
-| file plumbing | Hashing, tree walk, longest-match policy lookup, symlink detection, parent materialisation, copy/remove, backups | `bin/wsx:237-338` |
-| planner | Turn manifest + live files + base snapshot into `Action`s | `bin/wsx:346-416` (`Action`, `plan`) |
-| executor | Execute `Action`s filtered by direction; write conflict markers; update base | `bin/wsx:419-488` (`apply`) |
-| ignore + guard | Generate per-worktree exclude file, inline global ignore, prune orphans, self-heal | `bin/wsx:496-606` |
-| commands | One `cmd_*` per subcommand | `bin/wsx:614-1092` |
-| CLI | argparse wiring, exit-code and fail-open policy | `bin/wsx:1100-1181` |
-| installer | Symlink/copy bin, fish files, husky init; merge Claude hooks JSON | `install.sh` |
-| test suite | End-to-end bash sandbox against throwaway repo | `tests/sandbox.sh` |
+| CLI | Parse argv, print version, map to `ExitCode` | `src/main.rs` |
+| Model | Resolve workspace branch, tip, integration branch, remotes, worktree dir, manifest | `src/model/mod.rs` |
+| Manifest | Parse `.wsx.conf`, path normalise/encode, `covers()` | `src/model/manifest.rs` |
+| Git facade | Re-exports; `ObjectId`, `Error` with actionable `Display` | `src/git/mod.rs` |
+| Repo discovery | The single gix open site (`open_gix`), ceiling/ownership/env refusals | `src/git/repo.rs` |
+| Process runner | `Git` spawns the real `git` binary with scoped env, deadlines, stdin | `src/git/spawn.rs` |
+| Reads | ahead/behind, tree diff (`TreeChange`) | `src/git/reads.rs` |
+| Objects | Tip tree reads (`TipObjects`, `RootEntry`, `read_tips`) | `src/git/objects.rs` |
+| Refs | `RefRecord`, `list_refs`, `peel_commit`, replace-ref refusals, ref-name checks | `src/git/refs.rs` |
+| Config | `ConfigRead` (`read_config`, `values`, `defines_remote`) | `src/git/config.rs` |
+| Quoting | C-quote/unquote, `shell_word` | `src/git/quote.rs` |
+| Test repos | `#[cfg(test)]` builders for unit tests | `src/git/testing.rs` |
 
 ## Pattern Overview
 
-**Overall:** Single-file, stdlib-only Python CLI with a plan/apply split (pure-ish planner, side-effecting executor) and three-way sync against a persisted base snapshot.
+**Overall:** Single binary crate, layered: CLI -> model -> git adapter (gix for reads, git CLI for history changes).
 
 **Key Characteristics:**
-- All sync decisions live in `plan()`; `apply()` only executes, so `--dry-run` runs the same planner and skips writes (`bin/wsx:463`).
-- Three-way comparison: source hash vs local hash vs `base.json` hash decides pull / push / delete / conflict (`bin/wsx:405-414`).
-- Fail-open in hook mode: errors are reported and exit 0, except the guard, which returns 1.
-- Never writes tracked files: ignore rules go through `extensions.worktreeConfig` + `git config --worktree core.excludesFile` pointing at `<common-dir>/info/exclude.wsx-<id>` (`bin/wsx:559-570`).
+- gix types never leave `src/git/`; callers see `ObjectId` (lowercase hex) and `Vec<u8>` paths/names.
+- Every history change runs the real `git` binary so user hooks, signing, merge drivers and credentials apply.
+- Every refusal is a typed `Error` variant whose message names cause and fix.
+- Resolve once: `model::resolve` produces one `Model` every command reads.
+- Non-interactive: the tool never prompts.
 
 ## Layers
 
-**Invocation layer:**
-- Purpose: Trigger wsx at the right lifecycle moments
-- Location: `integrations/`, `shell/fish/`, `install.sh`
-- Contains: sh hook extension, agent hook JSON, fish wrapper for `git worktree remove`, fish completions
-- Depends on: installed `~/.local/bin/wsx`
-- Used by: Husky, Claude Code, Copilot, interactive fish
+**CLI:**
+- Purpose: argument handling and exit codes
+- Location: `src/main.rs`
+- Contains: `main`, `EXIT_USAGE = 2`
+- Depends on: declares `mod git; mod model;`
+- Used by: users, `tests/cli.rs`, `tests/harness/rust.rs`
 
-**CLI/commands layer:**
-- Purpose: Parse args, enforce preconditions (`require_configured`, `require_dev_worktree`), print reports
-- Location: `bin/wsx:614-1181`
-- Depends on: Context, planner/executor, ignore+guard
-- Used by: invocation layer
+**Model:**
+- Purpose: one resolved view of the repository
+- Location: `src/model/`
+- Contains: config key constants (`wsx.sourceBranch`, `wsx.baseRemote`, `wsx.pushRemote`, `wsx.baseRef`, `wsx.worktreeDir`), `Model`, `Integration`, `RepoModel`, `Error`, `resolve` (`src/model/mod.rs:372`), `personal_paths`/`is_personal`
+- Depends on: `crate::git` only
+- Used by: nothing in `main` yet (`expect(dead_code)` until phase 5)
 
-**Core layer:**
-- Purpose: Sync semantics and ignore installation
-- Location: `bin/wsx:122-606`
-- Depends on: git helpers, filesystem
+**Git adapter:**
+- Purpose: repository access
+- Location: `src/git/`
+- Contains: `Repo` (gix-backed), `Git` (process-backed), errors, quoting
+- Depends on: `gix =0.90.0` (sha1, sha256, revision), `rustix` (euid)
+- Used by: `src/model/`
 
 ## Data Flow
 
-### Primary Request Path (`wsx sync`)
+### Model resolution (the path future commands use)
 
-1. `main()` builds parser, constructs `Context(Path.cwd())` (`bin/wsx:1159-1162`)
-2. `cmd_sync` checks dev worktree, calls `plan(ctx)` (`bin/wsx:649`)
-3. `plan()` loads manifest + base, unions `walk()` of both trees plus base keys, classifies each path by policy (`bin/wsx:356-416`)
-4. `apply(ctx, actions, {"in","out"}, dry_run)` copies/removes, writes `*.wsx-remote` for conflicts, updates base map (`bin/wsx:419-488`)
-5. `ctx.save_base()` writes `base.json` via tmp + `replace` (`bin/wsx:217-229`); return value = conflict count
+1. `Repo::discover` opens the repo via `open_gix`, honouring `GIT_DIR`/`GIT_INDEX_FILE`, canonicalising worktree/git dir/common dir, refusing untrusted owners, ceilings, object-store env, ref namespaces and unsupported ref storage (`src/git/repo.rs:30-660`)
+2. `Git::for_repo` / `Git::from_process` builds the spawner (`src/git/spawn.rs:297-355`)
+3. `model::resolve(repo, git, recorded)` reads local config (`ConfigRead`), lists refs, refuses replace refs, picks configured or inferred workspace branch, resolves integration branch (`wsx.baseRef` or fallback chain) and reads `.wsx.conf` from the workspace tip's tree (`src/model/mod.rs:372`)
+4. `RepoModel::require` converts manifest/replace-ref failures on an unconfigured repo into `Error::NotConfigured` ("run `wsx init`") (`src/model/mod.rs:114`)
 
-### Hook Path (`wsx hook pre-commit`)
+### Scenario harness
 
-1. Husky sources `~/.config/husky/init.sh`, which runs `wsx hook "$n" </dev/null || exit 1` unless `WSX_SKIP=1` (`integrations/husky-init.sh:28-30`)
-2. `cmd_hook` no-ops if unconfigured or source; runs `ensure_installed()` before the guard (`bin/wsx:1022-1035`)
-3. `cmd_guard` checks staged paths (or `@{upstream}..HEAD` for pre-push) against `managed_paths()`; returns 1 to block (`bin/wsx:992-1019`)
-4. `quiet_sync(ctx, {"out"}, ...)` best-effort push; catches `Problem`, always returns 0 (`bin/wsx:1069-1092`)
-5. `post-merge`/`post-checkout`/`post-rewrite`/`session-start` sync inbound; `session-start` also arms husky via `arm_husky()` (`bin/wsx:1050-1058`)
-
-### Worktree lifecycle
-
-1. `wsx new` creates worktree from `base_ref()` (`wsx.baseRef`, else `origin/devtest`), arms husky, runs setup (`bin/wsx:803-891`)
-2. `wsx rm` pushes personal state back, then removes the worktree; refuses on conflicts unless `--force` (`bin/wsx:906-951`)
-3. fish `git` wrapper reroutes `git worktree remove` to `wsx rm` (`shell/fish/functions/git.fish`)
+1. `tests/harness/main.rs` `harness_modules!(sync, worktree, check, cut, guard, signing)` registers scenarios
+2. `fixture.rs` builds a scratch repo under `CARGO_TARGET_TMPDIR` with hermetic env (`env.rs`)
+3. `oracle.rs` runs patched `tests/oracle/*.sh`; `rust.rs` runs the `wsx` binary (ignored until the implementing phase)
+4. `outcome.rs` compares against the explicit expected `Outcome`
 
 **State Management:**
-- Per-worktree: `<git-dir>/wsx/base.json` (version 1, `entries` path->sha), `<git-dir>/wsx/backups/` for lww overwrites
-- Per-repo shared: `<common-dir>/info/exclude.wsx-<worktree-id>`
-- Config: `git config wsx.sourceBranch`, `wsx.baseRef`
-- Manifest: `.wsx.conf` at the source worktree root (template: `examples/wsx.conf`)
+- No persistent wsx state beyond git: local config keys `wsx.*` and the `.wsx.conf` blob at the workspace tip.
 
 ## Key Abstractions
 
-**`Context`:**
-- Purpose: Everything resolved once per invocation about where we are
-- Examples: `bin/wsx:122`
-- Pattern: Plain class constructed in `main()`, passed to every `cmd_*`
-
-**`Action`:**
-- Purpose: One planned operation; `kind` in `pull | push | delete-local | delete-remote | conflict | converged`
-- Examples: `bin/wsx:346-353`
-- Pattern: `__slots__` value object; direction derived from kind (`pull`/`delete-local` = "in")
-
-**Policy:**
-- Purpose: `sync | pull | lww | skip` per manifest entry; longest matching entry wins (`policy_for`, `bin/wsx:274`)
-
-**`Problem`:**
-- Purpose: Expected, user-facing error; `main()` prints it and exits 2 (0 in hook mode) (`bin/wsx:68`)
+**`Repo`:** gix repository handle with canonical paths; the only open site. `src/git/repo.rs:15`
+**`Git`:** builder-style spawner (`with_own_worktree`, `with_removal_disabled`, `with_deadline`; `run`, `run_without_var`, `run_with_input`). `src/git/spawn.rs:277`
+**`ObjectId`:** hash-kind-independent hex id. `src/git/mod.rs:55`
+**`Model` / `RepoModel`:** resolved repository. `src/model/mod.rs:66,87`
+**`Manifest` / `Entry` / `EntryKind`:** personal-path list. `src/model/manifest.rs`
+**Harness `Scenario`/`Case`/`Outcome`:** `tests/harness/scenario.rs`, `tests/harness/outcome.rs`
 
 ## Entry Points
 
-**`bin/wsx` (`main`):**
-- Location: `bin/wsx:1159`, `__main__` guard at end of file
-- Triggers: shell, hooks, agent sessions
-- Responsibilities: dispatch subcommands `setup pull push sync status list doctor new rm resolve guard hook`
-
-**`install.sh`:**
-- Triggers: manual; modes default symlink, `--copy`, `--uninstall`, `--dry-run`
-- Responsibilities: place bin/fish/husky files, back up existing husky init to `*.pre-wsx.bak`, merge Claude hook snippet via embedded Python
-
-**`tests/sandbox.sh`:**
-- Triggers: manual; shims PATH so hooks use this checkout's `bin/wsx`
+**Binary:** `src/main.rs` — invoked as `wsx`; only `--version` today.
+**Test targets:** `tests/cli.rs`, `tests/harness/main.rs`, `tests/gate.rs`, `tests/gate_controls.rs`, `tests/image_parity.rs`, `tests/repo_policy.rs`, `tests/setup_repo.rs`.
+**Frozen oracle:** `bin/wsx` (Python 0.1.0) — reference only.
 
 ## Architectural Constraints
 
-- **Threading:** Single-threaded, synchronous; each command is one short-lived process.
-- **Global state:** Module constants only (`MANIFEST_NAME`, `DEFAULT_SOURCE_BRANCH`, `CONFLICT_SUFFIX`, `POLICIES`, `IGNORED_BASENAMES`, color codes) at `bin/wsx:55-66`. No mutable singletons.
-- **Circular imports:** Not applicable (one file, stdlib only).
-- **Dependencies:** stdlib only; no third-party packages allowed (`CLAUDE.md`).
-- **Non-interactive:** Must never prompt or read stdin; runs inside hooks.
-- **Fail-open location:** The catch-all is in `main()` (`bin/wsx:1163-1178`, keyed on `args.command == "hook"`), not inside `cmd_hook`. `cmd_hook` itself only catches `Problem` from `ensure_installed`; `quiet_sync` catches `Problem`. `CLAUDE.md`'s "cmd_hook catches everything" is true only of the hook path as a whole.
-- **Single core.excludesFile:** git allows one; wsx inlines the global ignore into the generated file (`render_exclude`, `bin/wsx:512`).
+- **Threading:** single-threaded; child processes via `std::process`. gix `interrupt` feature off so wsx owns SIGINT.
+- **Global state:** none; `std::env::set_var`/`remove_var` banned (`clippy.toml`); scope env with `Command::env`.
+- **gix open ban:** all gix open/discover entry points are `disallowed-methods` except `open_gix` in `src/git/repo.rs`.
+- **Revspec ban:** gix `rev_parse*`/spec parsers banned (ref-vs-hex ordering differs from git); take an `ObjectId` and `Repo::peel_commit`.
+- **No network:** model children pass `--no-lazy-fetch` (`NO_LAZY_FETCH`, `src/git/mod.rs`); no gix network features; `mailmap` banned in `deny.toml`.
+- **Circular imports:** none; `model` -> `git` one way.
 
 ## Anti-Patterns
 
-### Decision logic in apply()
+### Opening a repo outside `Repo::discover`
+**What happens:** calling `gix::open`/`discover` directly.
+**Why it's wrong:** ignores hook env or pairs a sibling worktree with the hook's index.
+**Do this instead:** `Repo::discover`, siblings via `main_repo()`/`worktrees()` (`src/git/repo.rs`).
 
-**What happens:** Tempting to branch on file state inside `apply()`.
-**Why it's wrong:** `--dry-run` would no longer reflect what runs. (`apply()` already does one policy-aware thing: lww backup before overwrite, `bin/wsx:467-473`.)
-**Do this instead:** Add new classification to `plan()` (`bin/wsx:356`) and emit a distinct `Action.kind`/`detail`.
+### Leaking gix types upward
+**What happens:** returning `gix::ObjectId` or `BString` from `src/git/`.
+**Why it's wrong:** breaks the adapter boundary documented in `src/git/mod.rs`.
+**Do this instead:** convert to `ObjectId` / `Vec<u8>`; carry gix errors as message only.
 
-### Trusting `Path.is_symlink()` alone
-
-**What happens:** File under a symlinked directory hashes identical to source and reads as converged.
-**Do this instead:** Use `via_symlink()` (`bin/wsx:285`) and call `materialise_parents()` (`bin/wsx:301`) before any pull write.
-
-### Writing base.json partially
-
-**What happens:** Skipping base updates for an applied action.
-**Why it's wrong:** Next run cannot tell who changed what; produces spurious conflicts or wrong-direction copies.
-**Do this instead:** Update `base[rel]` for every applied action, as in `bin/wsx:465-484`.
+### Mutating history through gix
+**Do this instead:** use `Git::run` so user hooks and signing apply.
 
 ## Error Handling
 
-**Strategy:** Raise `Problem` for expected failures; `main()` maps to exit 2 (red) or 0 in hook mode (yellow). Unexpected exceptions re-raise outside hook mode, swallowed with exit 0 inside it. `KeyboardInterrupt` -> 130.
+**Strategy:** typed per-layer `Error` enums (`src/git/mod.rs:103`, `src/model/mod.rs:135`) with `From<git::Error>` for model; `Display` renders an actionable message naming cause and fix; argv rendered via `render_argv`.
 
 **Patterns:**
-- `git(..., check=False)` returns "" for optional config lookups instead of raising.
-- Commands return the conflict count as a non-zero exit (`cmd_setup` returns 1 on conflicts).
-- Conflicts never overwrite; source copy goes to `<file>.wsx-remote`.
+- `refuse_*` functions return `Result<(), Error>` before any work.
+- `Result` + `?`; no `unwrap` outside tests.
 
 ## Cross-Cutting Concerns
 
-**Logging:** `print` to stdout for progress, stderr for warnings/errors, ANSI colors via module constants.
-**Validation:** Manifest parsing in `Context.load_manifest()` rejects unknown policies, absolute paths, and `..` (`bin/wsx:184-207`).
-**Authentication:** Not applicable.
+**Logging:** none; messages to stderr from `main`.
+**Validation:** ref names (`check_full_ref_name`, `is_branch_name`), manifest paths (`normalize_path`).
+**Authentication:** delegated to the git binary (credentials, signing).
 
 ---
 
-*Architecture analysis: 2026-10-17*
+*Architecture analysis: 2026-11-18*

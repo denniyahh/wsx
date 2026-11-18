@@ -1,115 +1,108 @@
 ---
-last_mapped_commit: 5e4217fb6a940bf5ca5f53685fd2245097150676
-last_mapped_at: 2026-10-17
+last_mapped_commit: a686ea156dac3e4c93d9f9d180ee4a35e340c4f5
+last_mapped_at: 2026-11-18
 ---
 # Coding Conventions
 
-**Analysis Date:** 2026-10-17
+**Analysis Date:** 2026-11-18
 
-Authoritative style sources: `CONTRIBUTING.md` (design constraints + Style section) and `CLAUDE.md` (code shape + landmines). Read both before editing `bin/wsx`.
+Scope: the Rust rewrite (`src/`, `tests/`, `Cargo.toml`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`). `bin/wsx` and `tests/sandbox.sh` are the frozen Python 0.1.0 oracle: read for reference only, never edit, deleted at cutover. Workflow rules live in `CONTRIBUTING.md`; agent traps in `CLAUDE.md`.
 
 ## Naming Patterns
 
 **Files:**
-- Main program is an extensionless executable script: `bin/wsx` (Python 3, shebang `#!/usr/bin/env python3`). Do not add a `.py` extension or split into a package.
-- Shell scripts use `.sh` and lowercase/hyphenated names: `install.sh`, `tests/sandbox.sh`, `integrations/husky-init.sh`.
-- Fish integrations live under `shell/fish/{functions,completions}/<name>.fish`.
+- snake_case module files, one concern each: `src/git/refs.rs`, `src/git/spawn.rs`, `src/model/manifest.rs`.
+- Directory modules use `mod.rs` (`src/git/mod.rs`, `src/model/mod.rs`), not `git.rs` beside `git/`.
+- Test-only helper modules are named `testing.rs` and declared `#[cfg(test)] pub(crate) mod testing;` (`src/git/testing.rs`).
+- Harness scenario modules are named by the action they cover: `tests/harness/sync.rs`, `worktree.rs`, `check.rs`, `cut.rs`, `guard.rs`, `signing.rs`.
 
 **Functions:**
-- `snake_case`, short verb or noun phrases: `git()`, `git_ok()`, `list_worktrees()`, `digest()`, `walk()`, `copy_file()`, `materialise_parents()` (British spelling is used; keep it consistent, also `colour` in `cmd_status`).
-- Subcommand handlers are `cmd_<subcommand>(ctx: Context, args: argparse.Namespace) -> int` (e.g. `cmd_setup`, `cmd_status`, `cmd_hook` in `bin/wsx`). Register them in `build_parser()` (`bin/wsx` ~line 1100).
-- Boolean predicates read as questions: `git_ok`, `is_managed`, `via_symlink`, `ctx.is_source`, `ctx.configured`.
+- snake_case, read as what they return or do: `check_full_ref_name`, `is_branch_name`, `render_argv`, `c_quote`/`c_unquote`.
+- Constructors/conversions: `from_gix`, `from_hex`, `to_gix`, `from_process` (`src/git/mod.rs`, `src/git/spawn.rs`).
+- Test names state the behaviour as a sentence: `error_messages_name_their_cause`, `any_git_path_round_trips`, `help_flag_is_refused`, `property_runs_its_configured_cases`. Never name tests after review rounds or finding numbers.
+- Re-executed child halves end in `_child` (`remote_child`, `count_child` in `src/git/config.rs`).
 
 **Variables:**
-- `snake_case` locals; short domain names are accepted (`rel` for repo-relative path, `ctx`, `exc`, `h` for a hash object).
-- Module constants are `UPPER_SNAKE`: `MANIFEST_NAME`, `DEFAULT_SOURCE_BRANCH`, `CONFLICT_SUFFIX`, `POLICIES`, `IGNORED_BASENAMES` (`bin/wsx` lines 55-59). Add new magic strings here, not inline.
-- ANSI colour constants `BOLD, DIM, RED, YELLOW, GREEN, RESET` are empty strings when stdout is not a TTY (`bin/wsx` lines 61-65). Always use these constants; never hard-code escape codes.
-- Shell: UPPER_CASE globals (`REPO_ROOT`, `WSX`, `SANDBOX`, `SRC`, `DEV`, `PASS`, `FAIL`).
+- Full words, no single letters except closures over a single obvious item (`|byte|`, `|arg|`, `|err|`).
+- Constants SCREAMING_SNAKE with a `///` doc naming why: `NO_LAZY_FETCH` (`src/git/mod.rs`), `EXIT_USAGE` (`src/main.rs`), `USAGE_EXIT` (`tests/gate.rs`), `PROPERTY_CASES` (`src/model/manifest.rs`). No magic numbers.
 
 **Types:**
-- Classes are `PascalCase`: `Problem`, `Context`, `Action`.
-- Full type hints on every function signature, using modern syntax enabled by `from __future__ import annotations`: `Path | None`, `list[tuple[Path, str]]`, `set[str]`.
-- Enumerated values are plain strings, not `Enum`: policies `("sync", "pull", "lww", "skip")`, action kinds `pull | push | delete-local | delete-remote | conflict | converged` (documented in a trailing comment on `Action.kind`).
-- `Action` uses `__slots__` with an explicit `__init__` rather than a dataclass. Follow the existing pattern when extending it.
+- UpperCamelCase newtypes over primitives for domain values: `ObjectId(String)` (`src/git/mod.rs`).
+- Error enums named `Error` per layer, variants named for the cause with struct fields (`Error::NotARepo { start, reason }`, `Error::GitFailed { argv, status, stderr }`).
+- gix types never leave `src/git/`: callers get wsx's own types (`ObjectId`, raw-byte paths).
 
 ## Code Style
 
 **Formatting:**
-- No formatter config committed (no `pyproject.toml`, `ruff.toml`, `.editorconfig`). Style is Black-like: 4-space indent, double quotes, trailing commas in multi-line calls, ~100-char lines tolerated.
-- `ruff format --check bin/wsx` (default settings) reports the file would be reformatted. Do not run a formatter over the whole file; it would produce an unrelated diff. Match surrounding style in edits.
-- Shell scripts indent with tabs (`tests/sandbox.sh`, `install.sh`).
+- `rustfmt` defaults (no `rustfmt.toml`), edition 2024, toolchain pinned to `1.99.1` in `rust-toolchain.toml` (components clippy, rustfmt, llvm-tools, rust-analyzer).
+- Run via `scripts/check.sh fmt`.
 
 **Linting:**
-- No linter config committed. One inline suppression exists: `# noqa: BLE001 - hooks must fail open` in `main()`. Suppressions carry a reason after the code.
-- `ruff check --isolated bin/wsx` (defaults) reports 6 findings: 3x `PLW1510` (subprocess.run without explicit `check`, intentional — return codes are inspected manually in `git()`/`git_ok()`), `RUF023` unsorted `__slots__`, `ISC004`, `RUF100` unused noqa. None are enforced.
-- `shellcheck` reports SC2164 (unguarded `cd`) in `tests/sandbox.sh`, SC2209 in `install.sh`, SC2154 in `integrations/husky-init.sh` (`$n` is provided by husky when sourced).
+- `cargo clippy --all-targets -- -D warnings` via `scripts/check.sh clippy`; any warning fails.
+- `clippy.toml` `disallowed-methods`:
+  - `std::env::set_var` / `std::env::remove_var`: banned; scope env to the child with `Command::env`, `env_remove`, `env_clear`.
+  - Every gix open/discover entry point (`gix::open`, `ThreadSafeRepository::discover*`, `open_opts`, ...): banned except `open_gix` in `src/git/repo.rs`. Open repositories only through `Repo::discover`.
+  - gix revspec parsers (`Repository::rev_parse`, `rev_parse_single`, `revision::Spec::from_bstr`, `revision::plumbing::spec::parse`): banned; take an `ObjectId` and peel with `Repo::peel_commit`, read refs by exact name.
+- A justified exception uses `#[expect(clippy::disallowed_methods, reason = "...")]` on the smallest test-only item. Use `expect`, never `allow`, so a stale exception warns.
+- Same rule for other lints: `#![cfg_attr(not(test), expect(dead_code, reason = "no caller until phase 5"))]` in `src/git/mod.rs`.
+- `scripts/check.sh deps` (cargo-deny, `deny.toml`) whenever dependencies change.
 
 ## Import Organization
 
-**Order (in `bin/wsx`):**
-1. `from __future__ import annotations`
-2. Stdlib `import x` lines, alphabetical: `argparse, hashlib, json, os, re, shutil, subprocess, sys, time`
-3. `from pathlib import Path`
+**Order:**
+1. `std` imports, grouped by path (`use std::ffi::OsString; use std::fmt; use std::path::PathBuf;`).
+2. External crates (`gix`, `proptest`, `tempfile`).
+3. `crate::` / `super::` imports.
 
-**Hard rule:** standard library only (CONTRIBUTING constraint 6). Never add a third-party import.
+Separate groups with a blank line; rustfmt sorts within a group. Module declarations (`mod x;`) and `pub use` re-exports come before `use` lines (see `src/git/mod.rs`).
 
-**Path Aliases:** Not applicable.
+**Path Aliases:**
+- None. Re-export the public surface of a layer from its `mod.rs` (`pub use repo::Repo; pub use spawn::Git;`) and keep submodules private (`mod config;`).
 
 ## Error Handling
 
 **Patterns:**
-- Raise `Problem(message)` (`bin/wsx` line 68) for every user-facing failure. `main()` catches it, prints `wsx: <msg>` in red to stderr and returns exit code `2`.
-- `git(*args, check=True)` raises `Problem` with git's stderr on non-zero exit; pass `check=False` when an empty result is an acceptable answer (e.g. reading optional config, `@{upstream}`).
-- Use `git_ok(...)` when only success/failure matters.
-- Narrow `except` clauses for expected filesystem conditions: `except OSError: return None` in `digest()`, `except (FileNotFoundError, json.JSONDecodeError)` when loading `base.json`.
-- Fail-open in hook paths (constraint 2): `cmd_hook`, `quiet_sync` catch `Problem` and print a yellow warning, returning 0. `main()` in hook mode also swallows any `Exception`. The only non-zero hook exit is the guard (`return 1`). Never add a code path in `cmd_hook` that can raise or exit non-zero.
-- Exit codes: `0` ok, `1` actionable state (conflicts in `cmd_status`, guard block), `2` `Problem`/refused (e.g. running against the source worktree), `130` KeyboardInterrupt.
-- `assert ctx.source is not None` is used for type narrowing after `ctx.require_dev_worktree()`; it is not a runtime check.
+- Each layer has one hand-written `enum Error` with `impl fmt::Display` and `impl std::error::Error` (`src/git/mod.rs`). No `thiserror`/`anyhow`.
+- Every refusal names its cause and, where possible, the fix. Example from `Error::ForeignOwner`: `refusing /r: it is owned by another user, ...\nTo trust it, run:\n\tgit config --global --add safe.directory /r`.
+- Foreign errors cross the boundary as a message only: `Error::Gix { what, message }` built with `.map_err(|err| failed(err.to_string()))?`.
+- Fail rather than read partial data: `GitBadOutput`, `GitEmptyOutput` reject unparseable or empty child output; children have timeouts (`GitTimedOut`, `OpenTimedOut`).
+- Propagate with `?`. No `.unwrap()` in non-test code; `expect("reason")` in tests states the invariant (`.expect("spawn scripts/check.sh")`). In tests, `unwrap_or_else(|err| panic!("{err}"))` surfaces the error text.
+- Parse errors carry location and the offending text: `ParseError { line, text, problem }` (`src/model/manifest.rs`).
+- The tool never prompts and never resolves a conflict for the user.
 
 ## Logging
 
-**Framework:** `print` only — no `logging` module.
+**Framework:** None. `println!`/`eprintln!` in `src/main.rs` only.
 
 **Patterns:**
-- Normal output to stdout; warnings/errors to stderr with `file=sys.stderr`.
-- Prefix messages with `wsx:` (or `<hook-label>: wsx ...` inside hooks).
-- Output is column-aligned (`f"{action.kind:<14}"`), coloured via the TTY-aware constants, and states the next action when reporting a problem (e.g. "run 'wsx status'", "Resolve with wsx resolve <path> --mine").
-- Never read stdin anywhere reachable from `wsx hook` (constraint 3).
+- Diagnostics go to stderr; usage errors exit `2` (`EXIT_USAGE`). Exit codes become a versioned contract in phase 5 (IF-01).
+- User-facing output is aligned, coloured only on a TTY, and says what to do next when it reports a problem (`CONTRIBUTING.md` Style).
 
 ## Comments
 
 **When to Comment:**
-- Comments explain *why*, never *what* (`CONTRIBUTING.md` Style). Every non-obvious constraint names the failure it prevents — model examples: the comment above `ensure_installed` in `cmd_hook` ("without ignore rules ... `git add -A` would sweep them into the index") and `materialise_parents()`.
-- Section banners divide the file in dependency order:
-  ```python
-  # --------------------------------------------------------------------------
-  # git helpers
-  # --------------------------------------------------------------------------
-  ```
-  Put new code in the matching section (git helpers, context, file plumbing, planning, ignore + guard, commands, entry point).
+- Explain *why*, never *what*. A non-obvious constraint names the failure it prevents (`NO_LAZY_FETCH` doc: "so a read never reaches the network").
+- `Cargo.toml` comments justify every dependency and feature choice (licence, legitimacy audit, why a feature is off). Add the same for any new dependency.
+- `clippy.toml` entries carry a `reason` that tells the caller the sanctioned alternative.
 
-**Docstrings:**
-- Module docstring at top of `bin/wsx` is the user manual (layout, policies, commands). Update it when adding a command or policy.
-- Function docstrings are one or two lines, stating contract and edge cases: `"""sha256 of a regular file; None if absent. Symlinks are not followed."""`. Trivial helpers have none.
+**Doc comments:**
+- `//!` module docs on every module, describing its contract (`src/git/mod.rs`, `tests/harness/main.rs`).
+- `///` on every item, including private helpers and tests (child tests document what they print).
 
 ## Function Design
 
-**Size:** Mostly under ~40 lines; `plan()`, `apply()` and `cmd_doctor()` are longer.
+**Size:** about 40 lines, one job each. Large files (`src/model/mod.rs` 7086 lines, `src/git/repo.rs` 3516) are dominated by in-file `#[cfg(test)] mod tests`.
 
-**Parameters:** First parameter is `ctx: Context` for anything needing repo state. Keyword-only-by-convention flags (`cwd=`, `check=`, `dry_run=`, `announce=`). Paths are `pathlib.Path`; repo-relative paths are `str` named `rel`.
+**Parameters:** borrow (`&[u8]`, `&Path`, `&[OsString]`); raw bytes for git paths and output, not `String`. Generic `I: IntoIterator<Item = S>, S: AsRef<OsStr>` for argv builders (`src/git/testing.rs`).
 
-**Return Values:** Commands return `int` exit codes; helpers return `None` for "absent" (`digest`) or empty collections (`walk`). Decision logic returns `list[Action]` from `plan()`; `apply()` only executes — never put decisions in `apply()` (keeps `--dry-run` honest).
+**Return Values:** `Result<T, Error>` in production; `Result<T, String>` in test helpers and the harness; `Option` for pure validation (`ObjectId::from_hex`). Use `bool::then` for conditional construction.
 
 ## Module Design
 
-**Exports:** Single script; entry is `if __name__ == "__main__": raise SystemExit(main(sys.argv[1:]))`. `main(argv)` takes argv explicitly.
+**Exports:** binary crate only, no lib. Items are `pub` within private modules, re-exported from `mod.rs`; `pub(crate)` for test helpers. Harness modules are plain private `mod` so `-D warnings` rejects unused helpers.
 
-**Barrel Files:** Not applicable.
-
-**Shell scripts:** `install.sh` uses `set -euo pipefail`; `tests/sandbox.sh` uses `set -uo pipefail` (no `-e`, so failing assertions do not abort). Resolve own location via `"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"`.
-
-**Commits:** Conventional Commits; body explains the failure mode fixed.
+**Barrel Files:** `src/git/mod.rs` acts as the layer's facade; `tests/harness/main.rs` registers scenario modules through `harness_modules!` so a module cannot be declared without being registered.
 
 ---
 
-*Convention analysis: 2026-10-17*
+*Convention analysis: 2026-11-18*

@@ -1,86 +1,79 @@
 ---
-last_mapped_commit: 5e4217fb6a940bf5ca5f53685fd2245097150676
-last_mapped_at: 2026-10-17
+last_mapped_commit: a686ea156dac3e4c93d9f9d180ee4a35e340c4f5
+last_mapped_at: 2026-11-18
 ---
 # Technology Stack
 
-**Analysis Date:** 2026-10-17
+**Analysis Date:** 2026-11-18
 
 ## Languages
 
 **Primary:**
-- Python 3 (README requires >= 3.9; `from __future__ import annotations`) - the whole tool, `bin/wsx` (single extensionless file, shebang `#!/usr/bin/env python3`)
+- Rust, edition 2024 - the `wsx` binary crate (`src/main.rs`, `src/git/`, `src/model/`); no library crate
+- Rust - integration tests and the scenario harness (`tests/*.rs`, `tests/harness/`)
 
 **Secondary:**
-- Bash - installer `install.sh` (`set -euo pipefail`) and test suite `tests/sandbox.sh` (`set -uo pipefail`)
-- POSIX sh - husky personal init `integrations/husky-init.sh` (sourced by husky, must not consume stdin)
-- Fish - `shell/fish/functions/git.fish` (git wrapper), `shell/fish/completions/wsx.fish`
-- JSON - agent hook config snippets `integrations/claude/settings-snippet.json`, `integrations/copilot/wsx-session.json`
-- Plain-text manifest format `.wsx.conf` (`<policy> <path>` per line; template `examples/wsx.conf`)
+- Python 3 - frozen 0.1.0 reference implementation `bin/wsx` (shebang `#!/usr/bin/env python3`); read-only, deleted at cutover
+- Bash - `tests/sandbox.sh` (frozen, deleted at cutover) and the vendored devflow oracle scripts in `tests/oracle/` (`sync-workspace.sh`, `cut-pr-branch.sh`, `phase-worktree.sh`, `check-workspace-divergence.sh`, `hooks/`), byte-for-byte copies of devflow commit `ee6ec792`, deleted at cutover (REL-02)
 
 ## Runtime
 
 **Environment:**
-- CPython 3.9+ (dev host observed: Python 3.15.0)
-- git >= 2.31 required (`extensions.worktreeConfig` + `git config --worktree`); dev host observed: git 2.56.0
+- Native Linux/Unix binary (uses `std::os::unix` APIs throughout `src/git/`)
+- Requires an external `git` CLI, version 2.54 or newer, checked once on first spawn (`src/git/spawn.rs`)
+- Toolchain pinned exactly: rustc `1.99.1`, components `clippy`, `rustfmt`, `llvm-tools`, `rust-analyzer`, profile `minimal` (`rust-toolchain.toml`)
 
 **Package Manager:**
-- None. No `pyproject.toml`, `requirements.txt`, `setup.py`, or `package.json`.
-- Lockfile: not applicable
-- Installation is via `install.sh` symlinking (default) or copying (`--copy`) into `~/.local/bin` and user config dirs.
+- Cargo (version follows the pinned toolchain)
+- Lockfile: `Cargo.lock` present and committed
 
 ## Frameworks
 
 **Core:**
-- None. Python standard library only: `argparse`, `hashlib`, `json`, `os`, `re`, `shutil`, `subprocess`, `sys`, `time`, `pathlib` (`bin/wsx` lines 42-53).
+- None (no CLI framework); argument dispatch is a hand-written match on `std::env::args_os()` in `src/main.rs`
 
 **Testing:**
-- Custom Bash harness `tests/sandbox.sh` - end-to-end assertions against a throwaway repo under `mktemp -d`; tests `bin/wsx` in-tree, shadowing any installed copy.
-- `python3 -m py_compile bin/wsx` as a syntax check (`CONTRIBUTING.md`).
+- cargo-nextest - runner driven by `scripts/check.sh test` with `--no-tests=fail` always set
+- proptest `1.12.0` (dev, `default-features = false`, `std`) - manifest round-trip property test in `src/model/manifest.rs` (`PROPTEST_CASES` read there)
+- tempfile `3.27.0` (dev) - scratch git trees via `TempDir::new_in` under `CARGO_TARGET_TMPDIR`
+- Custom harness `tests/harness/main.rs` - runs each scenario against the oracle scripts and the `wsx` binary
 
 **Build/Dev:**
-- No build step. Symlinked install makes edits live immediately.
+- clippy with `clippy.toml` `disallowed-methods` bans (env mutation, gix open/discover, gix revspec parsing)
+- rustfmt
+- cargo-deny (`deny.toml`) via `scripts/check.sh deps`
+- cargo-llvm-cov via `scripts/check.sh coverage` (`CARGO_LLVM_COV_SETUP=no`)
+- Tool versions live only in `scripts/install-tools.sh`
 
 ## Key Dependencies
 
 **Critical:**
-- `git` binary - invoked via `subprocess.run(["git", ...])` in `git()`/`git_ok()` (`bin/wsx` ~lines 78-92). All repo state, worktree listing, config, and ignore wiring goes through it.
+- `gix` `=0.90.0` (exact pin; `default-features = false`, features `sha1`, `sha256`, `revision`) - pure-Rust repository reads: discovery, merge-base, walks, tree diff (`src/git/repo.rs`, `src/git/reads.rs`). `blob-diff`, `interrupt`, network, `worktree-mutation` features off; `mailmap` banned in `deny.toml`. Upgrade in its own commit with the full harness.
+- `rustix` `1.1.5` (`std`, `process`) - effective uid for wsx's own repository ownership check (`src/git/repo.rs`, `SUDO_UID` handling)
 
-**Infrastructure (optional external tools):**
-- `npm` - `wsx new` runs `npm install --silent --no-audit --no-fund` to arm husky when `package.json` exists, then restores `package-lock.json` (`bin/wsx` ~lines 826-849)
-- husky - hook runner that sources `~/.config/husky/init.sh`
-- fish shell - interactive git wrapper and completions
-- `python3` - also used inline by `install.sh` to merge Claude Code settings JSON
-
-**Constraint:** adding third-party dependencies is prohibited (`CLAUDE.md`, `CONTRIBUTING.md` constraint 6).
+**Infrastructure:**
+- External `git` binary - all mutations and ref/config/object operations not done by gix go through `Git` in `src/git/spawn.rs` (empty env plus explicit snapshot, stdin `/dev/null`, `CHILD_DEADLINE` kill, args never through a shell)
 
 ## Configuration
 
 **Environment:**
-- `WSX_SKIP=1` - bypass hooks and the fish git wrapper (`integrations/husky-init.sh`, `shell/fish/functions/git.fish`)
-- `XDG_CONFIG_HOME` - locates global git ignore fallback (`bin/wsx` line 500) and fish/husky install targets (`install.sh`)
-- No `.env` files present.
-
-**Git config keys (per repo):**
-- `wsx.sourceBranch` - source branch name, default `personal-workspace` (`DEFAULT_SOURCE_BRANCH`, `bin/wsx` line 56)
-- `wsx.baseRef` - base for `wsx new`; fallback chain `origin/devtest`, `origin/develop`, `origin/main`, `origin/master` (`bin/wsx` ~line 807)
-- `extensions.worktreeConfig=true` and per-worktree `core.excludesFile` written by wsx (`bin/wsx` ~lines 560-567)
-
-**State files:**
-- Manifest `.wsx.conf` at source worktree root
-- `<git-dir>/wsx/base.json` sync base snapshot; `<git-dir>/wsx/backups/<stamp>/...` LWW/conflict backups
+- No config file or env vars specific to wsx; it honours git's own environment (`GIT_DIR`, `GIT_INDEX_FILE`, `GIT_CEILING_DIRECTORIES`, read in `src/git/repo.rs`) the way git does
+- Per-repo manifest `.wsx.conf` parsed in `src/model/manifest.rs`
+- Tracked repo git policy `.gitconfig`, copied by allowlist (`POLICY_KEYS`) via `scripts/setup-repo.sh`; never `include.path`
+- `std::env::set_var`/`remove_var` banned (`clippy.toml`); scope env with `Command::env`
 
 **Build:**
-- None. `.gitignore` covers only `__pycache__/`, editor, OS and `*.bak`/`*.orig` files.
+- `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, `deny.toml` (licenses allowed: Apache-2.0, MIT, Unicode-3.0, Zlib; `include-dev = true`; crates.io only)
 
 ## Platform Requirements
 
 **Development:**
-- Unix-like OS with bash, git >= 2.31, python3 >= 3.9. Optional fish, husky, npm.
+- Pinned toolchain via rustup; gate is `scripts/check.sh all` (fmt, clippy, test)
+- Dev container `.devcontainer/Dockerfile` (`FROM mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie`) and `.devcontainer/devcontainer.json` (named volumes for cargo registry, git and `target/`; no Features); `scripts/check-in-container.sh` runs the gate in it
 
 **Production:**
-- Personal developer machines; installed into `~/.local/bin/wsx` (must be on `PATH`). Versioned per `CHANGELOG.md` (SemVer, currently 0.1.0).
+- Unpublished (`publish = false`, version `0.0.0`, MIT); a local CLI binary on Unix hosts with git >= 2.54
 
 ---
 
-*Stack analysis: 2026-10-17*
+*Stack analysis: 2026-11-18*

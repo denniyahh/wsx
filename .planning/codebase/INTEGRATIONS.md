@@ -1,57 +1,28 @@
 ---
-last_mapped_commit: 5e4217fb6a940bf5ca5f53685fd2245097150676
-last_mapped_at: 2026-10-17
+last_mapped_commit: a686ea156dac3e4c93d9f9d180ee4a35e340c4f5
+last_mapped_at: 2026-11-18
 ---
 # External Integrations
 
-**Analysis Date:** 2026-10-17
+**Analysis Date:** 2026-11-18
 
 ## APIs & External Services
 
-No network APIs or remote services. All integrations are local: git, hook runners, agent CLIs, and the fish shell.
+**Version control:**
+- git CLI (>= 2.54) - spawned as a child process only through `Git` in `src/git/spawn.rs`; used from `src/git/refs.rs`, `src/git/objects.rs`, `src/git/config.rs`
+  - SDK/Client: `std::process::Command` wrapper; `NO_LAZY_FETCH` set on reads so no promisor fetch happens
+  - Auth: none (no network operations)
+- gix `=0.90.0` - in-process repository open (only `open_gix` in `src/git/repo.rs`) and reads; no network features
 
-**Git (core integration):**
-- `git` CLI via `subprocess` - `git()`, `git_ok()`, `list_worktrees()` in `bin/wsx`
-  - Reads `git worktree list --porcelain` to find the worktree on `wsx.sourceBranch`
-  - Writes only per-worktree config: `extensions.worktreeConfig`, `git config --worktree core.excludesFile <generated file>`; refuses on bare repos (`bin/wsx` ~lines 560-567)
-  - Never writes tracked files (`.gitignore`, `.husky/`) - see `CLAUDE.md` landmines
-
-**Git hooks via husky:**
-- `integrations/husky-init.sh` installed to `${XDG_CONFIG_HOME:-~/.config}/husky/init.sh` (symlinked, or appended with `.pre-wsx.bak` backup if one exists)
-  - Husky sources it before every hook with `$n` = hook name; it runs `~/.local/bin/wsx hook "$n" </dev/null || exit 1`
-  - `</dev/null` is load-bearing: pre-push reads refs from stdin
-- Hook dispatch in `cmd_hook` (`bin/wsx` ~lines 1039-1063):
-  - `pre-commit` - guard managed paths, then sync out
-  - `pre-push` - guard across outgoing range, then sync out
-  - `post-merge`, `post-checkout`, `post-rewrite` - pull into worktree
-  - Fails open on everything except the guard; `cmd_hook` must not raise
-- Husky arming detected by presence of `.husky/_/pre-commit`; `wsx new` runs `npm install` to arm it
-
-**Claude Code session hooks:**
-- `integrations/claude/settings-snippet.json` - `SessionStart` -> `wsx hook session-start`, `SessionEnd` -> `wsx hook session-end`; 30s timeout, output discarded, `; true` so it never fails the session
-- `install.sh` merges it into `~/.claude/settings.local.json` with inline Python, skipping events that already mention `wsx`, and skipping invalid JSON. Uninstall leaves this file in place.
-- `session-start` also arms the commit guard if the worktree lacks husky
-
-**GitHub Copilot CLI session hooks:**
-- `integrations/copilot/wsx-session.json` installed to `~/.copilot/hooks/wsx-session.json` (only if `~/.copilot` exists)
-  - Schema `version: 1`, `sessionStart`/`sessionEnd`, `bash` command, `timeoutSec: 30`, prints `{}`
-  - `sessionStart` also runs `$HOME/.config/agents/render-agent-rules` - an external, user-specific script not in this repo
-
-**Fish shell:**
-- `shell/fish/functions/git.fish` - wraps `git`; intercepts only `git worktree remove` in repos with a `.wsx.conf` on the source branch and routes it to `wsx rm` (push first), mapping `-f` to `--force`. Interactive only; scripts call real git.
-- `shell/fish/completions/wsx.fish` - completions
-- Installed to `${XDG_CONFIG_HOME:-~/.config}/fish/` only if that dir exists
-
-**npm:**
-- `npm install --silent --no-audit --no-fund` in `wsx new` (`bin/wsx` ~lines 826-849); restores `package-lock.json` bytes afterwards
+No HTTP APIs, SDKs or remote services.
 
 ## Data Storage
 
 **Databases:**
-- None. JSON snapshot `<git-dir>/wsx/base.json` holds the three-way sync base.
+- None. State lives in the git repository itself (refs, commits, worktrees) and the `.wsx.conf` manifest (`src/model/manifest.rs`)
 
 **File Storage:**
-- Local filesystem only: copies between source and dev worktrees; backups under `<git-dir>/wsx/backups/`; conflict sidecars `<file>.wsx-remote`.
+- Local filesystem only
 
 **Caching:**
 - None
@@ -59,7 +30,8 @@ No network APIs or remote services. All integrations are local: git, hook runner
 ## Authentication & Identity
 
 **Auth Provider:**
-- None. Relies on the user's existing git setup.
+- None
+  - Implementation: repository ownership re-checked against the effective uid via `rustix` (`src/git/repo.rs`), stricter than gix's `SUDO_UID` trust
 
 ## Monitoring & Observability
 
@@ -67,32 +39,34 @@ No network APIs or remote services. All integrations are local: git, hook runner
 - None
 
 **Logs:**
-- Stdout/stderr text with ANSI colour; `wsx doctor` reports configuration health. Hook output is discarded by the agent integrations.
+- stderr messages and `ExitCode` from `src/main.rs`; non-interactive, never prompts
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Not applicable; local install via `install.sh` (`--copy`, `--uninstall`, `--dry-run`).
+- Not applicable (unpublished binary)
 
 **CI Pipeline:**
-- None. No `.github/` workflows; tests run manually with `./tests/sandbox.sh`.
+- GitHub Actions in the pinned devcontainer image (workflows outside the mapped paths); `scripts/assert-image-parity.sh` and `tests/image_parity.rs` keep workflow images equal to `.devcontainer/Dockerfile`
+- Dependabot updates the Dockerfile `FROM` line (reason `devcontainer.json` stays Feature-free)
+- gitleaks pre-commit hook registered by `scripts/setup-repo.sh` (`tests/setup_repo.rs`, `tests/repo_policy.rs`)
 
 ## Environment Configuration
 
 **Required env vars:**
-- None required. Optional: `WSX_SKIP=1`, `XDG_CONFIG_HOME`, `HOME`.
+- None. Read when set: `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_CEILING_DIRECTORIES`, `SUDO_UID` (`src/git/repo.rs`); `PROPTEST_CASES` in tests
 
 **Secrets location:**
-- Not applicable; no secrets used.
+- None used
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- Git hooks (via husky) and agent session hooks (Claude Code, Copilot) invoking `wsx hook <name>`.
+- git hooks: wsx runs inside hooks and honours the hook's `GIT_DIR`/`GIT_INDEX_FILE` (rationale in `clippy.toml`); oracle hooks in `tests/oracle/hooks/`
 
 **Outgoing:**
 - None
 
 ---
 
-*Integration audit: 2026-10-17*
+*Integration audit: 2026-11-18*
