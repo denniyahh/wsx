@@ -102,7 +102,8 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     let model = resolved.require()?;
     // From the integration tip, so `Added` is a workspace-only path (D-01).
     let changes = repo.tree_diff(&model.integration.tip, &model.workspace_tip)?;
-    let problems = evaluate(&model, &changes, &BTreeSet::new());
+    let carried = carried_only_paths(repo, git, &model)?;
+    let problems = evaluate(&model, &changes, &carried);
     Ok(Report {
         configured,
         workspace_branch: model.workspace_branch.clone(),
@@ -110,6 +111,36 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
         integration: model.integration.clone(),
         problems,
     })
+}
+
+/// The `only` paths no built-in covers that the integration tip's tree
+/// holds, as any entry type: one lookup child for every distinct path, and
+/// none when there is no such path. Each path is a NUL-framed request, never
+/// a pathspec (T-05-13).
+fn carried_only_paths(
+    repo: &Repo,
+    git: &Git,
+    model: &Model,
+) -> Result<BTreeSet<Vec<u8>>, model::Error> {
+    let builtins = model.builtins();
+    let paths: BTreeSet<&[u8]> = model
+        .manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Only)
+        .map(|entry| entry.path.as_slice())
+        .filter(|path| !builtins.iter().any(|builtin| covers(builtin, path)))
+        .collect();
+    if paths.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let paths: Vec<&[u8]> = paths.into_iter().collect();
+    let found = repo.lookup_paths(git, &model.integration.tip, &paths)?;
+    Ok(paths
+        .into_iter()
+        .zip(found)
+        .filter_map(|(path, entry)| entry.map(|_| path.to_vec()))
+        .collect())
 }
 
 /// The problems in `changes`, the diff from the integration tip to the
