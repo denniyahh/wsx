@@ -36,6 +36,7 @@ pub use config::ConfigRead;
 pub use objects::{RootEntry, TipObjects};
 pub use quote::shell_word;
 pub use quote::{c_quote, c_unquote};
+pub use reads::{ChangeKind, TreeChange};
 pub use refs::{RefRecord, check_full_ref_name, is_branch_name};
 pub use repo::Repo;
 pub use spawn::Git;
@@ -69,6 +70,14 @@ impl ObjectId {
             .iter()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
         (full_length && lower_hex).then(|| ObjectId(String::from_utf8_lossy(hex).into_owned()))
+    }
+
+    /// The id `hex` names, for a test that builds a model by hand; panics
+    /// unless `hex` is a full-length lowercase hex id.
+    #[cfg(test)]
+    pub(crate) fn for_test(hex: &str) -> ObjectId {
+        ObjectId::from_hex(hex.as_bytes())
+            .unwrap_or_else(|| panic!("{hex:?} is not a full lowercase hex object id"))
     }
 
     /// The gix form of this id in a repository whose objects are hashed

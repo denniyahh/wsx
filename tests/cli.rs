@@ -50,3 +50,18 @@ fn missing_argument_exits_with_usage() {
         "`wsx` with no argument exit code"
     );
 }
+
+#[test]
+fn check_with_an_extra_argument_exits_with_usage() {
+    let output = run_wsx(&["check", "extra"]);
+
+    let stdout = String::from_utf8(output.stdout).expect("wsx stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("wsx stderr is UTF-8");
+
+    assert!(
+        stderr.contains("usage: wsx check"),
+        "`wsx check extra` must print usage on stderr, got {stderr:?}"
+    );
+    assert_eq!(stdout, "", "`wsx check extra` must not write to stdout");
+    assert_eq!(output.status.code(), Some(2), "`wsx check extra` exit code");
+}

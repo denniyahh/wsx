@@ -725,11 +725,17 @@ fn integration(
 }
 
 impl Model {
+    /// The built-in personal paths, which no manifest line needs to declare:
+    /// `MANIFEST_NAME`, then the worktree directory.
+    pub fn builtins(&self) -> [&[u8]; 2] {
+        [MANIFEST_NAME, self.worktree_dir.as_slice()]
+    }
+
     /// The paths that never reach a shared branch: `.wsx.conf`, then the
     /// worktree directory, then each `only` path in file order, duplicates
     /// kept. A `modified` path is shared, so it is not listed.
     pub fn personal_paths(&self) -> Vec<&[u8]> {
-        let mut paths = vec![MANIFEST_NAME, self.worktree_dir.as_slice()];
+        let mut paths = self.builtins().to_vec();
         paths.extend(
             self.manifest
                 .entries
