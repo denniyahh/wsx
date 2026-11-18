@@ -2,15 +2,10 @@
 //! kind of failure, so an orchestrator can branch on the code and read the
 //! error's kind for the detail. `docs/exit-codes.md` is the table.
 
+use crate::git;
 use crate::model;
 
 /// What a run's exit code says, in the order of the codes 0 to 6.
-// `cfg_attr(not(test), ...)`: the tests construct every class, so on the test
-// target the expectation would be unfulfilled.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "classify gives each class in the next commit")
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitClass {
     /// The command ran and found nothing to report.
@@ -69,12 +64,92 @@ pub struct Classified {
     pub kind: &'static str,
 }
 
-/// The class and kind of `err`.
-pub fn classify(_err: &model::Error) -> Classified {
-    Classified {
-        class: ExitClass::GitFailed,
-        kind: "git_failed",
+/// The class and kind of `err`. A replacement refusal is `Refused` with
+/// its own kind wherever the model wraps it (D-07).
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
+pub fn classify(err: &model::Error) -> Classified {
+    let (class, kind) = match err {
+        model::Error::Git(inner) => return of_git(inner),
+        model::Error::KeyRepeated { .. } => (ExitClass::InvalidConfig, "key_repeated"),
+        model::Error::KeyEmpty { .. } => (ExitClass::InvalidConfig, "key_empty"),
+        model::Error::NotABranchName { .. } => (ExitClass::InvalidConfig, "not_a_branch_name"),
+        model::Error::NoSuchRemote { .. } => (ExitClass::InvalidConfig, "no_such_remote"),
+        model::Error::BaseRefMissing { .. } => (ExitClass::InvalidConfig, "base_ref_missing"),
+        model::Error::NoIntegrationBranch { .. } => {
+            (ExitClass::InvalidConfig, "no_integration_branch")
+        }
+        model::Error::IntegrationRefSymbolic { .. } => {
+            (ExitClass::InvalidConfig, "integration_ref_symbolic")
+        }
+        model::Error::WorkspaceBranchMissing { .. } => {
+            (ExitClass::InvalidConfig, "workspace_branch_missing")
+        }
+        model::Error::WorkspaceCandidates { .. } => {
+            (ExitClass::NotConfigured, "workspace_candidates")
+        }
+        model::Error::ManifestMissing { .. } => (ExitClass::InvalidConfig, "manifest_missing"),
+        model::Error::ManifestNotABlob { .. } => (ExitClass::InvalidConfig, "manifest_not_a_blob"),
+        model::Error::ManifestUnreadable { source, .. } => {
+            (of_git(source).class, "manifest_unreadable")
+        }
+        model::Error::ManifestInvalid { .. } => (ExitClass::InvalidConfig, "manifest_invalid"),
+        model::Error::WorktreeDirInvalid { .. } => {
+            (ExitClass::InvalidConfig, "worktree_dir_invalid")
+        }
+        model::Error::NotConfigured { reason } => match replacement_refusal(reason) {
+            Some(refusal) => return of_git(refusal),
+            None => (ExitClass::NotConfigured, "not_configured"),
+        },
+    };
+    Classified { class, kind }
+}
+
+/// The replacement refusal `reason` holds, directly in `Error::Git` or as
+/// the source of `ManifestUnreadable`, as `RepoModel::require` wraps them.
+fn replacement_refusal(reason: &model::Error) -> Option<&git::Error> {
+    if let model::Error::Git(inner) | model::Error::ManifestUnreadable { source: inner, .. } =
+        reason
+        && inner.is_replacement_refusal()
+    {
+        Some(inner)
+    } else {
+        None
     }
+}
+
+/// The class and kind of the git-layer error `err`.
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
+fn of_git(err: &git::Error) -> Classified {
+    let (class, kind) = match err {
+        git::Error::ForeignOwner { .. } => (ExitClass::Refused, "foreign_owner"),
+        git::Error::Reftable { .. } => (ExitClass::Refused, "reftable"),
+        git::Error::RelativeRepoEnv { .. } => (ExitClass::Refused, "relative_repo_env"),
+        git::Error::ObjectStoreEnv { .. } => (ExitClass::Refused, "object_store_env"),
+        git::Error::RefsNamespace { .. } => (ExitClass::Refused, "refs_namespace"),
+        git::Error::ImplicitWorkTree { .. } => (ExitClass::Refused, "implicit_work_tree"),
+        git::Error::StaleWorktree { .. } => (ExitClass::Refused, "stale_worktree"),
+        git::Error::ReplaceRefsPresent { .. } => (ExitClass::Refused, "replace_refs_present"),
+        git::Error::ReplaceBaseSet { .. } => (ExitClass::Refused, "replace_base_set"),
+        git::Error::ReplaceRefsUnreadable { .. } => (ExitClass::Refused, "replace_refs_unreadable"),
+        git::Error::GitTooOld { .. } => (ExitClass::GitFailed, "git_too_old"),
+        git::Error::GitFailed { .. } => (ExitClass::GitFailed, "git_failed"),
+        git::Error::GitTimedOut { .. } => (ExitClass::GitFailed, "git_timed_out"),
+        git::Error::OpenTimedOut { .. } => (ExitClass::GitFailed, "open_timed_out"),
+        git::Error::GitEmptyOutput { .. } => (ExitClass::GitFailed, "git_empty_output"),
+        git::Error::GitBadOutput { .. } => (ExitClass::GitFailed, "git_bad_output"),
+        git::Error::Io { .. } => (ExitClass::GitFailed, "io"),
+        git::Error::Gix { .. } => (ExitClass::GitFailed, "gix"),
+        git::Error::ObjectMissing { .. } => (ExitClass::GitFailed, "object_missing"),
+        // No repository, so nothing is configured or inferable.
+        git::Error::NotARepo { .. } => (ExitClass::NotConfigured, "not_a_repo"),
+    };
+    Classified { class, kind }
 }
 
 #[cfg(test)]
