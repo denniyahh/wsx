@@ -1522,6 +1522,7 @@ name = "wsx"
 version = "0.0.0"
 dependencies = [
  "gix",
+ "proc-macro2",
  "proptest",
  "rustix",
  "serde_json",

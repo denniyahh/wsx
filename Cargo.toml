@@ -47,3 +47,10 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # OR Apache-2.0. Legitimacy checked in phase 5 research (Package Legitimacy
 # Audit: OK).
 serde_json = "1.0.154"
+# Tokenises src/ for the IF-02 scan (tests/if02_scan.rs), so comments drop out
+# the way rustc drops them, which a regex cannot do across raw strings and
+# nested block comments. Already in Cargo.lock through syn, quote, gix-macros
+# and thiserror-impl, so no crate is added. `default-features = false` keeps
+# the fallback lexer the scan needs outside a proc macro. Dev-only, so nothing
+# ships in the binary; MIT OR Apache-2.0.
+proc-macro2 = { version = "1.0.107", default-features = false }
