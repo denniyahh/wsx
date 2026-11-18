@@ -42,6 +42,7 @@ pub use reads::{ChangeKind, TreeChange};
 pub use refs::{RefRecord, check_full_ref_name, is_branch_name};
 pub use repo::Repo;
 pub use spawn::Git;
+pub use trees::{ListedEntry, MODE_EXECUTABLE, MODE_SYMLINK, MODE_TREE};
 
 use std::ffi::OsString;
 use std::fmt;

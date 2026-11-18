@@ -8,6 +8,7 @@
 //! every judgement is made over the model and the diff, so a ref that moves
 //! during a run cannot mix two tips.
 
+pub mod hooks;
 pub mod report;
 
 use std::collections::BTreeSet;
@@ -62,6 +63,9 @@ pub enum ProblemKind {
     StaleModified,
     /// An entry a built-in personal path already covers.
     RedundantBuiltin,
+    /// A file under the hooks directory not committed executable, or a
+    /// symlink there that does not resolve to one (DIV-03).
+    HookNotExecutable,
 }
 
 impl ProblemKind {
@@ -74,11 +78,12 @@ impl ProblemKind {
             ProblemKind::StaleOnly => "stale_only",
             ProblemKind::StaleModified => "stale_modified",
             ProblemKind::RedundantBuiltin => "redundant_builtin",
+            ProblemKind::HookNotExecutable => "hook_not_executable",
         }
     }
 
-    /// The kind's group in D-05's order: undeclared paths, then stale
-    /// declarations.
+    /// The kind's group in D-05's order: undeclared paths, stale
+    /// declarations, then hook modes.
     fn group(self) -> u8 {
         match self {
             ProblemKind::UndeclaredAdded
@@ -87,6 +92,7 @@ impl ProblemKind {
             ProblemKind::StaleOnly | ProblemKind::StaleModified | ProblemKind::RedundantBuiltin => {
                 1
             }
+            ProblemKind::HookNotExecutable => 2,
         }
     }
 }

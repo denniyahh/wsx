@@ -60,6 +60,10 @@ fn problem_line(problem: &Problem, integration: &str) -> String {
             "redundant declaration: {}",
             problem.detail.as_deref().unwrap_or_default()
         ),
+        ProblemKind::HookNotExecutable => format!(
+            "hook not committed executable: {path} ({})",
+            problem.detail.as_deref().unwrap_or_default()
+        ),
     }
 }
 
