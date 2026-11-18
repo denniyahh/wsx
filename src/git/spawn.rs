@@ -460,6 +460,11 @@ mod tests {
     }
 
     #[test]
+    fn git_version_with_a_signed_part_is_refused() {
+        assert_eq!(parse_git_version(b"git version 2.+54.0\n"), None);
+    }
+
+    #[test]
     fn old_git_refused() {
         let scratch = Scratch::new("old-git").expect("scratch");
         let repo = init_repo(&scratch);

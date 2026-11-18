@@ -971,6 +971,37 @@ mod tests {
         );
     }
 
+    /// Only git's exit 1 with nothing on stderr means no key matched; an exit
+    /// 1 that prints an error fails the read with git's own failure.
+    #[test]
+    fn config_read_exit_1_with_an_error_is_a_failure() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-exit-1-error").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let body = format!(
+            "if [ \"$1\" = config ]; then echo 'error: cannot read config' >&2; exit 1; fi\nexec {} \"$@\"",
+            testing::sh_quote(&testing::real_git())
+        );
+        let helper = Git::for_repo(testing::fake_git(&scratch, &body), &found);
+
+        match found.read_config(&helper) {
+            Err(Error::GitFailed {
+                status: Some(1),
+                stderr,
+                ..
+            }) => assert_eq!(
+                stderr.as_bstr(),
+                "error: cannot read config\n".as_bytes().as_bstr()
+            ),
+            Err(other) => panic!("expected GitFailed with exit 1, got {other:?}"),
+            Ok(_) => panic!("expected GitFailed with exit 1, got a read"),
+        }
+    }
+
     /// A config file git cannot parse fails the read with git's own failure,
     /// never an empty answer.
     #[test]

@@ -297,11 +297,15 @@ impl Repo {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Error, Git, ObjectId, Repo};
-    use super::{BatchAnswer, RootEntry, parse_batch, root_tree_mode};
+    use super::{
+        BatchAnswer, Requests, RootEntry, manifest_entry, parse_batch, peeled_commit,
+        root_tree_mode,
+    };
 
     /// A commit id, a blob id and a request git cannot answer.
     const COMMIT: &str = "1111111111111111111111111111111111111111";
@@ -347,6 +351,121 @@ mod tests {
         match parse_batch(trailing.as_bytes(), 1) {
             Err(_) => {}
             other => panic!("expected Err for a trailing byte, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_batch_refuses_an_abbreviated_id() {
+        let abbreviated = format!("{} blob 3 100644\nabc\n", &BLOB[..39]);
+        assert_eq!(
+            parse_batch(abbreviated.as_bytes(), 1),
+            Err("answer 0: an id that is not full hex".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_batch_refuses_a_signed_size() {
+        let signed = format!("{BLOB} blob +3 100644\nabc\n");
+        assert_eq!(
+            parse_batch(signed.as_bytes(), 1),
+            Err("answer 0: a size that is not a decimal number".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_batch_refuses_data_without_its_lf() {
+        let unterminated = format!("{BLOB} blob 3 100644\nabc");
+        assert_eq!(
+            parse_batch(unterminated.as_bytes(), 1),
+            Err("answer 0: fewer bytes than its size, or no LF after them".to_owned())
+        );
+    }
+
+    /// The argv the batch readers name in a `GitBadOutput`.
+    fn batch_argv() -> Vec<OsString> {
+        vec![OsString::from("cat-file"), OsString::from("--batch")]
+    }
+
+    /// The four request lines of a batch for workspace branch `ws`.
+    fn requests() -> Requests {
+        Requests {
+            tip: b"ws^{commit}".to_vec(),
+            tree: b"ws^{tree}".to_vec(),
+            entry: b"ws:.wsx.conf".to_vec(),
+            rung: b"rung^{commit}".to_vec(),
+        }
+    }
+
+    /// An answer the batch found, of `kind` with `mode` and `data`.
+    fn found(kind: &[u8], mode: &[u8], data: Vec<u8>) -> BatchAnswer {
+        BatchAnswer::Found {
+            id: id(COMMIT),
+            kind: kind.to_vec(),
+            mode: mode.to_vec(),
+            data,
+        }
+    }
+
+    #[test]
+    fn commit_peel_answered_with_another_type_is_bad_output() {
+        match peeled_commit(
+            found(b"tree", b"", Vec::new()),
+            b"ws^{commit}",
+            &batch_argv(),
+        ) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, "ws^{commit} answered with a tree, not a commit");
+            }
+            other => panic!("expected GitBadOutput for a tree answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_mode_on_an_object_that_is_not_a_blob_is_bad_output() {
+        let entry = found(b"tree", b"100644", Vec::new());
+        match manifest_entry(
+            entry,
+            BatchAnswer::Missing,
+            &requests(),
+            b".wsx.conf",
+            &batch_argv(),
+        ) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, "ws:.wsx.conf is a tree with mode \"100644\"");
+            }
+            other => panic!("expected GitBadOutput for a tree with a file mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_entry_beside_a_root_that_is_not_a_tree_is_bad_output() {
+        let tree = found(b"commit", b"", Vec::new());
+        match manifest_entry(
+            BatchAnswer::Missing,
+            tree,
+            &requests(),
+            b".wsx.conf",
+            &batch_argv(),
+        ) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, "ws^{tree} answered with a commit, not a tree");
+            }
+            other => panic!("expected GitBadOutput for a commit root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gitlink_found_only_in_the_root_tree_is_not_a_blob() {
+        let tree = found(b"tree", b"", entry("160000", ".wsx.conf"));
+        match manifest_entry(
+            BatchAnswer::Missing,
+            tree,
+            &requests(),
+            b".wsx.conf",
+            &batch_argv(),
+        ) {
+            Ok(manifest) => assert_eq!(manifest, RootEntry::NotABlob { kind: "submodule" }),
+            Err(err) => panic!("expected the submodule entry, got {err:?}"),
         }
     }
 
