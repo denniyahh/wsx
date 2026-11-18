@@ -176,6 +176,13 @@ mod tests {
         assert_eq!(value.render(), expected);
     }
 
+    /// A space, the first character RFC 8259 lets through unescaped, is
+    /// written raw.
+    #[test]
+    fn a_space_is_written_raw() {
+        assert_eq!(Value::Str("a b".to_owned()).render(), r#""a b""#);
+    }
+
     /// Bytes that are not UTF-8 render as their hex; UTF-8 bytes, a newline
     /// and the empty value included, as a string.
     #[test]

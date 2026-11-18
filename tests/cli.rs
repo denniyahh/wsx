@@ -116,6 +116,18 @@ fn unknown_command_with_json_prints_no_json() {
 }
 
 #[test]
+fn unknown_command_is_named_c_quoted_on_stderr() {
+    let output = run_wsx(&["bo\tgus"]);
+
+    let stderr = String::from_utf8(output.stderr).expect("wsx stderr is UTF-8");
+    assert!(
+        stderr.contains(r#"unknown command "bo\tgus""#),
+        "the refusal names the command C-quoted, got {stderr:?}"
+    );
+    assert_eq!(output.status.code(), Some(2), "`wsx bo<TAB>gus` exit code");
+}
+
+#[test]
 fn duplicate_json_flag_is_a_usage_error() {
     let output = run_wsx(&["check", "--json", "--json"]);
 

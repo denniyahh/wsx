@@ -440,6 +440,19 @@ mod tests {
         );
     }
 
+    /// A `.` component in the link text is skipped, as the filesystem
+    /// does: `./../bin/a` from `scripts/hooks` reaches `scripts/bin/a`.
+    #[test]
+    fn symlink_with_a_dot_component_passes() {
+        assert_eq!(
+            judge(&[
+                link(b"scripts/hooks/a", b"./../bin/a"),
+                file(MODE_EXECUTABLE, b"scripts/bin/a"),
+            ]),
+            []
+        );
+    }
+
     #[test]
     fn symlink_chain_to_an_executable_passes() {
         assert_eq!(
@@ -636,6 +649,29 @@ mod tests {
         assert_eq!(
             judge_chain(&chain(SYMLINK_HOPS + 1)),
             hook_problem("scripts/hooks/a", &hops)
+        );
+    }
+
+    /// Judging a symlink loop ends instead of walking it forever: it runs
+    /// on its own thread and must answer within `DEADLINE`, so a broken
+    /// hop count fails here rather than hanging the suite.
+    #[test]
+    fn symlink_loop_is_judged_within_a_deadline() {
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+        let (listing, targets) = tree(&[
+            link(b"scripts/hooks/a", b"b"),
+            link(b"scripts/hooks/b", b"a"),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(evaluate_hooks(HOOKS, &listing, &targets).len())
+                .expect("the test waits for the answer");
+        });
+        assert_eq!(
+            receiver.recv_timeout(DEADLINE),
+            Ok(2),
+            "judging a two-link loop did not answer within {DEADLINE:?}"
         );
     }
 
