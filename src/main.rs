@@ -11,6 +11,7 @@ mod check;
 mod cli;
 mod exit;
 mod git;
+mod json;
 mod model;
 
 fn main() -> ExitCode {
