@@ -9,6 +9,7 @@
 //! `CARGO_TARGET_TMPDIR`, like every scenario.
 
 use crate::action::Action;
+use crate::commands::{COMMANDS, CommandId, CommandSpec};
 use crate::fixture::{Fixture, RepoConfig, WORK};
 use crate::scenario::{Case, CaseKind, Entry, Kind, Scenario, validate_entry};
 
@@ -346,6 +347,65 @@ fn harn06_gaps_names_a_missing_oracle_action() {
         }
     }
     assert_eq!(harn06_gaps(&entries), ["no-GSD repo: cut"]);
+}
+
+// ------------------------------------------------- IF-02 no-agent-files runs
+
+/// Each command in `commands` without an enabled Rust run in a repository
+/// that has no GSD, devflow or agent files, behaving as in the configured
+/// fixture (IF-02, D-15).
+fn no_agent_file_gaps(commands: &[CommandSpec], entries: &[Entry]) -> Vec<String> {
+    let _ = (commands, entries);
+    Vec::new()
+}
+
+/// Every command in the binary's own table has an enabled no-agent-files run
+/// whose expected exit matches the configured fixture's parity case.
+///
+/// Controls: `a_command_without_a_no_agent_files_run_is_named` and
+/// `a_disabled_no_agent_files_run_is_a_gap`.
+#[test]
+fn every_command_runs_in_a_repo_without_agent_files() {
+    let gaps = no_agent_file_gaps(COMMANDS, &crate::all_scenarios());
+    assert!(gaps.is_empty(), "IF-02 gaps:\n{}", gaps.join("\n"));
+}
+
+/// A table entry no scenario runs is named, and only it.
+#[test]
+fn a_command_without_a_no_agent_files_run_is_named() {
+    let mut commands = COMMANDS.to_vec();
+    commands.push(CommandSpec {
+        id: CommandId::Check,
+        name: "bogus",
+        schema_version: 1,
+    });
+    let gaps = no_agent_file_gaps(&commands, &crate::all_scenarios());
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(
+        gaps[0].contains("bogus") && gaps[0].contains("(IF-02, D-15)"),
+        "{:?}",
+        gaps[0]
+    );
+}
+
+/// With `check::no_gsd_repo`'s Rust side disabled, `check` has no run.
+#[test]
+fn a_disabled_no_agent_files_run_is_a_gap() {
+    let mut entries = crate::all_scenarios();
+    let mut disabled = 0;
+    for entry in &mut entries {
+        if entry.module == "check" && entry.name == "no_gsd_repo" {
+            entry.rust_disabled = Some("x");
+            disabled += 1;
+        }
+    }
+    assert_eq!(disabled, 1, "check::no_gsd_repo is registered once");
+    assert_eq!(
+        no_agent_file_gaps(COMMANDS, &entries),
+        [
+            "check: no enabled Rust run in a repository without GSD, devflow or agent files (IF-02, D-15)"
+        ]
+    );
 }
 
 // ------------------------------------------------------ module registration

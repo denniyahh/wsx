@@ -15,17 +15,29 @@ use crate::oracle::{ActionRun, AdapterError, spawn_and_wait};
 /// The `wsx` binary under test.
 const WSX: &str = env!("CARGO_BIN_EXE_wsx");
 
+/// The wsx command `action` runs: the first word of its command line, as the
+/// command table names it.
+pub fn command_word(action: &Action) -> &'static str {
+    match action {
+        Action::Sync { .. } => "sync",
+        Action::NewWorktree { .. } => "new",
+        Action::Cut { .. } => "cut",
+        Action::Check { .. } => "check",
+        Action::PrePush { .. } => "hook",
+        Action::RemoveWorktree { .. } => "rm",
+    }
+}
+
 /// The wsx arguments for `action`. A pre-push guard gets the remote's URL as
 /// git gives it to a hook, so `fixture` is consulted for it.
 pub fn wsx_argv(action: &Action, fixture: &Fixture) -> Result<Vec<OsString>, String> {
-    let mut argv: Vec<OsString> = Vec::new();
+    let mut argv: Vec<OsString> = vec![command_word(action).into()];
     let mut push = |arg: &str| argv.push(arg.into());
     match action {
-        Action::Sync { .. } => push("sync"),
+        Action::Sync { .. } | Action::Check { .. } => {}
         Action::NewWorktree {
             branch, no_sync, ..
         } => {
-            push("new");
             push(branch);
             if *no_sync {
                 push("--no-sync");
@@ -34,7 +46,6 @@ pub fn wsx_argv(action: &Action, fixture: &Fixture) -> Result<Vec<OsString>, Str
         Action::Cut {
             scope, pr_branch, ..
         } => {
-            push("cut");
             if let Some(scope) = scope {
                 push("--scope");
                 push(scope);
@@ -43,9 +54,7 @@ pub fn wsx_argv(action: &Action, fixture: &Fixture) -> Result<Vec<OsString>, Str
                 push(pr_branch);
             }
         }
-        Action::Check { .. } => push("check"),
         Action::PrePush { remote, .. } => {
-            push("hook");
             push("pre-push");
             push(remote);
             let input = action
@@ -54,7 +63,6 @@ pub fn wsx_argv(action: &Action, fixture: &Fixture) -> Result<Vec<OsString>, Str
             argv.push(input.url);
         }
         Action::RemoveWorktree { branch, force, .. } => {
-            push("rm");
             push(branch);
             if *force {
                 push("--force");
