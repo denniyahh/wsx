@@ -1291,6 +1291,27 @@ mod tests {
         }
     }
 
+    /// A `packed-refs` whose metadata cannot be read (a symlink to itself) is
+    /// refused as unreadable replace refs naming it, never read as holding
+    /// none.
+    #[test]
+    fn packed_refs_whose_metadata_fails_are_unreadable() {
+        let scratch = Scratch::new("packed-refs-loop").expect("create scratch");
+        let looped = scratch.root.join("packed-refs");
+        std::os::unix::fs::symlink(&looped, &looped)
+            .unwrap_or_else(|err| panic!("symlink {}: {err}", looped.display()));
+        assert!(
+            std::fs::metadata(&looped).is_err_and(|err| err.kind() != std::io::ErrorKind::NotFound),
+            "control: reading the looped link's metadata fails with something other than NotFound"
+        );
+        match packed_refs_name_the_base(&looped) {
+            Err(Error::ReplaceRefsUnreadable { path, .. }) => {
+                assert_eq!(path, looped, "the path the refusal names");
+            }
+            other => panic!("expected Err(ReplaceRefsUnreadable), got {other:?}"),
+        }
+    }
+
     /// A SHA-1 id as git prints it.
     const SHA1_HEX: &str = "0123456789abcdef0123456789abcdef01234567";
 
