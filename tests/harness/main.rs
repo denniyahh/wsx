@@ -21,6 +21,10 @@
 mod scenario;
 
 mod action;
+/// The binary's own command table, never a copy: the contract tests iterate it.
+#[path = "../../src/cli/commands.rs"]
+mod commands;
+mod contract;
 mod coverage;
 mod env;
 mod fixture;
