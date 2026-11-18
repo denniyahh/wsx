@@ -104,6 +104,17 @@ impl Repo {
     }
 }
 
+impl Repo {
+    /// Stub.
+    pub fn hooks_path(&self, _git: &Git) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
+    }
+}
+
+/// The argv of the `core.hooksPath` read: git's effective value from every
+/// scope, `~` expanded as git expands a path, NUL-terminated.
+const HOOKS_PATH_ARGS: [&str; 5] = ["config", "-z", "--type=path", "--get", "core.hooksPath"];
+
 /// The argv of the one config read: every `wsx.*` and `remote.*` record
 /// from every source, NUL-separated, each with its scope and origin.
 const READ_ARGS: [&str; 6] = [
@@ -1357,5 +1368,122 @@ mod tests {
             Ok(read) => testing::child_print("count", read.values(KEY).len()),
             Err(err) => testing::child_print("error", err.to_string().replace('\n', "\\n")),
         }
+    }
+
+    /// The key the hooks-path tests set.
+    const HOOKS_KEY: &str = "core.hooksPath";
+
+    /// `Repo::hooks_path` on a fresh `Repo::discover(repo)`, with a helper
+    /// whose children see `env`; fails the test on `Err`.
+    fn hooks_path_of(env: &Env, repo: &Path) -> Option<Vec<u8>> {
+        let found =
+            Repo::discover(repo).unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        found
+            .hooks_path(&Git::for_repo(env.clone(), &found))
+            .unwrap_or_else(|err| panic!("hooks_path {}: {err}", repo.display()))
+    }
+
+    /// Sets `core.hooksPath` to `value` in `repo`'s local config.
+    fn set_hooks_path(scratch: &Scratch, repo: &Path, value: &str) {
+        git_ok(scratch, repo, ["config", "--local", HOOKS_KEY, value])
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    /// Unset, a local value, and a value only in the scratch HOME's global
+    /// config, which a read of the repository's own scope would miss: its
+    /// control is `git config --local --get` finding nothing.
+    #[test]
+    fn hooks_path_is_the_effective_value() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-hooks-path").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        assert_git_finds_nothing(&scratch, &repo, &["config", "--get", HOOKS_KEY]);
+        assert_eq!(hooks_path_of(&scratch.env, &repo), None, "unset");
+
+        set_hooks_path(&scratch, &repo, "scripts/hooks");
+        assert_eq!(
+            hooks_path_of(&scratch.env, &repo),
+            Some(b"scripts/hooks".to_vec()),
+            "a local value"
+        );
+
+        let global_repo = one_commit_repo(&scratch, "global");
+        let global = scratch.home.join(".gitconfig");
+        let mut config =
+            std::fs::read(&global).unwrap_or_else(|err| panic!("read {}: {err}", global.display()));
+        config.extend_from_slice(b"[core]\n\thooksPath = global-hooks\n");
+        write(&global, &config).unwrap_or_else(|err| panic!("{err}"));
+        assert_git_finds_nothing(
+            &scratch,
+            &global_repo,
+            &["config", "--local", "--get", HOOKS_KEY],
+        );
+        assert_eq!(
+            hooks_path_of(&scratch.env, &global_repo),
+            Some(b"global-hooks".to_vec()),
+            "a global value"
+        );
+    }
+
+    #[test]
+    fn hooks_path_expands_home_as_git_does() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-hooks-home").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        set_hooks_path(&scratch, &repo, "~/hooks");
+        let printed = git_ok(
+            &scratch,
+            &repo,
+            ["config", "-z", "--type=path", "--get", HOOKS_KEY],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let expanded = printed
+            .strip_suffix(b"\0")
+            .unwrap_or_else(|| panic!("git config -z printed no NUL: {printed:?}"))
+            .to_vec();
+        assert_eq!(
+            expanded,
+            scratch.home.join("hooks").as_os_str().as_bytes(),
+            "git expands ~ to the scratch HOME"
+        );
+        assert_eq!(hooks_path_of(&scratch.env, &repo), Some(expanded));
+    }
+
+    #[test]
+    fn hooks_path_ignores_a_git_config_file() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-hooks-git-config").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        set_hooks_path(&scratch, &repo, "scripts/hooks");
+        let other = scratch.root.join("other.conf");
+        write(&other, b"[core]\n\thooksPath = other\n").unwrap_or_else(|err| panic!("{err}"));
+        let mut env = scratch.env.clone();
+        env.push(("GIT_CONFIG".into(), other.into()));
+
+        let control = testing::git_in_env(&env, &repo, ["config", "--get", HOOKS_KEY])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            printed_values("git config --get with GIT_CONFIG", &control),
+            vec![b"other".to_vec()],
+            "git config alone reads the GIT_CONFIG file"
+        );
+        assert_eq!(hooks_path_of(&env, &repo), Some(b"scripts/hooks".to_vec()));
+    }
+
+    #[test]
+    fn hooks_path_keeps_a_newline_in_the_value() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-hooks-newline").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        set_hooks_path(&scratch, &repo, "a\nb");
+        assert_eq!(hooks_path_of(&scratch.env, &repo), Some(b"a\nb".to_vec()));
     }
 }

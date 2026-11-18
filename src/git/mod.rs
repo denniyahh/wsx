@@ -29,6 +29,7 @@ mod reads;
 mod refs;
 mod repo;
 mod spawn;
+mod staleness;
 #[cfg(test)]
 pub(crate) mod testing;
 mod trees;
