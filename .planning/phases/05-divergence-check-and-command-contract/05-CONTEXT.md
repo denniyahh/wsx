@@ -96,12 +96,16 @@ can be challenged at plan review.
   planning, inside these semantics.
 
 ### Staleness (DIV-04)
-- **D-12:** The time of the last fetch is the newest reflog entry of the integration ref's
-  remote-tracking ref (`refs/remotes/<baseRemote>/<branch>`), read through the git binary. That entry is
-  specific to the ref; `FETCH_HEAD`'s mtime is repo-wide and changes with any fetch. The report gives
-  the time and the age. With no reflog, `fetched_at` is null and the reason is stated ("no reflog for
-  <ref>"). When the integration ref is a local branch (no base remote, Phase 4 D-07), the report says
-  staleness doesn't apply.
+- **D-12:** (Amended 2026-11-18 by the owner at plan time; the reflog-only form below it was replaced.)
+  Two times are reported, each with its age. `ref_moved_at`: the newest reflog entry of the integration
+  ref's remote-tracking ref (`refs/remotes/<baseRemote>/<branch>`), read through the git binary; null
+  with the reason stated ("no reflog for <ref>") when there is none. `fetched_at`: the mtime of
+  `FETCH_HEAD`, which is repo-wide and changes with any fetch; null with the reason stated when the file
+  is absent. Reason for the amendment: on git 2.56.1 a fresh clone writes no reflog entry for the
+  remote-tracking ref, and a fetch that brings nothing new writes `FETCH_HEAD` but no reflog entry
+  (reproduced in a scratch repo), so reflog alone reports "never fetched" after a clone and
+  over-reports staleness against a quiet upstream. When the integration ref is a local branch (no base
+  remote, Phase 4 D-07), the report says staleness doesn't apply.
 - **D-13:** Staleness is reported, never a failure, and has no threshold. An offline check must not
   fail because the network is down, and the no-network rule (DIV-04) comes from the oracle's pre-push
   use. With the remote unreachable, the check runs against the local ref (success criterion 1); it never
