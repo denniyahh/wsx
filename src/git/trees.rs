@@ -479,6 +479,25 @@ mod tests {
         }
     }
 
+    /// A tree asked for as a blob is `Error::GitBadOutput` naming it, not
+    /// its tree bytes.
+    #[test]
+    fn read_blobs_refuses_an_object_that_is_not_a_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-not-a-blob").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let tree = entry_id(&scratch, &repo, &head, b"d");
+        let (found, git) = open(&scratch, &repo);
+        match found.read_blobs(&git, std::slice::from_ref(&tree)) {
+            Err(Error::GitBadOutput { problem, .. }) => {
+                assert_eq!(problem, format!("answer 0: {tree} is a tree, not a blob"));
+            }
+            other => panic!("expected GitBadOutput for the tree {tree}, got {other:?}"),
+        }
+    }
+
     /// A full hex id for the pure parser tests.
     const ID: &str = "1111111111111111111111111111111111111111";
 
@@ -517,6 +536,17 @@ mod tests {
     fn parse_lookup_refuses_a_mode_that_is_not_octal() {
         let requests = vec![format!("{ID}:a").into_bytes()];
         let stdout = format!("{ID} blob 100648\0");
+        assert_eq!(
+            parse_lookup(stdout.as_bytes(), &requests),
+            Err("answer 0: a mode that is not octal".to_owned())
+        );
+    }
+
+    /// A signed mode, which `u32`'s parser would take, is not octal.
+    #[test]
+    fn parse_lookup_refuses_a_signed_mode() {
+        let requests = vec![format!("{ID}:a").into_bytes()];
+        let stdout = format!("{ID} blob +100644\0");
         assert_eq!(
             parse_lookup(stdout.as_bytes(), &requests),
             Err("answer 0: a mode that is not octal".to_owned())

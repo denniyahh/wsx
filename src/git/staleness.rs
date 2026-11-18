@@ -157,9 +157,10 @@ mod tests {
 
     use gix::bstr::ByteSlice;
 
+    use super::super::Error;
     use super::super::testing::{self, Scratch, T0, TICK, commit_all, git_ok, write};
     use super::super::{Git, Repo};
-    use super::parse_reflog_selector;
+    use super::{epoch_seconds, parse_reflog_selector};
 
     /// The integration ref every test reads.
     const REF: &str = "refs/remotes/origin/develop";
@@ -487,6 +488,29 @@ mod tests {
         }
     }
 
+    /// A `worktrees` entry git cannot list, here a plain file, is an
+    /// `Error::Io` naming it, not "no linked worktree".
+    #[test]
+    fn fetch_head_paths_refuse_a_worktrees_entry_that_is_not_a_directory() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("staleness-worktrees-file").expect("scratch");
+        let (_, work) = cloned(&scratch);
+        let (repo, _) = open(&scratch, &work);
+        let worktrees = repo.common_dir().join("worktrees");
+        write(&worktrees, b"not a directory\n").unwrap_or_else(|err| panic!("{err}"));
+        match repo.fetch_head_paths() {
+            Err(Error::Io { what, .. }) => {
+                assert_eq!(what, format!("read {}", worktrees.display()));
+            }
+            other => panic!(
+                "expected Error::Io reading {}, got {other:?}",
+                worktrees.display()
+            ),
+        }
+    }
+
     #[test]
     fn fetched_at_reads_a_fetch_in_the_main_worktree_from_a_linked_one() {
         if testing::rerun_scrubbed() {
@@ -540,6 +564,21 @@ mod tests {
             Ok(Some(1_795_024_796))
         );
         assert_eq!(parse_reflog_selector(b""), Ok(None));
+    }
+
+    /// A time before the epoch is negative, not its distance from it.
+    #[test]
+    fn epoch_seconds_is_negative_before_the_epoch() {
+        assert_eq!(epoch_seconds(UNIX_EPOCH - Duration::from_secs(5)), -5);
+    }
+
+    /// A signed time, which `i64`'s parser would take, is not a unix time.
+    #[test]
+    fn parse_reflog_selector_refuses_a_signed_time() {
+        assert_eq!(
+            parse_reflog_selector(b"origin/develop@{-5}\n"),
+            Err("the selector's time is not a unix time".to_owned())
+        );
     }
 
     #[test]
