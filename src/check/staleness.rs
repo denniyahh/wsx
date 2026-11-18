@@ -17,14 +17,9 @@
 //! once per run with no lock, so a fetch running at the same time can make
 //! either one older or newer by that fetch, never an error.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until run reads the times")
-)]
-
 use std::fmt::Display;
 
-use crate::git::c_quote;
+use crate::git::{Git, Repo, c_quote};
 
 /// The prefix of a remote-tracking ref's full name.
 const REMOTE_TRACKING: &[u8] = b"refs/remotes/";
@@ -80,6 +75,23 @@ impl Staleness {
 /// when it is a remote-tracking ref.
 pub fn applies(full_ref: &[u8]) -> bool {
     full_ref.starts_with(REMOTE_TRACKING)
+}
+
+/// How stale the integration ref `full_ref` is in `repo`, against the clock
+/// reading `now`. Only a remote-tracking ref is read: one reflog child and
+/// one stat of every worktree's `FETCH_HEAD`, neither contacting a remote.
+/// Each answer, a failed read included, goes through `time_of`, so nothing
+/// read here can fail the check (D-13).
+pub fn read(repo: &Repo, git: &Git, full_ref: &[u8], now: i64) -> Staleness {
+    let unread = Staleness::unread(full_ref, now);
+    if !unread.applies {
+        return unread;
+    }
+    Staleness {
+        ref_moved_at: time_of(Source::Reflog(full_ref), repo.ref_moved_at(git, full_ref)),
+        fetched_at: time_of(Source::FetchHead, repo.fetched_at()),
+        ..unread
+    }
 }
 
 /// The time one staleness read answered, from `source`: a time, or why

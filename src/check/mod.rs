@@ -109,9 +109,10 @@ impl ProblemKind {
 }
 
 /// Runs the check in `repo`: resolves the model, reads the tree diff from
-/// the integration tip to the workspace tip and evaluates it. The model is
-/// resolved before any other read, so its replace-ref guard stands for the
-/// reads by id after it (D-22).
+/// the integration tip to the workspace tip and evaluates it, then reads how
+/// stale the integration ref is, which never fails the run (D-13). The model
+/// is resolved before any other read, so its replace-ref guard stands for
+/// the reads by id after it (D-22).
 pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     // The recorded set stays empty until phase 8 records workspace branches.
     let resolved = model::resolve(repo, git, &BTreeSet::new())?;
@@ -125,7 +126,7 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     problems.extend(hook_problems);
     // One clock reading, as whole unix seconds, for every age of the run.
     let now = epoch_seconds(SystemTime::now());
-    let staleness = Staleness::unread(&model.integration.full_ref, now);
+    let staleness = staleness::read(repo, git, &model.integration.full_ref, now);
     Ok(Report {
         configured,
         workspace_branch: model.workspace_branch.clone(),
