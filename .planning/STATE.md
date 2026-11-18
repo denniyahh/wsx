@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: executing
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-11-18T20:52:04.695Z"
+stopped_at: Completed 05-05-PLAN.md
+last_updated: "2026-11-18T21:06:03.611Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: dc97ef6732be4d1c5951bdab09dac14023f3ea15
+state_head: 6369e2f600aca40ea4082476712c8398351bb4f2
 progress:
   total_phases: 16
   completed_phases: 5
   total_plans: 63
-  completed_plans: 58
+  completed_plans: 59
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Phase: 05 (Divergence check and command contract) — READY TO EXECUTE
-Plan: 5 of 9
+Plan: 6 of 9
 Status: Ready to execute
 Last activity: 2026-11-18 — Phase 04 complete, transitioned to Phase 5
 
@@ -117,6 +117,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 05 P02 | 17 min | 2 tasks | 11 files |
 | Phase 05 P03 | 16 min | 2 tasks | 7 files |
 | Phase 05 P04 | 13 min | 2 tasks | 3 files |
+| Phase 05 P05 | 12 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -245,6 +246,7 @@ Recent decisions affecting current work:
 - [Phase 05]: parse_reflog_selector refuses more than one line, so a signature line on stdout is GitBadOutput
 - [Phase 05]: 05-04: the stale-only lookup sits in carried_only_paths, called from run after model::resolve; evaluate stays pure
 - [Phase 05]: 05-04: manifest entries are deduplicated on (kind, path), first kept, before redundancy and staleness are judged
+- [Phase 05]: 05-05: IF-02 source rules are proc-macro2 token scans of src/ (doc attributes skipped, unlexable files are findings, no allowlist); a command in COMMANDS needs an enabled no-GSD run with a devflow parity control expecting the same exit
 
 ### Pending Todos
 
@@ -286,6 +288,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-18T20:52:03.870Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-11-18T21:06:02.608Z
+Stopped at: Completed 05-05-PLAN.md
 Resume file: None
