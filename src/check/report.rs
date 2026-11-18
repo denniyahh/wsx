@@ -7,6 +7,7 @@
 //! pasting it declares exactly that path. In the JSON payload every byte
 //! value goes through `json::bytes` instead (D-09).
 
+use super::staleness::{Staleness, TimeRead, age_text};
 use super::{HookStatus, Problem, ProblemKind, Report};
 use crate::git::c_quote;
 use crate::json::{self, Value};
@@ -85,6 +86,7 @@ pub fn human(report: &Report) -> Human {
             quoted(value)
         ));
     }
+    diagnostics.push(staleness_line(&report.staleness, &integration));
     let count = report.problems.len();
     if count == 0 {
         return Human {
@@ -111,9 +113,46 @@ pub fn human(report: &Report) -> Human {
     }
 }
 
+/// The staleness line of the human output; `integration` is the
+/// integration ref, quoted. It states each time with its source, or why it
+/// is missing, and decides nothing (D-13).
+fn staleness_line(staleness: &Staleness, integration: &str) -> String {
+    if !staleness.applies {
+        return format!(
+            "wsx check: integration ref {integration} is a local branch; staleness does not apply"
+        );
+    }
+    let moved = time_text(
+        &staleness.ref_moved_at,
+        staleness.now,
+        "last moved",
+        "reflog",
+    );
+    let fetched = time_text(
+        &staleness.fetched_at,
+        staleness.now,
+        "last fetch",
+        "FETCH_HEAD",
+    );
+    format!("wsx check: integration ref {integration}: {moved}; {fetched}")
+}
+
+/// One time of the staleness line: `<what> <age> ago (<source>)`, or the
+/// reason there is no time.
+fn time_text(time: &TimeRead, now: i64, what: &str, source: &str) -> String {
+    match time {
+        TimeRead::At(at) => format!(
+            "{what} {} ago ({source})",
+            age_text(now.saturating_sub(*at))
+        ),
+        TimeRead::Unknown(reason) => reason.clone(),
+        TimeRead::NotRead => format!("{what} not read"),
+    }
+}
+
 /// The check's payload for the JSON object, in the contract's key order:
-/// `configured`, `workspace`, `integration`, `hooks`, then `problems` in
-/// D-05's order, present and empty when there are none (D-11).
+/// `configured`, `workspace`, `integration`, `staleness`, `hooks`, then
+/// `problems` in D-05's order, present and empty when there are none (D-11).
 pub fn json(report: &Report) -> Vec<(&'static str, Value)> {
     let integration = &report.integration;
     vec![
@@ -133,12 +172,57 @@ pub fn json(report: &Report) -> Vec<(&'static str, Value)> {
                 ("tip", Value::Str(integration.tip.to_string())),
             ]),
         ),
+        (
+            "staleness",
+            staleness_json(&report.staleness, &integration.full_ref),
+        ),
         ("hooks", hooks_json(&report.hooks)),
         (
             "problems",
             Value::Array(report.problems.iter().map(problem_json).collect()),
         ),
     ]
+}
+
+/// The staleness object of the JSON payload for the integration ref
+/// `full_ref`: whether it applies and, when not, why; then each time, its
+/// age against the run's clock (negative for a time after it) and, when
+/// there is no time, why. Every field of a time not read is `null`.
+fn staleness_json(staleness: &Staleness, full_ref: &[u8]) -> Value {
+    let reason = if staleness.applies {
+        Value::Null
+    } else {
+        Value::Str(format!(
+            "{} is a local branch; it is not fetched",
+            quoted(full_ref)
+        ))
+    };
+    let (moved_at, moved_age, moved_reason) = time_json(&staleness.ref_moved_at, staleness.now);
+    let (fetched_at, fetched_age, fetched_reason) = time_json(&staleness.fetched_at, staleness.now);
+    Value::Object(vec![
+        ("applies", Value::Bool(staleness.applies)),
+        ("reason", reason),
+        ("ref_moved_at", moved_at),
+        ("ref_moved_age_seconds", moved_age),
+        ("ref_moved_reason", moved_reason),
+        ("fetched_at", fetched_at),
+        ("fetched_age_seconds", fetched_age),
+        ("fetched_reason", fetched_reason),
+    ])
+}
+
+/// One time's three JSON fields: the time, its age and the reason there is
+/// none.
+fn time_json(time: &TimeRead, now: i64) -> (Value, Value, Value) {
+    match time {
+        TimeRead::At(at) => (
+            Value::Int(*at),
+            Value::Int(now.saturating_sub(*at)),
+            Value::Null,
+        ),
+        TimeRead::Unknown(reason) => (Value::Null, Value::Null, Value::Str(reason.clone())),
+        TimeRead::NotRead => (Value::Null, Value::Null, Value::Null),
+    }
 }
 
 /// The hooks object of the JSON payload: the value or directory, whether it

@@ -13,7 +13,7 @@ pub mod report;
 pub mod staleness;
 
 pub use hooks::HookStatus;
-pub use staleness::{Staleness, TimeRead};
+pub use staleness::Staleness;
 
 use std::collections::BTreeSet;
 use std::time::SystemTime;

@@ -17,6 +17,11 @@
 //! once per run with no lock, so a fetch running at the same time can make
 //! either one older or newer by that fetch, never an error.
 
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no caller until run reads the times")
+)]
+
 use std::fmt::Display;
 
 use crate::git::c_quote;
@@ -73,21 +78,48 @@ impl Staleness {
 
 /// Whether staleness applies to the integration ref `full_ref`: exactly
 /// when it is a remote-tracking ref.
-pub fn applies(_full_ref: &[u8]) -> bool {
-    false
+pub fn applies(full_ref: &[u8]) -> bool {
+    full_ref.starts_with(REMOTE_TRACKING)
 }
 
 /// The time one staleness read answered, from `source`: a time, or why
 /// there is none. An error becomes `Unknown` with its text, so no read error
 /// reaches the check's result (D-13).
-pub fn time_of<E: Display>(_source: Source<'_>, _answer: Result<Option<i64>, E>) -> TimeRead {
-    TimeRead::NotRead
+pub fn time_of<E: Display>(source: Source<'_>, answer: Result<Option<i64>, E>) -> TimeRead {
+    match (answer, source) {
+        (Ok(Some(time)), _) => TimeRead::At(time),
+        (Ok(None), Source::Reflog(full_ref)) => {
+            TimeRead::Unknown(format!("no reflog for {}", quoted(full_ref)))
+        }
+        (Ok(None), Source::FetchHead) => TimeRead::Unknown("no FETCH_HEAD".to_owned()),
+        (Err(err), Source::Reflog(full_ref)) => TimeRead::Unknown(format!(
+            "the reflog of {} could not be read: {err}",
+            quoted(full_ref)
+        )),
+        (Err(err), Source::FetchHead) => {
+            TimeRead::Unknown(format!("FETCH_HEAD could not be read: {err}"))
+        }
+    }
 }
+
+/// Seconds in a minute, an hour and a day.
+const MINUTE: i64 = 60;
+const HOUR: i64 = 60 * MINUTE;
+const DAY: i64 = 24 * HOUR;
 
 /// `seconds` as the human line writes an age, in its two largest units; a
 /// negative age (a time after now) is `0s`.
-pub fn age_text(_seconds: i64) -> String {
-    String::new()
+pub fn age_text(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds >= DAY {
+        format!("{}d {}h", seconds / DAY, seconds % DAY / HOUR)
+    } else if seconds >= HOUR {
+        format!("{}h {}m", seconds / HOUR, seconds % HOUR / MINUTE)
+    } else if seconds >= MINUTE {
+        format!("{}m {}s", seconds / MINUTE, seconds % MINUTE)
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 /// `bytes` in git's C-style quoting, for prose.
