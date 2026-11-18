@@ -227,3 +227,7 @@ None - no external service configuration required.
 ---
 *Phase: 05-divergence-check-and-command-contract*
 *Completed: 2026-11-18*
+
+## Self-Check: PASSED
+
+All four task commits and the SUMMARY commit are ancestors of HEAD; the three modified source files and this SUMMARY exist.
