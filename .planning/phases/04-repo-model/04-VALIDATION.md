@@ -64,6 +64,25 @@ Filled by the planner at the revision after phase 03.1 (code at `6fbea02`), from
 | 04-11 T1 | 04-11 | 7 | CONF-07 | T-04-30, T-04-32, T-04-39 | a replacement gix and git follow differently is refused before any manifest read; one replacement reads the bytes git prints; the removal commands quote the ref name for the shell | unit + child (RED first) | `model::tests::replacement_chain_fails_closed` and the seventeen others; `git::tests::replacement_ref_message_names_the_ref_and_the_fix` and the four others, including `replacement_fix_commands_quote_a_ref_name_for_the_shell` | ✅ | ✅ green |
 | 04-10 T1 | 04-10 | 8 | CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, CONF-07 | T-04-24 | every mutant of the phase's core code is caught, unviable, timed out or explained as equivalent | mutation pass + survivor and fresh-pass checks | Task 1's three `<automated>` blocks, then `scripts/check.sh all` | — | ✅ green |
 | 04-10 T2 | 04-10 | 8 | CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, CONF-07 | T-04-25, T-04-26 | the gate is green on the host and in the pinned container; the model holds no gix type; the obligations are in STATE.md | gate + coverage + source checks | `scripts/check.sh all`, `scripts/check.sh deps`, `scripts/check-in-container.sh all` (which runs 04-01's paste tests under the image's dash), `scripts/check.sh coverage`, the two STATE.md checks (the obligations, and the phase 6 discovery-refusal line) | — | ✅ green |
+| 04-12 T1 | 04-12 | 9 | CONF-07 | see plan | Tracer: any replace ref stops the model before any object read, end to end (RED fi… | unit + child | 1 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-12 T2 | 04-12 | 9 | CONF-07 | see plan | The controls' failing direction in a scratch copy, and the phase-5 and phase-6 obl… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-12 T3 | 04-12 | 9 | CONF-07 | see plan | Fresh mutation pass checked by identity, coverage, and the phase gate on the new t… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-13 T1 | 04-13 | 10 | CONF-07 | see plan | Tracer: a linked worktree's own replace ref stops the model before any object read… | unit + child | 7 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-13 T2 | 04-13 | 10 | CONF-07 | see plan | ReplaceBaseSet names only the remedy for its own setting, and resolve's doc names … | unit + child | 4 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-14 T1 | 04-14 | 11 | CONF-04, CONF-05, CONF-07 | see plan | Tracer: resolve reads every wsx key and the remote list from one git config child … | unit + child | 1 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-14 T2 | 04-14 | 11 | CONF-04, CONF-05, CONF-07 | see plan | Delete gix's config reads and port their tests to the git read (D-25, D-36)… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-15 T1 | 04-15 | 12 | CONF-03, CONF-05 | see plan | Tracer: one for-each-ref listing feeds the workspace branch, the rungs and the can… | unit + child | 1 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-15 T2 | 04-15 | 12 | CONF-03, CONF-05 | see plan | Delete gix's model ref reads, port the listing tests, and reword the namespace ref… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-16 T1 | 04-16 | 13 | CONF-02, CONF-07 | see plan | Tracer: the tips and the manifest come from one cat-file batch fed through a close… | unit + child | 1 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-16 T2 | 04-16 | 13 | CONF-02, CONF-07 | see plan | No lazy fetch, today's error order, and the gix manifest read deleted (D-09, G6, D… | unit + child | 2 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-16 T3 | 04-16 | 13 | CONF-02, CONF-07 | see plan | Pin the child count: four in wsx's own worktree, five aimed at another (D-26, D-31… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-17 T1 | 04-17 | 14 | CONF-04, CONF-07 | see plan | Decide how wsx treats GIT_CONFIG in its environment… | decision | operator decision (D-38), no test | ✅ | ✅ decided |
+| 04-17 T2 | 04-17 | 14 | CONF-04, CONF-07 | see plan | Implement the chosen GIT_CONFIG treatment, RED first… | unit + child | 5 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-18 T1 | 04-18 | 15 | CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, CONF-07 | see plan | Check the D-25 inventory against the tree and bring STATE.md's obligations in line… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-18 T2 | 04-18 | 15 | CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, CONF-07 | see plan | Measure resolve's latency on the four R3 repos (D-26)… | unit + child | 1 named tests in the plan's `<verify>`, one `scripts/check.sh test -E 'test(=…)'` each | ✅ | ✅ green |
+| 04-18 T3 | 04-18 | 15 | CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, CONF-07 | see plan | Fresh mutation pass checked by identity, coverage, and the host, deps and containe… | unit + child | `scripts/check.sh all` plus the plan's `<verify>` commands | ✅ | ✅ green |
+| 04-R1 C3/C4 | review fix | — | CONF-07 | — | config output git cannot have printed fails the read, never fewer keys | unit + fake git | 3 named tests in `git::config::tests` | ✅ | ✅ green |
+| 04-R1 C2 | review fix | — | CONF-07 | — | every git child is stopped past CHILD_DEADLINE (D-39) | unit + fake git + real git | 5 named tests in `git::spawn::tests` and `git::config::tests` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -100,6 +119,8 @@ Filled by the planner at the revision after phase 03.1 (code at `6fbea02`), from
 - [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** validated 2026-11-08 by validate-phase (orchestrator audit: all 45 named tests present in `cargo nextest list`, full suite 639 passed at `74ba890`)
+
+**Re-audit:** 2026-11-18 by validate-phase after the 04-13 to 04-18 replan and the Tier A review fixes: every test the plans 04-12 to 04-18 name is in `cargo nextest list` (706 tests), except three names of the GIT_CONFIG options not chosen (refuse, accept; D-38) and 04-18's never-committed latency probe; full suite 704 passed at `3bc206a` on the host and in the container.
 
 ## Validation Audit 2026-11-08
 
