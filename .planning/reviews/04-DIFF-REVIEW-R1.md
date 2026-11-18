@@ -31,7 +31,7 @@ None. codex's critical (C1) is downgraded, with the reason given below.
 The stop rule (no critical remains) is met after round 1. The operator chose to fold the majors (2026-11-18).
 
 - C3 and C4: fixed, test first. The RED tests failed at their intended assertions and their controls passed; `scripts/check.sh all` passes after the fix.
-- C2: waiting on the operator, since a time limit on git children widens D-29.
+- C2: fixed (D-39, the operator chose a 10 s limit on every git child). The RED tests ran the full 5 s sleep and returned Ok; after the fix they stop at the deadline. A real-git regression pins the fifo plus `includeIf "onbranch:"` shape, where `timeout 3 git config` itself exits 124. `scripts/check.sh all` and `scripts/check-in-container.sh all` pass (704 tests). The per-child exit poll is 50 µs: 1 ms added about 0.8 ms per child; 50 µs matches a plain spawn (one run of 200 calls each).
 - C1, C5, P1 to P3 and S2: backlog.
 
 Raw lane outputs are kept at /tmp/claude-1000/-var-home-denniyahh-Github-wsx/cde60fea-b986-4913-8ee2-9f1cc80fb5a1/scratchpad/review-r1/review-{codex,pi,agy}.md.

@@ -5,10 +5,10 @@ current_phase: 04
 current_phase_name: Repo model
 status: verifying
 stopped_at: Completed 04-18-PLAN.md
-last_updated: "2026-11-18T01:12:42.583Z"
+last_updated: "2026-11-18T04:50:46.161Z"
 last_activity: 2026-11-17
 last_activity_desc: Phase 04 execution started
-state_head: 32ab91782ab45cd685e44aba1410b193e48fa846
+state_head: dc87341a10ac8f7733b3ca59eb88b8cc6e03ae1e
 progress:
   total_phases: 16
   completed_phases: 4
@@ -230,6 +230,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-13 to 04-17: the model's inputs are read through the git binary (D-23): one git config -z read, one git for-each-ref listing and one git cat-file --batch read fed through Git::run_with_input; model::resolve(repo, git, recorded) spawns 4 git children aimed at wsx's own worktree and 5 aimed at another (D-26, D-31); find_ref, ref_commit, refs_directly_under, root_entry, local_config_values, remote_configured and TreeNotSorted are deleted (D-25)
 - [Phase 04]: 04-18: git cat-file --batch answers a gitlink whose commit is absent with '<oid> submodule'; parse_batch reads it as BatchAnswer::Submodule and the manifest as a submodule
 - [Phase 04]: 04-18: D-26 holds on one host: resolve p95 10.8 to 14.0 ms over 200 calls in each R3 repo, four git children each
+- [Phase 04]: 04-18 review: every git child is killed after 10 s and fails with GitTimedOut (D-29 widened to config and packed-refs fifos), per the operator on 2026-11-18
 
 ### Pending Todos
 

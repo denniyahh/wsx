@@ -209,6 +209,10 @@ Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`
   `git config` reads the repository's own config as every other git command does. This amends Phase 3's rule that a
   child aimed at wsx's own worktree gets the whole environment, for `GIT_CONFIG` on the config child only. Chosen
   over refusing to run while it is set, and over accepting that a configured repo then reads as not configured.
+- **D-39 (operator, 2026-11-18, widens D-29):** Every git child wsx spawns is killed once it runs past 10 s, and the
+  run fails with `GitTimedOut` naming the command. A read git itself would block on (a fifo at `.git/config` or
+  `packed-refs`, or under a ref an `includeIf "onbranch:"` evaluates) stops the guard instead of hanging it. Chosen
+  over accepting that wsx hangs where git does. From the Tier A diff review, round 1, finding C2.
 
 </decisions>
 
