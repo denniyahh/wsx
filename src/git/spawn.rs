@@ -15,6 +15,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use super::repo::Repo;
 use super::{Error, render_argv};
@@ -23,6 +24,12 @@ use super::{Error, render_argv};
 /// binary": git 2.54 or newer is checked once, on the first `git` spawn, and
 /// an older git is refused naming the version found and the one required.
 const MIN_GIT_VERSION: (u32, u32) = (2, 54);
+
+/// How long one git child may run before wsx kills it and fails with
+/// `Error::GitTimedOut`, so a read git itself would block on (a fifo where a
+/// config file or ref should be) stops the run instead of hanging it (D-29,
+/// the operator, 2026-11-18).
+const CHILD_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The first line of `output`, trimmed, lossily decoded.
 fn first_line(output: &[u8]) -> String {
@@ -143,6 +150,8 @@ pub struct Git {
     /// The names `git rev-parse --local-env-vars` printed, fetched on first
     /// need.
     local_env_vars: OnceLock<Vec<OsString>>,
+    /// How long one child may run; `CHILD_DEADLINE` outside the tests.
+    deadline: Duration,
 }
 
 impl Git {
@@ -154,6 +163,7 @@ impl Git {
             remove_local_env: true,
             version_checked: OnceLock::new(),
             local_env_vars: OnceLock::new(),
+            deadline: CHILD_DEADLINE,
         }
     }
 
@@ -198,6 +208,14 @@ impl Git {
             remove_local_env: false,
             ..self
         }
+    }
+
+    /// This helper with `deadline` in place of `CHILD_DEADLINE`, so the
+    /// tests of the limit need not wait ten seconds. Not in the shipped
+    /// binary.
+    #[cfg(test)]
+    pub fn with_deadline(self, deadline: Duration) -> Git {
+        Git { deadline, ..self }
     }
 
     /// A child for `args` in `worktree` with the whole snapshot: an empty
@@ -414,6 +432,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
+    use std::time::{Duration, Instant};
 
     use super::super::Error;
     use super::super::repo::Repo;
@@ -887,6 +906,104 @@ mod tests {
             with.contains("GIT_CONFIG=x") && with.contains("WSX_TEST_KEEP=1"),
             "the child of run lacks GIT_CONFIG=x or WSX_TEST_KEEP=1: {with:?}"
         );
+    }
+
+    /// The deadline the limit tests give the helper.
+    const TEST_DEADLINE: Duration = Duration::from_millis(500);
+    /// Well under the fake git's sleep, well over `TEST_DEADLINE`.
+    const STOPPED_WITHIN: Duration = Duration::from_secs(3);
+
+    /// A fake git that passes the version check and then sleeps for five
+    /// seconds, far past `TEST_DEADLINE`, before exiting 0.
+    fn sleeping_git(scratch: &Scratch) -> Vec<(OsString, OsString)> {
+        fake_git(
+            scratch,
+            "if [ \"$*\" = \"--version\" ]; then echo 'git version 2.54.0'; exit 0; fi\nexec sleep 5",
+        )
+    }
+
+    /// Fails unless `result` is `Error::GitTimedOut` for `args` after
+    /// `TEST_DEADLINE`, returned within `STOPPED_WITHIN` of `started`.
+    fn assert_timed_out<T: std::fmt::Debug>(
+        result: Result<T, Error>,
+        args: &[&str],
+        started: Instant,
+    ) {
+        let elapsed = started.elapsed();
+        match result {
+            Err(Error::GitTimedOut { argv, after }) => {
+                let expected: Vec<OsString> = args.iter().map(OsString::from).collect();
+                assert_eq!(argv, expected, "GitTimedOut names the wrong argv");
+                assert_eq!(after, TEST_DEADLINE, "GitTimedOut names the wrong limit");
+            }
+            other => panic!("expected GitTimedOut for {args:?}, got {other:?}"),
+        }
+        assert!(
+            elapsed < STOPPED_WITHIN,
+            "the child was stopped after {elapsed:?}, not near {TEST_DEADLINE:?}"
+        );
+    }
+
+    /// A child that runs past the deadline is killed and the run fails,
+    /// never waits for it.
+    #[test]
+    fn run_stops_a_child_past_its_deadline() {
+        let scratch = Scratch::new("run-deadline").expect("scratch");
+        let git = Git::new(sleeping_git(&scratch))
+            .with_own_worktree(scratch.root.clone())
+            .with_deadline(TEST_DEADLINE);
+        let started = Instant::now();
+        assert_timed_out(git.run(&scratch.root, ["status"]), &["status"], started);
+    }
+
+    /// The config read's runner stops a child past the deadline as `run`
+    /// does.
+    #[test]
+    fn run_without_var_stops_a_child_past_its_deadline() {
+        let scratch = Scratch::new("run-without-var-deadline").expect("scratch");
+        let git = Git::new(sleeping_git(&scratch))
+            .with_own_worktree(scratch.root.clone())
+            .with_deadline(TEST_DEADLINE);
+        let started = Instant::now();
+        assert_timed_out(
+            git.run_without_var(&scratch.root, ["config"], "GIT_CONFIG"),
+            &["config"],
+            started,
+        );
+    }
+
+    /// The batch runner stops a child past the deadline as `run` does, even
+    /// one that never reads its stdin.
+    #[test]
+    fn run_with_input_stops_a_child_past_its_deadline() {
+        let scratch = Scratch::new("run-with-input-deadline").expect("scratch");
+        let git = Git::new(sleeping_git(&scratch))
+            .with_own_worktree(scratch.root.clone())
+            .with_deadline(TEST_DEADLINE);
+        let started = Instant::now();
+        assert_timed_out(
+            git.run_with_input(&scratch.root, ["cat-file", "--batch"], b"HEAD\n"),
+            &["cat-file", "--batch"],
+            started,
+        );
+    }
+
+    /// Control: a child that finishes within the deadline returns its
+    /// output.
+    #[test]
+    fn run_keeps_a_child_within_its_deadline() {
+        let scratch = Scratch::new("run-within-deadline").expect("scratch");
+        let env = fake_git(
+            &scratch,
+            "if [ \"$*\" = \"--version\" ]; then echo 'git version 2.54.0'; exit 0; fi\necho done",
+        );
+        let git = Git::new(env)
+            .with_own_worktree(scratch.root.clone())
+            .with_deadline(TEST_DEADLINE);
+        let stdout = git
+            .run(&scratch.root, ["status"])
+            .unwrap_or_else(|err| panic!("run: {err}"));
+        assert_eq!(stdout, b"done\n");
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub use spawn::Git;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// git's global option that turns off fetching a missing object from a
 /// promisor remote. Every model child that could read an object passes it
@@ -117,6 +118,12 @@ pub enum Error {
         argv: Vec<OsString>,
         status: Option<i32>,
         stderr: Vec<u8>,
+    },
+    /// A `git` child ran past `after`, wsx's limit for one child, and was
+    /// killed; `argv` excludes the program name.
+    GitTimedOut {
+        argv: Vec<OsString>,
+        after: Duration,
     },
     /// A `git` child exited 0 but printed nothing usable where wsx needs
     /// output; `expected` names what it should have printed.
@@ -250,6 +257,11 @@ impl fmt::Display for Error {
                     write!(f, ": {stderr}")
                 }
             }
+            Error::GitTimedOut { argv, after } => write!(
+                f,
+                "git {} ran past wsx's limit of {after:?} for one git child and was stopped",
+                render_argv(argv)
+            ),
             Error::GitEmptyOutput { argv, expected } => write!(
                 f,
                 "git {} exited 0 but printed no {expected}",
@@ -389,6 +401,7 @@ mod tests {
     use std::ffi::OsString;
     use std::io;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use super::Error;
 
@@ -458,6 +471,15 @@ mod tests {
         assert_eq!(
             killed.to_string(),
             "git merge-base a b was killed by a signal: y"
+        );
+
+        let timed_out = Error::GitTimedOut {
+            argv: argv(&["config", "-z"]),
+            after: Duration::from_secs(10),
+        };
+        assert_eq!(
+            timed_out.to_string(),
+            "git config -z ran past wsx's limit of 10s for one git child and was stopped"
         );
 
         let relative = Error::RelativeRepoEnv {
