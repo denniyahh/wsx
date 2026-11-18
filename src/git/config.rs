@@ -916,6 +916,51 @@ mod tests {
         assert!(!read.defines_remote(b""));
     }
 
+    /// A scope git never prints is refused, never read as a record of
+    /// another scope and dropped.
+    #[test]
+    fn parse_config_z_refuses_a_scope_git_does_not_print() {
+        let scratch = Scratch::new("config-parse-scope").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let control = record(b"local", b"file:.git/config", b"wsx.sourcebranch\ndev");
+        assert_eq!(
+            parsed_ok(&repo, &control).values(KEY),
+            [b"dev".to_vec()],
+            "control: the same record at scope local is read"
+        );
+
+        let stdout = record(b"LOCAL", b"file:.git/config", b"wsx.sourcebranch\ndev");
+        match parsed(&repo, &stdout) {
+            Err(problem) => assert!(
+                problem.contains("record 1") && problem.contains("scope"),
+                "the problem does not name the record's scope: {problem}"
+            ),
+            other => panic!("expected Err for scope LOCAL, got {other:?}"),
+        }
+    }
+
+    /// A `wsx` key at scope `local` whose origin is not a file that can be
+    /// resolved is refused, never dropped as a key from another file.
+    #[test]
+    fn parse_config_z_refuses_a_local_key_whose_origin_cannot_be_resolved() {
+        let scratch = Scratch::new("config-parse-origin").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let missing = file_origin(&scratch.root.join("definitely/missing/config"));
+        for origin in [missing.as_slice(), b"blob:deadbeef"] {
+            let stdout = record(b"local", origin, b"wsx.sourcebranch\ndev");
+            match parsed(&repo, &stdout) {
+                Err(problem) => assert!(
+                    problem.contains("record 1") && problem.contains("origin"),
+                    "the problem does not name the record's origin: {problem}"
+                ),
+                other => panic!(
+                    "expected Err for origin {}, got {other:?}",
+                    origin.escape_ascii()
+                ),
+            }
+        }
+    }
+
     /// The `--get-regexp` the read runs, for the git-side assertions.
     const REGEXP_ARGS: [&str; 3] = ["config", "--get-regexp", "^(wsx|remote)\\."];
 
@@ -999,6 +1044,46 @@ mod tests {
             ),
             Err(other) => panic!("expected GitFailed with exit 1, got {other:?}"),
             Ok(_) => panic!("expected GitFailed with exit 1, got a read"),
+        }
+    }
+
+    /// An exit 1 with nothing on stderr is an empty read only when git also
+    /// printed nothing: records followed by exit 1 fail the read, never read
+    /// as no keys.
+    #[test]
+    fn config_read_exit_1_after_records_is_a_failure() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-exit-1-records").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        append_config(&repo, b"[wsx]\n\tsourceBranch = dev\n");
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let real = Git::for_repo(scratch.env.clone(), &found);
+        let control = found
+            .read_config(&real)
+            .unwrap_or_else(|err| panic!("control read_config: {err}"));
+        assert_eq!(
+            control.values(KEY),
+            [b"dev".to_vec()],
+            "control: git's own read"
+        );
+
+        let real_git = testing::sh_quote(&testing::real_git());
+        let body = format!(
+            "if [ \"$1\" = config ]; then {real_git} \"$@\"; exit 1; fi\nexec {real_git} \"$@\""
+        );
+        let helper = Git::for_repo(testing::fake_git(&scratch, &body), &found);
+
+        match found.read_config(&helper) {
+            Err(Error::GitFailed {
+                status: Some(1),
+                stderr,
+                ..
+            }) => assert!(stderr.is_empty(), "stderr: {:?}", stderr.as_bstr()),
+            Err(other) => panic!("expected GitFailed with exit 1, got {other:?}"),
+            Ok(read) => panic!("expected GitFailed with exit 1, got a read: {read:?}"),
         }
     }
 
