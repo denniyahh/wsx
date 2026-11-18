@@ -2,9 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
 use gix::sec::trust::DefaultForLevel;
 
 use super::Error;
+use super::spawn::CHILD_DEADLINE;
 
 /// A repository wsx resolved, with its locations canonicalised once.
 pub struct Repo {
@@ -32,6 +35,11 @@ impl Repo {
     /// `refs/replace/` is refused before gix opens the repository (see
     /// `refuse_replace_base_env`), since gix's open fails on some values.
     pub fn discover(start: &Path) -> Result<Repo, Error> {
+        Repo::discover_within(start, CHILD_DEADLINE)
+    }
+
+    /// `discover` with `deadline` as the limit on opening the repository.
+    fn discover_within(start: &Path, _deadline: Duration) -> Result<Repo, Error> {
         super::refs::refuse_replace_base_env()?;
         let mut repo = Repo::open_gix(start)?;
         refuse_at_ceiling(start, &repo)?;
@@ -617,6 +625,7 @@ fn canonical(path: &Path) -> Result<PathBuf, Error> {
 mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Output;
+    use std::time::Duration;
 
     use gix::bstr::BStr;
     use gix::revision::plumbing::spec::parse::{Delegate, delegate};
@@ -628,6 +637,106 @@ mod tests {
     };
     use super::super::{Error, ObjectId};
     use super::Repo;
+
+    /// The limit the fifo tests give the open.
+    const OPEN_DEADLINE: Duration = Duration::from_millis(500);
+    /// How long a fifo test waits before it calls the open blocked.
+    const STILL_BLOCKED: Duration = Duration::from_secs(3);
+
+    /// A one-commit repository at `<root>/repo` with its refs packed, canonical.
+    fn fifo_fixture(scratch: &Scratch) -> PathBuf {
+        let dir = scratch.root.join("repo");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create repo: {err}"));
+        git_ok(scratch, &dir, ["init", "-q", "-b", "main"]).unwrap_or_else(|err| panic!("{err}"));
+        write(&dir.join("a.txt"), b"a\n").unwrap_or_else(|err| panic!("{err}"));
+        commit_all(scratch, &dir, "repo", T0).unwrap_or_else(|err| panic!("{err}"));
+        git_ok(scratch, &dir, ["pack-refs", "--all"]).unwrap_or_else(|err| panic!("{err}"));
+        dir.canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize repo: {err}"))
+    }
+
+    /// Replaces `path` with a fifo nothing writes to.
+    fn plant_fifo(scratch: &Scratch, path: &Path) {
+        std::fs::remove_file(path).unwrap_or_else(|err| panic!("remove {}: {err}", path.display()));
+        let made = testing::command("mkfifo", &scratch.root, &scratch.env)
+            .arg(path)
+            .output()
+            .unwrap_or_else(|err| panic!("mkfifo {}: {err}", path.display()));
+        assert_eq!(made.status.code(), Some(0), "mkfifo: {made:?}");
+    }
+
+    /// Fails unless `git <args>` in `repo` is still running after three
+    /// seconds: git itself blocks on the planted fifo.
+    fn assert_git_blocks(scratch: &Scratch, repo: &Path, args: &[&str]) {
+        let hung = testing::command("timeout", repo, &scratch.env)
+            .arg("3")
+            .arg("git")
+            .args(args)
+            .output()
+            .unwrap_or_else(|err| panic!("timeout git {args:?}: {err}"));
+        assert_eq!(
+            hung.status.code(),
+            Some(124),
+            "git {args:?} does not block here: {hung:?}"
+        );
+    }
+
+    /// `discover_within(repo, OPEN_DEADLINE)` on its own thread; panics when it
+    /// is still blocked after `STILL_BLOCKED`, so a hang fails the test instead of
+    /// stalling the suite.
+    fn bounded_discover(repo: &Path) -> Result<(), Error> {
+        let (sender, opened) = std::sync::mpsc::channel();
+        let start = repo.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = sender.send(Repo::discover_within(&start, OPEN_DEADLINE).map(|_| ()));
+        });
+        opened
+            .recv_timeout(STILL_BLOCKED)
+            .unwrap_or_else(|_| panic!("discover was still blocked after {STILL_BLOCKED:?}"))
+    }
+
+    /// Fails unless `result` is `Error::OpenTimedOut` for `repo` after `OPEN_DEADLINE`.
+    fn assert_open_timed_out(result: Result<(), Error>, repo: &Path) {
+        match result {
+            Err(Error::OpenTimedOut { start, after }) => {
+                assert_eq!(start, repo, "OpenTimedOut names the wrong start");
+                assert_eq!(after, OPEN_DEADLINE, "OpenTimedOut names the wrong limit");
+            }
+            other => panic!("expected OpenTimedOut, got {other:?}"),
+        }
+    }
+
+    /// A fifo where the repository's config should be blocks git; opening
+    /// the repository is abandoned at the deadline and fails, never hangs.
+    /// Control: the same repository opens before the fifo is planted.
+    #[test]
+    fn discover_stops_on_a_fifo_config() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("discover-fifo-config").expect("scratch");
+        let repo = fifo_fixture(&scratch);
+        bounded_discover(&repo).unwrap_or_else(|err| panic!("control discover: {err}"));
+        plant_fifo(&scratch, &repo.join(".git/config"));
+        assert_git_blocks(&scratch, &repo, &["rev-parse", "--git-dir"]);
+        assert_open_timed_out(bounded_discover(&repo), &repo);
+    }
+
+    /// A fifo where `packed-refs` should be blocks git; opening the repository
+    /// is abandoned at the deadline and fails, never hangs. Control: the same
+    /// repository opens before the fifo is planted.
+    #[test]
+    fn discover_stops_on_a_fifo_packed_refs() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("discover-fifo-packed-refs").expect("scratch");
+        let repo = fifo_fixture(&scratch);
+        bounded_discover(&repo).unwrap_or_else(|err| panic!("control discover: {err}"));
+        plant_fifo(&scratch, &repo.join(".git/packed-refs"));
+        assert_git_blocks(&scratch, &repo, &["for-each-ref"]);
+        assert_open_timed_out(bounded_discover(&repo), &repo);
+    }
 
     /// The trimmed stdout of `git <args>` run in `dir`.
     fn git_line(scratch: &Scratch, dir: &Path, args: &[&str]) -> String {

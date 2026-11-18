@@ -1236,6 +1236,45 @@ mod tests {
         }
     }
 
+    /// A `packed-refs` that is a fifo is refused as unreadable replace refs
+    /// naming it without being opened, so the check cannot block on it.
+    /// Control: a regular file naming the base is read.
+    #[test]
+    fn packed_refs_that_are_a_fifo_are_refused_unopened() {
+        let scratch = Scratch::new("packed-refs-fifo").expect("create scratch");
+        let regular = scratch.root.join("regular");
+        write(
+            &regular,
+            b"0000000000000000000000000000000000000000 refs/replace/x\n",
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        assert!(
+            packed_refs_name_the_base(&regular).unwrap_or_else(|err| panic!("control: {err}")),
+            "control: a regular packed-refs naming the base"
+        );
+
+        let fifo = scratch.root.join("packed-refs");
+        let made = testing::command("mkfifo", &scratch.root, &scratch.env)
+            .arg(&fifo)
+            .output()
+            .unwrap_or_else(|err| panic!("mkfifo {}: {err}", fifo.display()));
+        assert_eq!(made.status.code(), Some(0), "mkfifo: {made:?}");
+        let (sender, checked) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(packed_refs_name_the_base(&path));
+        });
+        let still_blocked = std::time::Duration::from_secs(3);
+        match checked.recv_timeout(still_blocked).unwrap_or_else(|_| {
+            panic!("packed_refs_name_the_base was still blocked after {still_blocked:?}")
+        }) {
+            Err(Error::ReplaceRefsUnreadable { path, .. }) => {
+                assert_eq!(path, fifo, "the path the refusal names");
+            }
+            other => panic!("expected Err(ReplaceRefsUnreadable), got {other:?}"),
+        }
+    }
+
     /// A SHA-1 id as git prints it.
     const SHA1_HEX: &str = "0123456789abcdef0123456789abcdef01234567";
 

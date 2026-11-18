@@ -125,6 +125,10 @@ pub enum Error {
         argv: Vec<OsString>,
         after: Duration,
     },
+    /// Opening the repository from `start` ran past `after`, wsx's limit, and
+    /// was abandoned: a file read while opening it (its config or
+    /// `packed-refs`, say) blocked, as a fifo there does.
+    OpenTimedOut { start: PathBuf, after: Duration },
     /// A `git` child exited 0 but printed nothing usable where wsx needs
     /// output; `expected` names what it should have printed.
     GitEmptyOutput {
@@ -261,6 +265,13 @@ impl fmt::Display for Error {
                 f,
                 "git {} ran past wsx's limit of {after:?} for one git child and was stopped",
                 render_argv(argv)
+            ),
+            Error::OpenTimedOut { start, after } => write!(
+                f,
+                "opening the repository from {} ran past wsx's limit of {after:?} and was stopped: \
+                 a file read while opening it, such as its config or packed-refs, did not answer \
+                 (a fifo there blocks git too)",
+                start.display()
             ),
             Error::GitEmptyOutput { argv, expected } => write!(
                 f,
@@ -480,6 +491,17 @@ mod tests {
         assert_eq!(
             timed_out.to_string(),
             "git config -z ran past wsx's limit of 10s for one git child and was stopped"
+        );
+
+        let open_timed_out = Error::OpenTimedOut {
+            start: PathBuf::from("/w"),
+            after: Duration::from_secs(10),
+        };
+        assert_eq!(
+            open_timed_out.to_string(),
+            "opening the repository from /w ran past wsx's limit of 10s and was stopped: a file read \
+             while opening it, such as its config or packed-refs, did not answer (a fifo there \
+             blocks git too)"
         );
 
         let relative = Error::RelativeRepoEnv {

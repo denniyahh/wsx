@@ -32,7 +32,7 @@ const MIN_GIT_VERSION: (u32, u32) = (2, 54);
 /// `Error::GitTimedOut`, so a read git itself would block on (a fifo where a
 /// config file or ref should be) stops the run instead of hanging it (D-29,
 /// the operator, 2026-11-18).
-const CHILD_DEADLINE: Duration = Duration::from_secs(10);
+pub(super) const CHILD_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How often `collect` looks for the exit of a child that has closed its
 /// output: git exits as it closes them, so a short interval adds no time a
