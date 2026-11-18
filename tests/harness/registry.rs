@@ -10,8 +10,9 @@
 
 use crate::action::Action;
 use crate::commands::{COMMANDS, CommandId, CommandSpec};
-use crate::fixture::{Fixture, RepoConfig, WORK};
-use crate::scenario::{Case, CaseKind, Entry, Kind, Scenario, validate_entry};
+use crate::fixture::{Fixture, Layout, RepoConfig, WORK};
+use crate::rust::command_word;
+use crate::scenario::{Case, CaseKind, Class, Entry, Kind, OracleSide, Scenario, validate_entry};
 
 /// Every HARN-06 case kind, with each action the oracle runs in that case and
 /// must therefore have an oracle-recorded scenario for (success criterion 5).
@@ -351,12 +352,76 @@ fn harn06_gaps_names_a_missing_oracle_action() {
 
 // ------------------------------------------------- IF-02 no-agent-files runs
 
+/// What a no-GSD scenario offers D-15: the command its no-GSD subject runs,
+/// that subject's expected exit, and the expected exits of its devflow-layout
+/// parity controls running the same command.
+struct NoAgentFilesRun {
+    command: &'static str,
+    exit: i32,
+    parity_exits: Vec<i32>,
+}
+
+/// The no-agent-files run `scenario` provides, if it is tagged no-GSD and its
+/// subject runs on the no-GSD layout with an expected outcome.
+fn no_agent_files_run(scenario: &Scenario) -> Option<NoAgentFilesRun> {
+    let subject = &scenario.subject;
+    if scenario.harn06 != Some(CaseKind::NoGsd) || !matches!(subject.config.layout, Layout::NoGsd) {
+        return None;
+    }
+    let command = command_word(&subject.action);
+    let parity_exits = scenario
+        .controls
+        .iter()
+        .map(|control| &control.case)
+        .filter(|case| {
+            matches!(case.config.layout, Layout::Devflow)
+                && command_word(&case.action) == command
+                && case.class == Class::Parity
+                && matches!(case.oracle, OracleSide::SameAsExpected)
+        })
+        .filter_map(|case| case.expected.as_ref().map(|outcome| outcome.exit))
+        .collect();
+    Some(NoAgentFilesRun {
+        command,
+        exit: subject.expected.as_ref()?.exit,
+        parity_exits,
+    })
+}
+
 /// Each command in `commands` without an enabled Rust run in a repository
 /// that has no GSD, devflow or agent files, behaving as in the configured
-/// fixture (IF-02, D-15).
+/// fixture (IF-02, D-15): a gap unless an entry with its Rust side enabled
+/// has a no-GSD subject running the command and a devflow-layout parity
+/// control running it too, expecting the same exit.
 fn no_agent_file_gaps(commands: &[CommandSpec], entries: &[Entry]) -> Vec<String> {
-    let _ = (commands, entries);
-    Vec::new()
+    let runs: Vec<NoAgentFilesRun> = entries
+        .iter()
+        .filter(|entry| entry.rust_disabled.is_none())
+        .filter_map(|entry| no_agent_files_run(&(entry.build)()))
+        .filter(|run| !run.parity_exits.is_empty())
+        .collect();
+    let mut gaps = Vec::new();
+    for command in commands {
+        let name = command.name;
+        let candidates: Vec<&NoAgentFilesRun> =
+            runs.iter().filter(|run| run.command == name).collect();
+        let Some(first) = candidates.first() else {
+            gaps.push(format!(
+                "{name}: no enabled Rust run in a repository without GSD, devflow or agent files (IF-02, D-15)"
+            ));
+            continue;
+        };
+        if !candidates
+            .iter()
+            .any(|run| run.parity_exits.contains(&run.exit))
+        {
+            gaps.push(format!(
+                "{name}: its no-agent-files run expects exit {}, the configured fixture's parity case {} (IF-02, D-15)",
+                first.exit, first.parity_exits[0]
+            ));
+        }
+    }
+    gaps
 }
 
 /// Every command in the binary's own table has an enabled no-agent-files run
@@ -404,6 +469,44 @@ fn a_disabled_no_agent_files_run_is_a_gap() {
         no_agent_file_gaps(COMMANDS, &entries),
         [
             "check: no enabled Rust run in a repository without GSD, devflow or agent files (IF-02, D-15)"
+        ]
+    );
+}
+
+/// `check::no_gsd_repo` with its devflow-layout controls expecting exit 1.
+fn no_gsd_repo_with_a_mismatched_parity_case() -> Scenario {
+    let entry = crate::all_scenarios()
+        .into_iter()
+        .find(|entry| entry.module == "check" && entry.name == "no_gsd_repo")
+        .expect("check::no_gsd_repo is registered");
+    let mut scenario = (entry.build)();
+    for control in &mut scenario.controls {
+        if matches!(control.case.config.layout, Layout::Devflow) {
+            control
+                .case
+                .expected
+                .as_mut()
+                .expect("the control states its outcome")
+                .exit = 1;
+        }
+    }
+    scenario
+}
+
+/// A no-agent-files run whose expected exit differs from the configured
+/// fixture's parity case is named with both exits.
+#[test]
+fn a_no_agent_files_run_that_differs_from_the_configured_fixture_is_a_gap() {
+    let mut entries = crate::all_scenarios();
+    for entry in &mut entries {
+        if entry.module == "check" && entry.name == "no_gsd_repo" {
+            entry.build = no_gsd_repo_with_a_mismatched_parity_case;
+        }
+    }
+    assert_eq!(
+        no_agent_file_gaps(COMMANDS, &entries),
+        [
+            "check: its no-agent-files run expects exit 0, the configured fixture's parity case 1 (IF-02, D-15)"
         ]
     );
 }
