@@ -65,6 +65,10 @@ pub enum ProblemKind {
     RedundantBuiltin,
     /// A file under the hooks directory not committed executable, or a
     /// symlink there that does not resolve to one (DIV-03).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "check::run reports it from 05-06 task 2")
+    )]
     HookNotExecutable,
 }
 

@@ -17,6 +17,8 @@
 //! root, an absolute target, an untracked or non-directory component, or an
 //! exhausted budget fails, naming the hook; nothing unresolved passes.
 
+#![expect(dead_code, reason = "check::run calls it from 05-06 task 2")]
+
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{Problem, ProblemKind};
@@ -51,23 +53,187 @@ pub enum HookStatus {
     },
 }
 
-/// The tree directory `value` names, or why it is not checked.
+/// The tree directory `value`, git's `core.hooksPath`, names, or why it is not
+/// checked: an absolute value is outside every commit; otherwise one leading
+/// `./` is dropped and the rest must be a path `normalize_path` accepts (one
+/// trailing `/` stripped; empty, dot, dot-dot and empty components refused).
 pub fn normalise(value: &[u8]) -> Result<Vec<u8>, HookStatus> {
-    Ok(value.to_vec())
+    let not_checked = |reason: &str| HookStatus::NotChecked {
+        value: value.to_vec(),
+        reason: reason.to_owned(),
+    };
+    if value.starts_with(b"/") {
+        return Err(not_checked(ABSOLUTE_REASON));
+    }
+    let relative = value.strip_prefix(b"./").unwrap_or(value);
+    normalize_path(relative).map_err(|_| not_checked(OUTSIDE_REASON))
 }
 
-/// `Checked` when `listing`, the tip of `branch`, holds a directory at `dir`.
-pub fn at_tip(_value: &[u8], dir: Vec<u8>, _listing: &[ListedEntry], _branch: &[u8]) -> HookStatus {
-    HookStatus::Checked { dir }
+/// `Checked` when `listing`, the tree at the tip of `branch`, holds a
+/// directory at `dir`, the normalised `value`; otherwise not checked, naming
+/// both.
+pub fn at_tip(value: &[u8], dir: Vec<u8>, listing: &[ListedEntry], branch: &[u8]) -> HookStatus {
+    if listing
+        .iter()
+        .any(|entry| entry.mode == MODE_TREE && entry.path == dir)
+    {
+        return HookStatus::Checked { dir };
+    }
+    HookStatus::NotChecked {
+        value: value.to_vec(),
+        reason: format!(
+            "{} is not a directory at the tip of {}",
+            quoted(&dir),
+            quoted(branch)
+        ),
+    }
 }
 
-/// The hook problems under `dir` in `listing`.
+/// The hook problems under `dir` in `listing`, a whole-tree listing, sorted by
+/// path bytes. `targets` holds the link text of every symlink in the listing
+/// by its id. Every entry strictly below `dir` that is not a directory is a
+/// hook: 100755 passes, a symlink passes when it resolves to a 100755 blob,
+/// anything else is a problem.
 pub fn evaluate_hooks(
-    _dir: &[u8],
-    _listing: &[ListedEntry],
-    _targets: &BTreeMap<ObjectId, Vec<u8>>,
+    dir: &[u8],
+    listing: &[ListedEntry],
+    targets: &BTreeMap<ObjectId, Vec<u8>>,
 ) -> Vec<Problem> {
-    Vec::new()
+    let index: BTreeMap<&[u8], &ListedEntry> = listing
+        .iter()
+        .map(|entry| (entry.path.as_slice(), entry))
+        .collect();
+    let mut problems: Vec<Problem> = listing
+        .iter()
+        .filter(|entry| entry.mode != MODE_TREE && below(dir, &entry.path))
+        .filter_map(|entry| {
+            judge(entry, &index, targets).map(|detail| Problem {
+                kind: ProblemKind::HookNotExecutable,
+                path: entry.path.clone(),
+                detail: Some(detail),
+            })
+        })
+        .collect();
+    problems.sort_by(|a, b| a.path.cmp(&b.path));
+    problems
+}
+
+/// Whether `path` is strictly below the directory `dir`.
+fn below(dir: &[u8], path: &[u8]) -> bool {
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.len() > 1 && rest[0] == b'/')
+}
+
+/// What is wrong with the hook `entry`, or `None` when it passes.
+fn judge(
+    entry: &ListedEntry,
+    index: &BTreeMap<&[u8], &ListedEntry>,
+    targets: &BTreeMap<ObjectId, Vec<u8>>,
+) -> Option<String> {
+    match entry.mode {
+        MODE_EXECUTABLE => None,
+        MODE_SYMLINK => resolve(entry, index, targets).err().map(|reason| {
+            format!("a symlink that does not resolve to a tracked executable: {reason}")
+        }),
+        mode => Some(format!("committed {mode:06o}; commit it with mode 100755")),
+    }
+}
+
+/// A path component still to walk, and the link text it came from.
+type Pending<'a> = (&'a [u8], &'a [u8]);
+
+/// Resolves the symlink `link` inside the tree `index` holds: `Ok` when it
+/// reaches a 100755 blob, otherwise the reason it does not.
+fn resolve<'a>(
+    link: &'a ListedEntry,
+    index: &BTreeMap<&[u8], &'a ListedEntry>,
+    targets: &'a BTreeMap<ObjectId, Vec<u8>>,
+) -> Result<(), String> {
+    let mut resolved: Vec<&[u8]> = link.path.split(|byte| *byte == b'/').collect();
+    resolved.pop();
+    let mut pending: VecDeque<Pending<'a>> = VecDeque::new();
+    let mut followed = 0;
+    splice(link, targets, &mut pending, &mut followed)?;
+    while let Some((name, text)) = pending.pop_front() {
+        match name {
+            b"" | b"." => {}
+            b".." => {
+                if resolved.pop().is_none() {
+                    return Err(format!("its target {} leaves the tree", quoted(text)));
+                }
+            }
+            _ => {
+                resolved.push(name);
+                let path = resolved.join(&b'/');
+                let Some(entry) = index.get(path.as_slice()) else {
+                    return Err(format!("its target {} is not tracked", quoted(&path)));
+                };
+                let last = pending.is_empty();
+                match entry.mode {
+                    MODE_TREE if last => {
+                        return Err(format!("its target {} is a directory", quoted(&path)));
+                    }
+                    MODE_TREE => {}
+                    MODE_SYMLINK => {
+                        resolved.pop();
+                        splice(entry, targets, &mut pending, &mut followed)?;
+                    }
+                    MODE_EXECUTABLE if last => return Ok(()),
+                    mode if last => {
+                        return Err(format!(
+                            "its target {} is committed {mode:06o}",
+                            quoted(&path)
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "its target passes through {}, which is not a directory",
+                            quoted(&path)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let path = resolved.join(&b'/');
+    let shown = if path.is_empty() { b".".to_vec() } else { path };
+    Err(format!("its target {} is a directory", quoted(&shown)))
+}
+
+/// Follows the symlink `link`: counts it against `SYMLINK_HOPS` and puts the
+/// components of its target in front of `pending`, to be walked from the
+/// link's parent. An absolute target, an exhausted budget or a link text not
+/// in `targets` is the reason it does not resolve.
+fn splice<'a>(
+    link: &ListedEntry,
+    targets: &'a BTreeMap<ObjectId, Vec<u8>>,
+    pending: &mut VecDeque<Pending<'a>>,
+    followed: &mut usize,
+) -> Result<(), String> {
+    *followed += 1;
+    if *followed > SYMLINK_HOPS {
+        return Err(format!(
+            "it is one of more than {SYMLINK_HOPS} symlinks in a row"
+        ));
+    }
+    let Some(text) = targets.get(&link.id) else {
+        return Err(format!(
+            "the link text of {} was not read",
+            quoted(&link.path)
+        ));
+    };
+    if text.starts_with(b"/") {
+        return Err(format!("its target {} is absolute", quoted(text)));
+    }
+    for name in text.split(|byte| *byte == b'/').rev() {
+        pending.push_front((name, text.as_slice()));
+    }
+    Ok(())
+}
+
+/// `bytes` in git's C-style quoting, for prose.
+fn quoted(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&c_quote(bytes)).into_owned()
 }
 
 #[cfg(test)]
