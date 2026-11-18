@@ -36,25 +36,116 @@ const REFLOG_ARGS: [&str; 8] = [
 ];
 
 impl Repo {
-    /// Stub.
-    pub fn ref_moved_at(&self, _git: &Git, _full_ref: &[u8]) -> Result<Option<i64>, Error> {
-        Ok(None)
+    /// The unix time of the newest reflog entry of `full_ref`, from one
+    /// `git --no-lazy-fetch reflog show --no-show-signature -n1 --date=unix
+    /// --format=%gd --end-of-options <full_ref> --` child; `None` when git
+    /// keeps no reflog for it (git prints nothing and exits 0).
+    /// `--no-show-signature` keeps a `log.showSignature` set in any scope
+    /// from printing a signature check on stdout before the selector.
+    /// `full_ref` begins `refs/` and follows `--end-of-options`, so it is
+    /// never read as an option.
+    ///
+    /// The child's failure is `Error::GitFailed`; output that is not one
+    /// `<selector>@{<unix time>}` line is `Error::GitBadOutput`.
+    pub fn ref_moved_at(&self, git: &Git, full_ref: &[u8]) -> Result<Option<i64>, Error> {
+        debug_assert!(full_ref.starts_with(b"refs/"), "a full ref name");
+        let mut argv: Vec<OsString> = REFLOG_ARGS.iter().map(OsString::from).collect();
+        argv.push(OsStr::from_bytes(full_ref).to_os_string());
+        argv.push(OsString::from("--"));
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = git.run(cwd, &argv)?;
+        parse_reflog_selector(&stdout).map_err(|problem| Error::GitBadOutput { argv, problem })
     }
 
-    /// Stub.
+    /// The newest `FETCH_HEAD` modification time across the main worktree
+    /// and every linked worktree, in signed seconds since the epoch; `None`
+    /// when no worktree has one. No child: the paths come from
+    /// `fetch_head_paths`. A missing file is skipped; any other failure to
+    /// stat one is `Error::Io` naming it.
     pub fn fetched_at(&self) -> Result<Option<i64>, Error> {
-        Ok(None)
+        let mut newest = None;
+        for path in self.fetch_head_paths()? {
+            let modified = match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+                Ok(modified) => modified,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(Error::Io {
+                        what: format!("stat {}", path.display()),
+                        source,
+                    });
+                }
+            };
+            let secs = epoch_seconds(modified);
+            newest = Some(newest.map_or(secs, |found: i64| found.max(secs)));
+        }
+        Ok(newest)
     }
 
-    /// Stub.
+    /// Every `FETCH_HEAD` git may keep for this repository: git writes one
+    /// per worktree, so `<common>/FETCH_HEAD` for the main worktree, then
+    /// `<common>/worktrees/<id>/FETCH_HEAD` for each linked worktree, sorted
+    /// by id. No `worktrees` directory adds nothing; any other failure to
+    /// list it is `Error::Io` naming it.
     fn fetch_head_paths(&self) -> Result<Vec<PathBuf>, Error> {
-        Ok(Vec::new())
+        let common = self.common_dir();
+        let mut paths = vec![common.join("FETCH_HEAD")];
+        let worktrees = common.join("worktrees");
+        let entries = match std::fs::read_dir(&worktrees) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(paths),
+            Err(source) => {
+                return Err(Error::Io {
+                    what: format!("read {}", worktrees.display()),
+                    source,
+                });
+            }
+        };
+        let mut linked = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::Io {
+                what: format!("read an entry of {}", worktrees.display()),
+                source,
+            })?;
+            linked.push(entry.path());
+        }
+        linked.sort();
+        paths.extend(linked.into_iter().map(|dir| dir.join("FETCH_HEAD")));
+        Ok(paths)
     }
 }
 
-/// Stub.
-fn parse_reflog_selector(_stdout: &[u8]) -> Result<Option<i64>, String> {
-    Ok(None)
+/// `time` in whole seconds since the epoch, negative before it, saturating
+/// at the bounds of `i64`.
+fn epoch_seconds(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_secs()).map_or(i64::MIN, |secs| -secs),
+    }
+}
+
+/// The unix time in `git reflog show --format=%gd --date=unix` output: empty
+/// output is `None`; otherwise exactly one LF-terminated line whose text
+/// after the last `@{` is decimal digits and a closing `}`. Anything else
+/// is `Err` naming the problem.
+fn parse_reflog_selector(stdout: &[u8]) -> Result<Option<i64>, String> {
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err("the output does not end in LF".to_owned());
+    };
+    if line.contains(&b'\n') {
+        return Err("more than one line".to_owned());
+    }
+    let Some(at) = line.windows(2).rposition(|pair| pair == b"@{") else {
+        return Err("no @{ in the selector".to_owned());
+    };
+    line[at + 2..]
+        .strip_suffix(b"}")
+        .filter(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
+        .and_then(|digits| std::str::from_utf8(digits).ok()?.parse().ok())
+        .map(Some)
+        .ok_or_else(|| "the selector's time is not a unix time".to_owned())
 }
 
 #[cfg(test)]

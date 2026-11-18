@@ -1,7 +1,9 @@
-//! Reads of the repository's own config: wsx's keys and the remotes it
-//! defines. Both come from one `git config` child per call, filtered to this
-//! repository's own file (keys) or its local and worktree scopes (remotes),
-//! so what wsx reads is what git reads, as fresh as the call.
+//! Reads of the repository's config: wsx's keys, the remotes it defines,
+//! and git's effective `core.hooksPath`. Keys and remotes come from one
+//! `git config` child per call, filtered to this repository's own file
+//! (keys) or its local and worktree scopes (remotes); the hooks path from
+//! one `git config --get` child, as git's hook runner sees it. What wsx
+//! reads is what git reads, as fresh as the call.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -105,9 +107,41 @@ impl Repo {
 }
 
 impl Repo {
-    /// Stub.
-    pub fn hooks_path(&self, _git: &Git) -> Result<Option<Vec<u8>>, Error> {
-        Ok(None)
+    /// git's effective `core.hooksPath` (D-03, phase 4 D-23): the value
+    /// `git config -z --type=path --get core.hooksPath` prints, from any
+    /// scope git reads, `~` expanded as git expands it, raw bytes; `None`
+    /// when it is unset. The child runs in the worktree root (the git dir of
+    /// a bare repository) without `GIT_CONFIG`, as `read_config` does:
+    /// `git config` alone honours that variable, and git's hook runner reads
+    /// `core.hooksPath` from the repository's config, so dropping it gives the
+    /// directory git's hooks actually run from.
+    ///
+    /// git's exit 1 with nothing on stdout or stderr is unset; any other
+    /// failure is `Error::GitFailed`, and an exit 0 whose stdout does not end
+    /// in exactly one NUL is `Error::GitBadOutput`.
+    pub fn hooks_path(&self, git: &Git) -> Result<Option<Vec<u8>>, Error> {
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let output = git.run_without_var(cwd, HOOKS_PATH_ARGS, "GIT_CONFIG")?;
+        let argv = || HOOKS_PATH_ARGS.iter().map(OsString::from).collect();
+        let unset =
+            output.status.code() == Some(1) && output.stderr.is_empty() && output.stdout.is_empty();
+        if unset {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(Error::GitFailed {
+                argv: argv(),
+                status: output.status.code(),
+                stderr: output.stderr,
+            });
+        }
+        match output.stdout.strip_suffix(b"\0") {
+            Some(value) if !value.contains(&0) => Ok(Some(value.to_vec())),
+            _ => Err(Error::GitBadOutput {
+                argv: argv(),
+                problem: "the value does not end in exactly one NUL".to_owned(),
+            }),
+        }
     }
 }
 

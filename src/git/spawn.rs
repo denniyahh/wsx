@@ -472,11 +472,14 @@ impl Git {
     /// Runs `git <args>` in `worktree` as `run` does, with `var` removed
     /// from the child's environment even when `worktree` is wsx's own
     /// worktree, whose children otherwise keep the whole snapshot. It exists
-    /// for one child: the config read drops `GIT_CONFIG`, which `git config`
-    /// alone honours and which would make it read only that file, while every
-    /// other git command, `git push` included, reads the repository's config
-    /// (04-17, the operator). No other child loses a variable its target
-    /// would keep.
+    /// for two children, both `git config` reads that drop `GIT_CONFIG`,
+    /// which `git config` alone honours and which would make it read only
+    /// that file, while every other git command, `git push` included, reads
+    /// the repository's config (04-17, the operator): `Repo::read_config`,
+    /// and `Repo::hooks_path`, whose `core.hooksPath` git's hook runner
+    /// (`git push`, `git commit`) reads from the repository's config as
+    /// every other command does, so the value read is the one git's hooks
+    /// use. No other child loses a variable its target would keep.
     ///
     /// It returns the child's whole `Output`, whatever its exit, so the
     /// caller can tell git's exit 1 for "no key matched" (nothing printed)
