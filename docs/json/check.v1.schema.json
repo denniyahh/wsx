@@ -1,1 +1,272 @@
-{}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "wsx check --json, schema version 1",
+  "description": "The one object `wsx check --json` prints on stdout: a success object for exit 0 and 1, a failure object for exit 2 to 6. See docs/json/README.md for the envelope, the byte encoding and the versioning rule.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/success"
+    },
+    {
+      "$ref": "#/$defs/failure"
+    }
+  ],
+  "$defs": {
+    "bytes": {
+      "description": "A git path or name: a JSON string when its bytes are UTF-8, else the lowercase hex of the raw bytes.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "hex"
+          ],
+          "properties": {
+            "hex": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{2})+$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "nullable_bytes": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tip": {
+      "description": "A commit id: SHA-1 (40 hex digits) or SHA-256 (64).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "success": {
+      "type": "object",
+      "description": "The check ran: exit 0 with no problem, exit 1 with at least one.",
+      "required": [
+        "command",
+        "schema_version",
+        "configured",
+        "workspace",
+        "integration",
+        "staleness",
+        "hooks",
+        "problems"
+      ],
+      "properties": {
+        "command": {
+          "const": "check"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "workspace": {
+          "type": "object",
+          "required": [
+            "branch",
+            "tip"
+          ],
+          "properties": {
+            "branch": {
+              "$ref": "#/$defs/bytes"
+            },
+            "tip": {
+              "$ref": "#/$defs/tip"
+            }
+          },
+          "additionalProperties": false
+        },
+        "integration": {
+          "type": "object",
+          "required": [
+            "branch",
+            "ref",
+            "tip"
+          ],
+          "properties": {
+            "branch": {
+              "$ref": "#/$defs/bytes"
+            },
+            "ref": {
+              "$ref": "#/$defs/bytes"
+            },
+            "tip": {
+              "$ref": "#/$defs/tip"
+            }
+          },
+          "additionalProperties": false
+        },
+        "staleness": {
+          "type": "object",
+          "required": [
+            "applies",
+            "reason",
+            "ref_moved_at",
+            "ref_moved_age_seconds",
+            "ref_moved_reason",
+            "fetched_at",
+            "fetched_age_seconds",
+            "fetched_reason"
+          ],
+          "properties": {
+            "applies": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ref_moved_at": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ref_moved_age_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ref_moved_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fetched_at": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "fetched_age_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "fetched_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "hooks": {
+          "type": "object",
+          "required": [
+            "path",
+            "checked",
+            "reason"
+          ],
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/nullable_bytes"
+            },
+            "checked": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "path",
+              "detail"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "undeclared_added",
+                  "undeclared_modified",
+                  "undeclared_deleted",
+                  "stale_only",
+                  "stale_modified",
+                  "redundant_builtin",
+                  "hook_not_executable"
+                ]
+              },
+              "path": {
+                "$ref": "#/$defs/bytes"
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "description": "The check could not run: exit 2 to 6, the exit code in error.exit_code (docs/exit-codes.md).",
+      "required": [
+        "command",
+        "schema_version",
+        "error"
+      ],
+      "properties": {
+        "command": {
+          "const": "check"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "kind",
+            "message",
+            "exit_code"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string"
+            },
+            "exit_code": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 6
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
