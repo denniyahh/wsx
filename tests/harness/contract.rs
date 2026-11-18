@@ -7,12 +7,16 @@
 //! `harness-contract-<name>-` tree under `CARGO_TARGET_TMPDIR`, in the
 //! hermetic environment, and spawns the built `wsx` there.
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
+use std::time::UNIX_EPOCH;
 
 use serde_json::{Map, Value, json};
 
+use crate::check::{fetch_moved_develop, lose_origin};
 use crate::commands::{COMMANDS, CommandId, CommandSpec};
 use crate::env::{ScenarioDirs, command, hermetic_env, inherited_env};
 use crate::fixture::{Fixture, RepoConfig, WORK};
@@ -452,4 +456,264 @@ fn every_command_prints_one_json_object() {
             }
         }
     }
+}
+
+/// The staleness object of a run whose stdout is one object.
+fn staleness_object(output: &Output) -> Map<String, Value> {
+    match one_object(output).get("staleness") {
+        Some(Value::Object(staleness)) => staleness.clone(),
+        other => panic!("staleness is not an object: {other:?}"),
+    }
+}
+
+/// `git reflog exists refs/remotes/origin/develop`'s exit code in `work`.
+fn reflog_exists(contract: &Contract) -> Option<i32> {
+    contract
+        .fixture
+        .git(WORK, ["reflog", "exists", "refs/remotes/origin/develop"])
+        .unwrap_or_else(|err| panic!("{err}"))
+        .status
+        .code()
+}
+
+/// The `FETCH_HEAD` path git names for `work`.
+fn fetch_head(contract: &Contract) -> std::path::PathBuf {
+    let path = contract.git(&["rev-parse", "--git-path", "FETCH_HEAD"]);
+    contract
+        .fixture
+        .checkout(WORK)
+        .join(OsStr::from_bytes(path.trim_ascii_end()))
+}
+
+/// The preset whose `work` fetched a moved `origin/develop`.
+fn fetched(name: &str) -> Contract {
+    let mut contract = contract(name);
+    fetch_moved_develop(&mut contract.fixture).unwrap_or_else(|err| panic!("{err}"));
+    contract
+}
+
+/// `work` is the only worktree `git worktree list --porcelain` lists.
+fn assert_only_work(contract: &Contract) {
+    let list = String::from_utf8(contract.git(&["worktree", "list", "--porcelain"]))
+        .expect("worktree list prints text");
+    let worktrees = list
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(worktrees, 1, "worktrees: {list}");
+}
+
+/// A fresh clone: git keeps no reflog for `origin/develop` and `work` has no
+/// `FETCH_HEAD`, so both times are null with their reasons.
+#[test]
+fn check_json_staleness_after_a_clone() {
+    let contract = contract("staleness_after_a_clone");
+    assert_eq!(
+        reflog_exists(&contract),
+        Some(1),
+        "reflog exists after a clone"
+    );
+    assert_only_work(&contract);
+    assert!(!fetch_head(&contract).exists(), "FETCH_HEAD after a clone");
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        Value::Object(staleness_object(&output)),
+        json!({
+            "applies": true,
+            "reason": null,
+            "ref_moved_at": null,
+            "ref_moved_age_seconds": null,
+            "ref_moved_reason": "no reflog for refs/remotes/origin/develop",
+            "fetched_at": null,
+            "fetched_age_seconds": null,
+            "fetched_reason": "no FETCH_HEAD",
+        })
+    );
+}
+
+/// After a fetch that moved `origin/develop`: `ref_moved_at` is the time git
+/// prints for the newest reflog entry, `fetched_at` the mtime of the only
+/// worktree's `FETCH_HEAD`, and both ages are 0 or more.
+#[test]
+fn check_json_staleness_after_a_fetch() {
+    let contract = fetched("staleness_after_a_fetch");
+    assert_eq!(
+        reflog_exists(&contract),
+        Some(0),
+        "reflog exists after a fetch"
+    );
+    let selector = String::from_utf8(contract.git(&[
+        "reflog",
+        "show",
+        "-n1",
+        "--date=unix",
+        "--format=%gd",
+        "refs/remotes/origin/develop",
+    ]))
+    .expect("reflog prints text");
+    let moved: i64 = selector
+        .trim_end()
+        .rsplit_once("@{")
+        .and_then(|(_, time)| time.strip_suffix('}'))
+        .and_then(|time| time.parse().ok())
+        .unwrap_or_else(|| panic!("no unix time in {selector:?}"));
+    assert_only_work(&contract);
+    let modified = fs::metadata(fetch_head(&contract))
+        .and_then(|meta| meta.modified())
+        .expect("FETCH_HEAD's mtime");
+    let fetched = i64::try_from(
+        modified
+            .duration_since(UNIX_EPOCH)
+            .expect("an mtime after the epoch")
+            .as_secs(),
+    )
+    .expect("seconds fit i64");
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(!one_object(&output).contains_key("error"), "no error key");
+    let staleness = staleness_object(&output);
+    assert_eq!(staleness["applies"], json!(true), "applies");
+    assert_eq!(staleness["ref_moved_at"], json!(moved), "ref_moved_at");
+    assert_eq!(staleness["fetched_at"], json!(fetched), "fetched_at");
+    for age in ["ref_moved_age_seconds", "fetched_age_seconds"] {
+        assert!(
+            staleness[age].as_i64().is_some_and(|seconds| seconds >= 0),
+            "{age}: {}",
+            staleness[age]
+        );
+    }
+    assert_eq!(
+        staleness["ref_moved_reason"],
+        Value::Null,
+        "ref_moved_reason"
+    );
+    assert_eq!(staleness["fetched_reason"], Value::Null, "fetched_reason");
+}
+
+/// No remote, and no `wsx.baseRemote` or `wsx.pushRemote` naming one, so
+/// the integration ref is the preset's local `develop` (phase 4 D-07):
+/// staleness does not apply and no time is read.
+#[test]
+fn check_json_staleness_does_not_apply_to_a_local_branch() {
+    let contract = contract("staleness_local_branch");
+    contract.tip("refs/heads/develop");
+    contract.git(&["remote", "remove", "origin"]);
+    contract.git(&["config", "--local", "--unset", "wsx.baseRemote"]);
+    contract.git(&["config", "--local", "--unset", "wsx.pushRemote"]);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let object = one_object(&output);
+    assert_eq!(
+        object["integration"]["ref"],
+        json!("refs/heads/develop"),
+        "integration ref"
+    );
+    assert_eq!(
+        Value::Object(staleness_object(&output)),
+        json!({
+            "applies": false,
+            "reason": "refs/heads/develop is a local branch; it is not fetched",
+            "ref_moved_at": null,
+            "ref_moved_age_seconds": null,
+            "ref_moved_reason": null,
+            "fetched_at": null,
+            "fetched_age_seconds": null,
+            "fetched_reason": null,
+        })
+    );
+}
+
+/// The remote unreachable after a fetch that moved `origin/develop`: exit 0,
+/// and both times and ages are integers with no reason (D-13).
+#[test]
+fn check_json_staleness_with_the_remote_unreachable() {
+    let mut contract = fetched("staleness_remote_unreachable");
+    lose_origin(&mut contract.fixture).unwrap_or_else(|err| panic!("{err}"));
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let staleness = staleness_object(&output);
+    assert_eq!(staleness["applies"], json!(true), "applies");
+    for key in [
+        "ref_moved_at",
+        "ref_moved_age_seconds",
+        "fetched_at",
+        "fetched_age_seconds",
+    ] {
+        assert!(staleness[key].is_i64(), "{key}: {}", staleness[key]);
+    }
+    assert_eq!(
+        staleness["ref_moved_reason"],
+        Value::Null,
+        "ref_moved_reason"
+    );
+    assert_eq!(staleness["fetched_reason"], Value::Null, "fetched_reason");
+}
+
+/// A `FETCH_HEAD` that cannot be stat'ed (a regular file at
+/// `<common>/worktrees/stray`) makes `fetched_at` null with its reason and
+/// leaves the exit code and `ref_moved_at` as they were (D-13); the same
+/// repository without the stray file is the control.
+#[test]
+fn check_json_staleness_read_failure_keeps_the_exit_code() {
+    let contract = fetched("staleness_read_failure");
+    let control = contract.wsx(&["check", "--json"]);
+    assert_eq!(
+        control.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&control)
+    );
+    let before = staleness_object(&control);
+    assert!(
+        before["fetched_at"].is_i64(),
+        "control fetched_at: {}",
+        before["fetched_at"]
+    );
+    let common = contract.git(&["rev-parse", "--git-common-dir"]);
+    let worktrees = contract
+        .fixture
+        .checkout(WORK)
+        .join(OsStr::from_bytes(common.trim_ascii_end()))
+        .join("worktrees");
+    fs::create_dir_all(&worktrees).expect("create <common>/worktrees");
+    fs::write(
+        worktrees.join("stray"),
+        b"not a worktree
+",
+    )
+    .expect("write the stray file");
+    let stat = fs::metadata(worktrees.join("stray").join("FETCH_HEAD"));
+    assert!(
+        stat.as_ref()
+            .is_err_and(|err| err.kind() != std::io::ErrorKind::NotFound),
+        "stat of stray/FETCH_HEAD: {stat:?}"
+    );
+    contract.git(&["worktree", "list", "--porcelain"]);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let staleness = staleness_object(&output);
+    assert_eq!(staleness["fetched_at"], Value::Null, "fetched_at");
+    assert_eq!(
+        staleness["fetched_age_seconds"],
+        Value::Null,
+        "fetched_age_seconds"
+    );
+    assert!(
+        staleness["fetched_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("FETCH_HEAD could not be read: ")),
+        "fetched_reason: {}",
+        staleness["fetched_reason"]
+    );
+    assert!(
+        staleness["ref_moved_at"].is_i64(),
+        "ref_moved_at: {}",
+        staleness["ref_moved_at"]
+    );
+    assert_eq!(
+        staleness["ref_moved_reason"],
+        Value::Null,
+        "ref_moved_reason"
+    );
 }

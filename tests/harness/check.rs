@@ -1,4 +1,5 @@
-//! Divergence-check scenarios (plans 02-07, 02-13, 03-02, 05-04 and 05-06).
+//! Divergence-check scenarios (plans 02-07, 02-13, 03-02, 05-04, 05-06 and
+//! 05-07).
 //!
 //! Each scenario runs the check that the workspace branch differs from the
 //! integration branch only in the paths its manifests allow, and states the
@@ -983,6 +984,105 @@ fn hooks_path_not_in_the_tree() -> Scenario {
     )
 }
 
+/// The integration ref of the devflow preset.
+const ORIGIN_DEVELOP: &str = "refs/remotes/origin/develop";
+
+/// Fixture steps: `origin/develop` gains an empty commit, so its tree stays
+/// the preset's, and `work` fetches it. Asserts git's own answers: the ref
+/// now has a reflog, and the `FETCH_HEAD` git names for `work` exists.
+pub fn fetch_moved_develop(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.advance_remote("origin", "develop", |fixture, clone| {
+        fixture
+            .git_tick(
+                clone,
+                [
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    "chore: move develop",
+                ],
+            )
+            .map(drop)
+    })?;
+    fixture.git_ok(WORK, ["fetch", "--quiet", "origin"])?;
+    fixture.git_ok(WORK, ["reflog", "exists", ORIGIN_DEVELOP])?;
+    let fetch_head = fixture.git_ok(WORK, ["rev-parse", "--git-path", "FETCH_HEAD"])?;
+    let fetch_head = fixture
+        .checkout(WORK)
+        .join(OsStr::from_bytes(fetch_head.trim_ascii_end()));
+    if !fetch_head.is_file() {
+        return Err(format!(
+            "no FETCH_HEAD at {} after the fetch",
+            fetch_head.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Fixture step: `origin`'s URL in `work` names `<root>/remotes/gone.git`,
+/// a path that does not exist, so any fetch from it would fail.
+pub fn lose_origin(fixture: &mut Fixture) -> Result<(), String> {
+    let gone = fixture.root.join("remotes").join("gone.git");
+    fixture.git_ok(
+        WORK,
+        [
+            OsStr::new("remote"),
+            OsStr::new("set-url"),
+            OsStr::new("origin"),
+            gone.as_os_str(),
+        ],
+    )?;
+    let url = fixture.git_ok(WORK, ["remote", "get-url", "origin"])?;
+    if url.trim_ascii_end() != gone.as_os_str().as_bytes() {
+        return Err(format!(
+            "origin's URL is {}, not {}",
+            url.escape_ascii(),
+            gone.display()
+        ));
+    }
+    match fs::symlink_metadata(&gone) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => Err(format!("{} is there: {other:?}", gone.display())),
+    }
+}
+
+/// Fixture steps: `fetch_moved_develop`, then `lose_origin`.
+fn fetch_then_lose_origin(fixture: &mut Fixture) -> Result<(), String> {
+    fetch_moved_develop(fixture)?;
+    lose_origin(fixture)
+}
+
+/// Fixture steps: `fetch_then_lose_origin`, then `add_note`.
+fn fetch_lose_origin_and_add_note(fixture: &mut Fixture) -> Result<(), String> {
+    fetch_then_lose_origin(fixture)?;
+    add_note(fixture)
+}
+
+/// What wsx prints on its staleness line only when both times are read.
+const BOTH_TIMES_WSX: &[u8] = b" ago (reflog); last fetch ";
+
+/// DIV-04 with the remote unreachable, Parity. `work` fetched a moved
+/// `origin/develop`, then origin's URL was pointed at a path that does not
+/// exist: the check runs against the local ref, exits 0 and, on the Rust
+/// side, reports both staleness times (D-12, D-13).
+fn remote_unreachable() -> Scenario {
+    Scenario::new(
+        "remote_unreachable",
+        check_in_work(RepoConfig::devflow(), fetch_then_lose_origin)
+            .expect(verdict(0))
+            .rust_stderr(BOTH_TIMES_WSX),
+    )
+    .control(
+        Role::KnownPositive,
+        undeclared_note_in(WORK, fetch_lose_origin_and_add_note),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+}
+
 scenarios! {
     self_test: oracle, rust_enabled;
     quoted_personal_names: oracle, rust_enabled;
@@ -1001,4 +1101,5 @@ scenarios! {
     hook_symlink_to_an_executable: oracle, rust_enabled;
     scripts_sh_not_checked: oracle, rust_enabled;
     hooks_path_not_in_the_tree: oracle, rust_enabled;
+    remote_unreachable: oracle, rust_enabled;
 }
