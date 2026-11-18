@@ -17,7 +17,7 @@ actuals:
   tasks: 2
   commits: 2
 plan_head_before: b68aea9f8efd6b4d389b5b86b22013dc8e6ff7cf
-plan_head_after: 7b707cc4e31c9c3ba6d53a1ede470f5bea3b3b7e
+plan_head_after: daf83955a27d758dcf66c185a20b4c10df1a11c6
 
 tech-stack:
   added: []
@@ -99,7 +99,7 @@ The decision line was present before any code (Task 2's precondition held) and w
 ## Task Commits
 
 1. **Task 2 RED:** `14745d8` test(04-17): add failing tests for GIT_CONFIG on the config read
-2. **Task 2 GREEN:** `7b707cc` fix(04-17): read the repository's config as every other git command does
+2. **Task 2 GREEN:** `daf8395` fix(04-17): read the repository's config as every other git command does
 
 ## TDD Gate Compliance
 
@@ -107,7 +107,7 @@ The decision line was present before any code (Task 2's precondition held) and w
 - **RED (spawn):** `git::spawn::tests::run_without_var_hides_only_that_variable` failed at src/git/spawn.rs:853 with `the child of run_without_var(GIT_CONFIG) saw GIT_CONFIG` (env listed `GIT_CONFIG=x`); the RED stub forwarded to `run`. Log ends `exit 100`; `target/gsd/04-17-red-evidence-spawn.json` gave `RED_EVIDENCE_OK`.
 - **Negative control on the classifier:** the spawn report with the model test named as target gave `INVALID_RED` (`no_target_test_failure`); that control file was deleted after the run.
 - **GREEN:** both tests pass; `scripts/check.sh all` exit 0, last line `==> check.sh: all OK` (683 passed, 63 skipped).
-- **Commit type:** GREEN is `fix(04-17)` as the plan prescribes, not `feat(04-17)`, so a gate check that greps only for `feat(` will report no GREEN for this plan; the GREEN commit `7b707cc` follows the RED commit `14745d8`.
+- **Commit type:** the plan prescribed `fix(04-17)` for GREEN, but GSD's TDD gate counts only `feat(`, so the phase-end gate blocked. With the operator's approval the subject was reworded to `feat(04-17)` on 2026-11-18, before anything was pushed; the tree is unchanged. The GREEN commit `daf8395` follows the RED commit `14745d8`.
 - **REFACTOR:** none.
 
 ## Files Created/Modified
@@ -155,7 +155,7 @@ Ready for 04-18. Not measured here: whether gix's reads before 04-14 honoured `G
 ## Self-Check: PASSED
 
 - FOUND 14745d8
-- FOUND 7b707cc
+- FOUND daf8395
 - FOUND src/git/spawn.rs
 - FOUND src/git/config.rs
 - FOUND src/model/mod.rs

@@ -19,8 +19,8 @@ actuals:
   tokens: 4727
   tasks: 3
   commits: 4
-plan_head_before: c55138471a0dbe1d9f459615276bd9c3fa8ce0cd
-plan_head_after: 32ab91782ab45cd685e44aba1410b193e48fa846
+plan_head_before: 041d1bbaba8e0245177d672968b69ee9532549d7
+plan_head_after: 128f281c37a4f7a4a21bb098818e5e0dfd12892a
 
 tech-stack:
   added: []
@@ -81,7 +81,7 @@ coverage:
     description: "Fresh full mutation pass over the six changed files with no unexplained survivor, tested = listed"
     verification:
       - kind: other
-        ref: "Task 3 blocks 1 to 3 on 32ab917 (exit 0); doctored-copy controls exit 1"
+        ref: "Task 3 blocks 1 to 3 on 128f281 (exit 0); doctored-copy controls exit 1"
         status: pass
     human_judgment: false
   - id: D6
@@ -122,13 +122,13 @@ status: complete
 | gsd-pi | 4 | 10.4 ms | 13.0 ms | 15.4 / 23.0 ms |
 
   Every line had `children=4` on the first run, so no recorded set changed. The gate's tail exits 1 on a sample with one `children=3` line. No `latency.*` directory was left.
-- Task 3: final pass on `32ab917` (`target/gsd/04-18-pass-head.txt`): 237 caught, 0 missed, 28 unviable, 0 timeout, sum 265, equal to the `cargo mutants --list` total of 265. The allowlist `target/gsd/04-18-equivalent-mutants.txt` is empty: no mutant was called equivalent.
+- Task 3: final pass on `128f281` (`target/gsd/04-18-pass-head.txt`): 237 caught, 0 missed, 28 unviable, 0 timeout, sum 265, equal to the `cargo mutants --list` total of 265. The allowlist `target/gsd/04-18-equivalent-mutants.txt` is empty: no mutant was called equivalent.
 
 ## Task Commits
 
-1. **Task 1: inventory and STATE obligations** - `e0fb840` (docs)
+1. **Task 1: inventory and STATE obligations** - `962cd70` (docs)
 2. **Task 2: latency** - no commit (probe and record under `target/gsd/`, gitignored)
-3. **Task 3: survivors** - `e0442a2` (test), `7708ebf` (test, RED), `32ab917` (fix, GREEN)
+3. **Task 3: survivors** - `0b95921` (test), `c28bdd6` (test, RED), `128f281` (fix, GREEN)
 
 ## Mutation pass
 
@@ -152,11 +152,11 @@ Doctored copies of `mutants.out`: last `caught.txt` line deleted, block 3 exit 1
 
 ## TDD Evidence (the defect fix)
 
-- **RED** (`7708ebf`): `git::objects::tests::gitlink_whose_commit_is_absent_is_not_a_blob`, run alone, exit 100. `target/gsd/04-18-red-evidence.json` (JUnit from `target/nextest/default/junit.xml`); `gsd_run check tdd-red-evidence ... --raw --pick verdict` printed `RED_EVIDENCE_OK`; the same record with the failure removed and exit 0 printed `INVALID_RED`. Semantic assessment: the target ran after both git-side premise checks passed (HEAD holds a 160000 entry; the commit is absent) and failed because `read_tips` returned `GitBadOutput` (`answer 2: a header that is not four fields`): git answered `<oid> submodule`. Not a build, load or fixture failure.
-- **GREEN** (`32ab917`): the RED test and three unit tests for the new variant pass alone; `scripts/check.sh all` 696 passed, 63 skipped, `==> check.sh: all OK`.
+- **RED** (`c28bdd6`): `git::objects::tests::gitlink_whose_commit_is_absent_is_not_a_blob`, run alone, exit 100. `target/gsd/04-18-red-evidence.json` (JUnit from `target/nextest/default/junit.xml`); `gsd_run check tdd-red-evidence ... --raw --pick verdict` printed `RED_EVIDENCE_OK`; the same record with the failure removed and exit 0 printed `INVALID_RED`. Semantic assessment: the target ran after both git-side premise checks passed (HEAD holds a 160000 entry; the commit is absent) and failed because `read_tips` returned `GitBadOutput` (`answer 2: a header that is not four fields`): git answered `<oid> submodule`. Not a build, load or fixture failure.
+- **GREEN** (`128f281`): the RED test and three unit tests for the new variant pass alone; `scripts/check.sh all` 696 passed, 63 skipped, `==> check.sh: all OK`.
 - No REFACTOR commit.
 
-## Coverage and gates (on `32ab917`)
+## Coverage and gates (on `128f281`)
 
 Line coverage (`target/gsd/04-18-coverage.log`; branch coverage waived as in 04-10): `git/config.rs` 91.20%, `git/mod.rs` 99.04%, `git/objects.rs` 94.08%, `git/refs.rs` 93.51%, `git/spawn.rs` 93.07%, `model/mod.rs` 96.62%; TOTAL 93.18%. Line coverage shows a line ran, not that a test checks it.
 
@@ -164,7 +164,7 @@ Line coverage (`target/gsd/04-18-coverage.log`; branch coverage waived as in 04-
 - `scripts/check.sh deps`: exit 0 (`advisories ok, bans ok, licenses ok, sources ok`)
 - `scripts/check-in-container.sh all`: exit 0, `Summary [  45.896s] 696 tests run: 696 passed, 63 skipped`, last line `==> check.sh: all OK` (`target/gsd/04-18-container.log`); image `mcr.microsoft.com/devcontainers/rust:2.1.3-1-trixie` git 2.56.0, so the submodule test passes on the image's git too.
 
-Final tip for the orchestrator's Tier A diff review (D-28): `32ab91782ab45cd685e44aba1410b193e48fa846` (code); this SUMMARY's docs commit follows it.
+Final tip for the orchestrator's Tier A diff review (D-28): `128f281c37a4f7a4a21bb098818e5e0dfd12892a` (code); this SUMMARY's docs commit follows it.
 
 ## Files Created/Modified
 
@@ -189,7 +189,7 @@ Kept under `target/gsd/` (gitignored): `04-18-latency-probe.rs`, `04-18-latency.
 - **Fix:** `BatchAnswer::Submodule` for `<full hex id> submodule`; `manifest_entry` maps it to `RootEntry::NotABlob { kind: "submodule" }`; `peeled_commit` and the tree answer treat it as `GitBadOutput`.
 - **Files modified:** src/git/objects.rs
 - **Verification:** RED evidence above; GREEN on host and container; the final mutation pass has no survivor.
-- **Committed in:** `7708ebf` (RED), `32ab917` (GREEN)
+- **Committed in:** `c28bdd6` (RED), `128f281` (GREEN)
 
 **2. [Rule 3 - Blocking] `WSX_SCRATCH` was not exported**
 - **Found during:** Task 2 precondition
@@ -216,7 +216,7 @@ Phase 4 plans are complete. The orchestrator's Tier A external diff review (D-28
 ## Self-Check: PASSED
 
 - All 17 kept `target/gsd/` artifacts listed above checked present with `test -f`; the three removed directories checked absent.
-- Commits `e0fb840`, `e0442a2`, `7708ebf`, `32ab917` are ancestors of HEAD; `git rev-list --count c551384..HEAD` = 4.
+- Commits `962cd70`, `0b95921`, `c28bdd6`, `128f281` are ancestors of HEAD; `git rev-list --count 041d1bb..HEAD` = 4.
 
 ---
 *Phase: 04-repo-model*

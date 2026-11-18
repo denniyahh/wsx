@@ -1,6 +1,6 @@
 # Phase 04 Tier A diff review (D-28), round 1
 
-Target: `383c74b..ceb8160` over `src/` (plans 04-13 to 04-18). Lens: adversarial. Date: 2026-11-18.
+Target: `383c74b..5765862` over `src/` (plans 04-13 to 04-18). Lens: adversarial. Date: 2026-11-18.
 
 | Lane | Result |
 |------|--------|
