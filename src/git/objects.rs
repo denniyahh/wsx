@@ -13,7 +13,8 @@ use super::{Error, Git, NO_LAZY_FETCH, ObjectId};
 /// The batch format: id, type, size and the entry mode, the last empty for a
 /// request that is not `<tree-ish>:<path>`. The default format has no mode
 /// and reads a symlink as a blob (research G2).
-const BATCH_FORMAT: &str = "--batch=%(objectname) %(objecttype) %(objectsize) %(objectmode)";
+pub(super) const BATCH_FORMAT: &str =
+    "--batch=%(objectname) %(objecttype) %(objectsize) %(objectmode)";
 
 /// The tree entry mode of a gitlink, whose commit is rarely in this
 /// repository, so git usually answers `missing` for it.
@@ -45,7 +46,7 @@ pub struct TipObjects {
 
 /// One answer of `git cat-file --batch` in `BATCH_FORMAT`.
 #[derive(Debug, PartialEq, Eq)]
-enum BatchAnswer {
+pub(super) enum BatchAnswer {
     /// git printed `<request> missing`.
     Missing,
     /// git printed `<id> submodule`: the request named a gitlink whose
@@ -70,7 +71,7 @@ enum BatchAnswer {
 /// that may be empty), followed by exactly that many bytes and one LF.
 /// Anything else, a short read or a byte after the last answer included, is
 /// `Err` naming the answer's index.
-fn parse_batch(stdout: &[u8], count: usize) -> Result<Vec<BatchAnswer>, String> {
+pub(super) fn parse_batch(stdout: &[u8], count: usize) -> Result<Vec<BatchAnswer>, String> {
     let mut rest = stdout;
     let mut answers = Vec::with_capacity(count);
     for index in 0..count {

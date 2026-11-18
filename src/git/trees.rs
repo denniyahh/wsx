@@ -1,0 +1,378 @@
+//! Tree reads by commit id: what a commit's tree holds at given paths, every
+//! entry it holds, and blob bytes by id. Each read is one git child that runs
+//! with `--no-lazy-fetch`, so a partial clone's missing object is `missing`,
+//! never a fetch (D-13).
+//!
+//! No path is ever an argument or a pathspec: a lookup sends each request as
+//! `<commit id>:<path>` on stdin, NUL-terminated (`-Z`), so a path holding a
+//! newline or pathspec magic is one request and nothing more; the listing
+//! names only the commit id and reads NUL-terminated records (`-z`).
+//!
+//! Every caller reads these after `model::resolve` has named the commits
+//! (05-01's read order), so a read here never resolves a ref.
+
+use std::ffi::OsString;
+
+use super::objects::{BATCH_FORMAT, BatchAnswer, parse_batch};
+use super::repo::Repo;
+use super::{Error, Git, NO_LAZY_FETCH, ObjectId};
+
+/// git's tree entry mode of a directory.
+pub const MODE_TREE: u32 = 0o040000;
+/// git's tree entry mode of a regular file.
+pub const MODE_BLOB: u32 = 0o100644;
+/// git's tree entry mode of an executable file.
+pub const MODE_EXECUTABLE: u32 = 0o100755;
+/// git's tree entry mode of a symlink, whose blob holds the link text.
+pub const MODE_SYMLINK: u32 = 0o120000;
+/// git's tree entry mode of a gitlink (a submodule's commit).
+pub const MODE_GITLINK: u32 = 0o160000;
+
+/// One tree entry found at a requested path: its mode and object id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// The entry's mode, as git prints it in octal.
+    pub mode: u32,
+    /// The object the entry names.
+    pub id: ObjectId,
+}
+
+/// One entry of a whole-tree listing: its mode, object id and raw path from
+/// the tree's root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedEntry {
+    /// The entry's mode, as git prints it in octal.
+    pub mode: u32,
+    /// The object the entry names.
+    pub id: ObjectId,
+    /// The path from the root tree, raw bytes, never quoted.
+    pub path: Vec<u8>,
+}
+
+/// The lookup's batch format: id, type and entry mode of each answer.
+const LOOKUP_FORMAT: &str = "--batch-check=%(objectname) %(objecttype) %(objectmode)";
+
+/// The argv of the lookup child: NUL-terminated requests and answers.
+const LOOKUP_ARGS: [&str; 4] = [NO_LAZY_FETCH, "cat-file", LOOKUP_FORMAT, "-Z"];
+
+/// The argv of the listing child, before the commit id: every entry,
+/// directories included, NUL-terminated, from the root tree.
+const LIST_ARGS: [&str; 6] = [NO_LAZY_FETCH, "ls-tree", "-r", "-t", "-z", "--full-tree"];
+
+/// The argv of the blob read child, by id.
+const BLOB_ARGS: [&str; 3] = [NO_LAZY_FETCH, "cat-file", BATCH_FORMAT];
+
+impl Repo {
+    /// Stub.
+    pub fn lookup_paths(
+        &self,
+        _git: &Git,
+        _commit: &ObjectId,
+        _paths: &[&[u8]],
+    ) -> Result<Vec<Option<TreeEntry>>, Error> {
+        Ok(Vec::new())
+    }
+
+    /// Stub.
+    pub fn list_tree(&self, _git: &Git, _commit: &ObjectId) -> Result<Vec<ListedEntry>, Error> {
+        Ok(Vec::new())
+    }
+
+    /// Stub.
+    pub fn read_blobs(&self, _git: &Git, _ids: &[ObjectId]) -> Result<Vec<Vec<u8>>, Error> {
+        Ok(Vec::new())
+    }
+}
+
+/// Stub.
+fn parse_lookup(_stdout: &[u8], _requests: &[Vec<u8>]) -> Result<Vec<Option<TreeEntry>>, String> {
+    Ok(Vec::new())
+}
+
+/// Stub.
+fn parse_listing(_stdout: &[u8]) -> Result<Vec<ListedEntry>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+
+    use super::super::testing::{
+        self, Scratch, T0, TICK, commit_all, git_in_env, git_ok, object_id, write,
+    };
+    use super::super::{Error, Git, ObjectId, Repo};
+    use super::{
+        ListedEntry, MODE_BLOB, MODE_EXECUTABLE, MODE_GITLINK, MODE_SYMLINK, MODE_TREE, TreeEntry,
+        parse_listing, parse_lookup,
+    };
+
+    /// The commit a gitlink names; no object in the fixture has this id, as
+    /// a submodule's commit is usually absent from its superproject.
+    const GITLINK: &str = "5555555555555555555555555555555555555555";
+
+    /// The path holding a newline.
+    const NEWLINE_PATH: &[u8] = b"a\nb";
+
+    /// A repository at `<root>/repo` whose `HEAD` holds `a.txt` (100644),
+    /// `x` (100755), `l` (a symlink to `a.txt`), `d/f`, the file
+    /// `NEWLINE_PATH` and the gitlink `sub` naming `GITLINK`; returns the
+    /// canonical repository and git's id of `HEAD`. The gitlink is staged with
+    /// `update-index --cacheinfo` and committed on its own, as `commit_all`'s
+    /// `add --all` would drop an entry with no directory.
+    fn every_kind(scratch: &Scratch) -> (PathBuf, ObjectId) {
+        let repo = scratch.root.join("repo");
+        fs::create_dir_all(&repo).unwrap_or_else(|err| panic!("create repo: {err}"));
+        git_ok(scratch, &repo, ["init", "-q", "-b", "main"]).unwrap_or_else(|err| panic!("{err}"));
+        write(&repo.join("a.txt"), b"a\n").unwrap_or_else(|err| panic!("{err}"));
+        write(&repo.join("x"), b"#!/bin/sh\n").unwrap_or_else(|err| panic!("{err}"));
+        fs::set_permissions(repo.join("x"), fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|err| panic!("chmod x: {err}"));
+        std::os::unix::fs::symlink("a.txt", repo.join("l"))
+            .unwrap_or_else(|err| panic!("symlink l: {err}"));
+        write(&repo.join("d/f"), b"f\n").unwrap_or_else(|err| panic!("{err}"));
+        let newline = std::ffi::OsStr::new(std::str::from_utf8(NEWLINE_PATH).expect("UTF-8"));
+        write(&repo.join(newline), b"newline\n").unwrap_or_else(|err| panic!("{err}"));
+        commit_all(scratch, &repo, "files", T0).unwrap_or_else(|err| panic!("{err}"));
+        let cacheinfo = format!("160000,{GITLINK},sub");
+        git_ok(
+            scratch,
+            &repo,
+            ["update-index", "--add", "--cacheinfo", cacheinfo.as_str()],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let env = testing::dated(&scratch.env, T0 + TICK);
+        let output = git_in_env(&env, &repo, ["commit", "-q", "-m", "sub"])
+            .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git commit the gitlink", &output)
+        );
+        let repo = repo
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize repo: {err}"));
+        let head = object_id(scratch, &repo, "HEAD").unwrap_or_else(|err| panic!("{err}"));
+        (repo, head)
+    }
+
+    /// git's id of `<commit>:<path>` in `repo`.
+    fn entry_id(scratch: &Scratch, repo: &Path, commit: &ObjectId, path: &[u8]) -> ObjectId {
+        let rev = format!("{commit}:{}", String::from_utf8_lossy(path));
+        object_id(scratch, repo, &rev).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// What git's own `cat-file --batch-check=... -Z` prints for `input`
+    /// in `repo`: the oracle the lookup is held to.
+    fn git_batch_check(scratch: &Scratch, repo: &Path, input: &[u8]) -> Vec<u8> {
+        let mut child = testing::command("git", repo, &scratch.env)
+            .args([
+                "cat-file",
+                "--batch-check=%(objectname) %(objecttype) %(objectmode)",
+                "-Z",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|err| panic!("spawn git cat-file: {err}"));
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(input)
+            .unwrap_or_else(|err| panic!("write git cat-file's stdin: {err}"));
+        let output = child
+            .wait_with_output()
+            .unwrap_or_else(|err| panic!("wait for git cat-file: {err}"));
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            testing::failed_run("git cat-file --batch-check -Z", &output)
+        );
+        output.stdout
+    }
+
+    /// `Repo::discover(repo)` and a helper whose children see the scratch
+    /// environment.
+    fn open(scratch: &Scratch, repo: &Path) -> (Repo, Git) {
+        let found =
+            Repo::discover(repo).unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let git = Git::for_repo(scratch.env.clone(), &found);
+        (found, git)
+    }
+
+    #[test]
+    fn lookup_paths_answers_each_request_in_order() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-lookup").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let id = |path: &[u8]| entry_id(&scratch, &repo, &head, path);
+        let (x, d, a, l, sub) = (id(b"x"), id(b"d"), id(b"a.txt"), id(b"l"), id(b"sub"));
+        assert_eq!(sub, ObjectId(GITLINK.to_owned()), "git's id of the gitlink");
+
+        let paths: [&[u8]; 6] = [b"x", b"missing", b"d", b"a.txt", b"l", b"sub"];
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(format!("{head}:").as_bytes());
+            input.extend_from_slice(path);
+            input.push(0);
+        }
+        let expected_git = format!(
+            "{x} blob 100755\0{head}:missing missing\0{d} tree 040000\0\
+             {a} blob 100644\0{l} blob 120000\0{sub} submodule\0"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&git_batch_check(&scratch, &repo, &input)),
+            expected_git,
+            "git's own batch-check answers"
+        );
+
+        let (found, git) = open(&scratch, &repo);
+        let answers = found
+            .lookup_paths(&git, &head, &paths)
+            .unwrap_or_else(|err| panic!("lookup_paths: {err}"));
+        let entry = |mode, id: &ObjectId| {
+            Some(TreeEntry {
+                mode,
+                id: id.clone(),
+            })
+        };
+        assert_eq!(
+            answers,
+            vec![
+                entry(MODE_EXECUTABLE, &x),
+                None,
+                entry(MODE_TREE, &d),
+                entry(MODE_BLOB, &a),
+                entry(MODE_SYMLINK, &l),
+                entry(MODE_GITLINK, &sub),
+            ]
+        );
+    }
+
+    #[test]
+    fn lookup_paths_reads_a_path_holding_a_newline() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-newline").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let blob = entry_id(&scratch, &repo, &head, NEWLINE_PATH);
+        let (found, git) = open(&scratch, &repo);
+        let answers = found
+            .lookup_paths(&git, &head, &[NEWLINE_PATH])
+            .unwrap_or_else(|err| panic!("lookup_paths: {err}"));
+        assert_eq!(
+            answers,
+            vec![Some(TreeEntry {
+                mode: MODE_BLOB,
+                id: blob
+            })]
+        );
+    }
+
+    #[test]
+    fn list_tree_lists_every_entry_with_its_mode() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-list").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let listed = |mode, path: &[u8]| ListedEntry {
+            mode,
+            id: entry_id(&scratch, &repo, &head, path),
+            path: path.to_vec(),
+        };
+        let expected = vec![
+            listed(MODE_BLOB, NEWLINE_PATH),
+            listed(MODE_BLOB, b"a.txt"),
+            listed(MODE_TREE, b"d"),
+            listed(MODE_BLOB, b"d/f"),
+            listed(MODE_SYMLINK, b"l"),
+            listed(MODE_GITLINK, b"sub"),
+            listed(MODE_EXECUTABLE, b"x"),
+        ];
+        let (found, git) = open(&scratch, &repo);
+        let listing = found
+            .list_tree(&git, &head)
+            .unwrap_or_else(|err| panic!("list_tree: {err}"));
+        assert_eq!(listing, expected);
+    }
+
+    #[test]
+    fn read_blobs_returns_each_blob_in_order() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-blobs").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let link = entry_id(&scratch, &repo, &head, b"l");
+        let file = entry_id(&scratch, &repo, &head, b"a.txt");
+        let (found, git) = open(&scratch, &repo);
+        let blobs = found
+            .read_blobs(&git, &[link, file])
+            .unwrap_or_else(|err| panic!("read_blobs: {err}"));
+        assert_eq!(blobs, vec![b"a.txt".to_vec(), b"a\n".to_vec()]);
+
+        let absent = ObjectId("0123456789012345678901234567890123456789".to_owned());
+        match found.read_blobs(&git, std::slice::from_ref(&absent)) {
+            Err(Error::ObjectMissing { request }) => {
+                assert_eq!(request, absent.to_string().into_bytes());
+            }
+            other => panic!("expected ObjectMissing for {absent}, got {other:?}"),
+        }
+    }
+
+    /// A full hex id for the pure parser tests.
+    const ID: &str = "1111111111111111111111111111111111111111";
+
+    #[test]
+    fn parse_listing_refuses_a_record_without_a_tab() {
+        let stdout = format!("100644 blob {ID} a.txt\0");
+        assert_eq!(
+            parse_listing(stdout.as_bytes()),
+            Err("record 0: no TAB before its path".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_listing_refuses_output_not_ending_in_nul() {
+        let stdout = format!("100644 blob {ID}\ta.txt");
+        assert_eq!(
+            parse_listing(stdout.as_bytes()),
+            Err("the output does not end in NUL, so its last record is incomplete".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_lookup_refuses_fewer_answers_than_requests() {
+        let requests = vec![
+            format!("{ID}:a").into_bytes(),
+            format!("{ID}:b").into_bytes(),
+        ];
+        let stdout = format!("{ID} blob 100644\0");
+        assert_eq!(
+            parse_lookup(stdout.as_bytes(), &requests),
+            Err("1 answers to 2 requests".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_lookup_refuses_a_mode_that_is_not_octal() {
+        let requests = vec![format!("{ID}:a").into_bytes()];
+        let stdout = format!("{ID} blob 100648\0");
+        assert_eq!(
+            parse_lookup(stdout.as_bytes(), &requests),
+            Err("answer 0: a mode that is not octal".to_owned())
+        );
+    }
+}

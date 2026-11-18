@@ -31,6 +31,7 @@ mod repo;
 mod spawn;
 #[cfg(test)]
 pub(crate) mod testing;
+mod trees;
 
 pub use config::ConfigRead;
 pub use objects::{RootEntry, TipObjects};
