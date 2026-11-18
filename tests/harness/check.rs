@@ -1,4 +1,4 @@
-//! Divergence-check scenarios (plans 02-07, 02-13, 03-02 and 05-04).
+//! Divergence-check scenarios (plans 02-07, 02-13, 03-02, 05-04 and 05-06).
 //!
 //! Each scenario runs the check that the workspace branch differs from the
 //! integration branch only in the paths its manifests allow, and states the
@@ -7,6 +7,11 @@
 //! Isolation: every scenario builds its fixture in its own
 //! `harness-check-<name>-` tree under `CARGO_TARGET_TMPDIR`, in the hermetic
 //! environment.
+
+use std::ffi::OsStr;
+use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 use crate::action::Action;
 use crate::fixture::{Fixture, ManifestKind, RepoConfig, WORK};
@@ -697,6 +702,283 @@ fn feature_worktree() -> Scenario {
     )
 }
 
+/// The hook every hook scenario commits.
+const PRE_PUSH: &[u8] = b"scripts/hooks/pre-push";
+
+/// A POSIX sh hook that succeeds.
+const HOOK_SCRIPT: &[u8] = b"#!/bin/sh\nexit 0\n";
+
+/// The devflow preset declaring `only scripts`, so the hook files are
+/// declared workspace-only paths.
+fn declaring_scripts() -> RepoConfig {
+    RepoConfig::devflow().with_manifest_entry(ManifestKind::Only, b"scripts")
+}
+
+/// Writes `content` at `path` in `work`'s working tree with the permission
+/// bits `mode`.
+fn write_with_mode(
+    fixture: &Fixture,
+    path: &[u8],
+    content: &[u8],
+    mode: u32,
+) -> Result<(), String> {
+    fixture.write(WORK, path, content)?;
+    let full = fixture.checkout(WORK).join(OsStr::from_bytes(path));
+    fs::set_permissions(&full, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("chmod {mode:o} {}: {err}", full.display()))
+}
+
+/// Puts a symlink at `path` in `work`'s working tree whose link text is
+/// `target`.
+fn write_symlink(fixture: &Fixture, path: &[u8], target: &[u8]) -> Result<(), String> {
+    let full = fixture.checkout(WORK).join(OsStr::from_bytes(path));
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("create {}: {err}", parent.display()))?;
+    }
+    symlink(OsStr::from_bytes(target), &full)
+        .map_err(|err| format!("symlink {}: {err}", full.display()))
+}
+
+/// Fails unless git's tree at `work`'s HEAD holds `path` with `mode`.
+fn assert_committed_mode(fixture: &Fixture, path: &[u8], mode: &str) -> Result<(), String> {
+    let listed = fixture.git_ok(
+        WORK,
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("--format=%(objectmode)"),
+            OsStr::new("HEAD"),
+            OsStr::new("--"),
+            OsStr::from_bytes(path),
+        ],
+    )?;
+    if listed == format!("{mode}\n").into_bytes() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git ls-tree lists {} as {:?}, not {mode}",
+            String::from_utf8_lossy(path),
+            String::from_utf8_lossy(&listed)
+        ))
+    }
+}
+
+/// Sets `core.hooksPath` to `value` in `work`, then fails unless
+/// `git config --get` answers exactly that.
+fn set_hooks_path(fixture: &Fixture, value: &OsStr) -> Result<(), String> {
+    fixture.git_ok(
+        WORK,
+        [OsStr::new("config"), OsStr::new("core.hooksPath"), value],
+    )?;
+    let read = fixture.git_ok(WORK, ["config", "--get", "core.hooksPath"])?;
+    if read == [value.as_bytes(), b"\n"].concat() {
+        Ok(())
+    } else {
+        Err(format!(
+            "git config --get core.hooksPath answers {:?}, not {value:?}",
+            String::from_utf8_lossy(&read)
+        ))
+    }
+}
+
+/// Fixture step: `scripts/hooks/pre-push` committed with `mode` on disk at commit
+/// time, asserted `committed` in git's tree, and `core.hooksPath` set to
+/// `scripts/hooks`.
+fn commit_hook(fixture: &mut Fixture, mode: u32, committed: &str) -> Result<(), String> {
+    write_with_mode(fixture, PRE_PUSH, HOOK_SCRIPT, mode)?;
+    fixture.commit(WORK, b"chore(ws): add a pre-push hook\n")?;
+    assert_committed_mode(fixture, PRE_PUSH, committed)?;
+    set_hooks_path(fixture, OsStr::new("scripts/hooks"))
+}
+
+/// Fixture step: the hook committed 100755.
+fn executable_hook(fixture: &mut Fixture) -> Result<(), String> {
+    commit_hook(fixture, 0o755, "100755")
+}
+
+/// Fixture step: the hook committed 100644, then made executable on disk;
+/// the step fails unless the working-tree file is executable.
+fn hook_executable_only_on_disk(fixture: &mut Fixture) -> Result<(), String> {
+    commit_hook(fixture, 0o644, "100644")?;
+    let full = fixture.checkout(WORK).join(OsStr::from_bytes(PRE_PUSH));
+    fs::set_permissions(&full, fs::Permissions::from_mode(0o755))
+        .map_err(|err| format!("chmod +x {}: {err}", full.display()))?;
+    let mode = fs::metadata(&full)
+        .map_err(|err| format!("stat {}: {err}", full.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o111 == 0o111 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is {mode:o} on disk, not executable",
+            full.display()
+        ))
+    }
+}
+
+/// What wsx prints refusing `scripts/hooks/pre-push` committed 100644.
+const PLAIN_HOOK_WSX: &[u8] = b"hook not committed executable: scripts/hooks/pre-push (committed \
+      100644; commit it with mode 100755)\n";
+
+/// What the oracle prints refusing `scripts/hooks/pre-push` committed 100644.
+const PLAIN_HOOK_ORACLE: &[u8] = b"not committed executable (100644): scripts/hooks/pre-push";
+
+/// DIV-03 hook mode, Parity. `scripts/hooks/pre-push` is committed 100644 and
+/// made executable on disk afterwards, with `core.hooksPath` at
+/// `scripts/hooks`: both sides read the committed mode and exit 1. The clean
+/// control commits the hook 100755 and passes.
+fn hook_mode_from_the_commit() -> Scenario {
+    Scenario::new(
+        "hook_mode_from_the_commit",
+        check_in_work(declaring_scripts(), hook_executable_only_on_disk)
+            .expect(verdict(1))
+            .oracle_stderr(PLAIN_HOOK_ORACLE)
+            .rust_stderr(PLAIN_HOOK_WSX),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(declaring_scripts(), executable_hook).expect(verdict(0)),
+    )
+}
+
+/// Fixture step: `scripts/run-pre-push` committed with `mode` (asserted
+/// `committed`), `scripts/hooks/pre-push` a symlink to `../run-pre-push`
+/// (asserted 120000), and `core.hooksPath` at `scripts/hooks`.
+fn hook_symlink(fixture: &mut Fixture, mode: u32, committed: &str) -> Result<(), String> {
+    write_with_mode(fixture, b"scripts/run-pre-push", HOOK_SCRIPT, mode)?;
+    write_symlink(fixture, PRE_PUSH, b"../run-pre-push")?;
+    fixture.commit(WORK, b"chore(ws): link the pre-push hook\n")?;
+    assert_committed_mode(fixture, b"scripts/run-pre-push", committed)?;
+    assert_committed_mode(fixture, PRE_PUSH, "120000")?;
+    set_hooks_path(fixture, OsStr::new("scripts/hooks"))
+}
+
+/// Fixture step: the hook links to a 100755 file.
+fn symlink_to_executable(fixture: &mut Fixture) -> Result<(), String> {
+    hook_symlink(fixture, 0o755, "100755")
+}
+
+/// Fixture step: the hook links to a 100644 file.
+fn symlink_to_plain(fixture: &mut Fixture) -> Result<(), String> {
+    hook_symlink(fixture, 0o644, "100644")
+}
+
+/// What the oracle prints for a symlinked hook: the link's own mode.
+const SYMLINK_HOOK_ORACLE: &[u8] = b"not committed executable (120000): scripts/hooks/pre-push";
+
+/// What the oracle was observed doing with a symlinked hook.
+const SYMLINK_HOOK_DEFECT: &str = "the oracle requires 100755 of every file under scripts/hooks, \
+     so a symlink to a tracked executable fails it";
+
+/// DIV-03 symlinked hook, `fixed:`. `scripts/hooks/pre-push` is a symlink to the
+/// tracked 100755 `scripts/run-pre-push`: wsx resolves it in the tree and
+/// passes; the oracle judges the link's own 120000 and exits 1. The
+/// known-positive control links to a 100644 file and is refused on both
+/// sides; the clean control is a regular 100755 hook.
+fn hook_symlink_to_an_executable() -> Scenario {
+    Scenario::new(
+        "hook_symlink_to_an_executable",
+        check_in_work(declaring_scripts(), symlink_to_executable)
+            .expect(verdict(0))
+            .class(Class::Fixed {
+                defect: SYMLINK_HOOK_DEFECT,
+            })
+            .oracle(OracleSide::Recorded(verdict(1)))
+            .oracle_stderr(SYMLINK_HOOK_ORACLE),
+    )
+    .control(
+        Role::KnownPositive,
+        check_in_work(declaring_scripts(), symlink_to_plain)
+            .expect(verdict(1))
+            .oracle_stderr(SYMLINK_HOOK_ORACLE)
+            .rust_stderr(
+                b"hook not committed executable: scripts/hooks/pre-push (a symlink that does \
+                  not resolve to a tracked executable: its target scripts/run-pre-push is \
+                  committed 100644)\n",
+            ),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(declaring_scripts(), executable_hook).expect(verdict(0)),
+    )
+}
+
+/// Fixture step: `scripts/lib.sh` committed 100644 (asserted), then the hook
+/// committed with `mode` under `core.hooksPath` `scripts/hooks`.
+fn library_beside_hook(fixture: &mut Fixture, mode: u32, committed: &str) -> Result<(), String> {
+    write_with_mode(fixture, b"scripts/lib.sh", b"greet() { echo hi; }\n", 0o644)?;
+    fixture.commit(WORK, b"chore(ws): add a sourced library\n")?;
+    assert_committed_mode(fixture, b"scripts/lib.sh", "100644")?;
+    commit_hook(fixture, mode, committed)
+}
+
+/// Fixture step: the library and a 100755 hook.
+fn library_and_executable_hook(fixture: &mut Fixture) -> Result<(), String> {
+    library_beside_hook(fixture, 0o755, "100755")
+}
+
+/// Fixture step: the library and a 100644 hook.
+fn library_and_plain_hook(fixture: &mut Fixture) -> Result<(), String> {
+    library_beside_hook(fixture, 0o644, "100644")
+}
+
+/// What the oracle was observed doing with a sourced library.
+const SCRIPTS_SH_DEFECT: &str = "the oracle requires every scripts/*.sh committed 100755, a \
+     devflow convention that fails other repos' sourced libraries (DIV-03)";
+
+/// DIV-03 scripts outside the hooks directory, `fixed:`. `scripts/lib.sh` is
+/// committed 100644 beside a 100755 hook: wsx judges only the hooks directory
+/// and passes; the oracle's `scripts/*.sh` rule exits 1. The known-positive
+/// control commits the hook 100644 and is refused on both sides; the clean
+/// control is a regular 100755 hook.
+fn scripts_sh_not_checked() -> Scenario {
+    Scenario::new(
+        "scripts_sh_not_checked",
+        check_in_work(declaring_scripts(), library_and_executable_hook)
+            .expect(verdict(0))
+            .class(Class::Fixed {
+                defect: SCRIPTS_SH_DEFECT,
+            })
+            .oracle(OracleSide::Recorded(verdict(1)))
+            .oracle_stderr(b"not committed executable (100644): scripts/lib.sh"),
+    )
+    .control(
+        Role::KnownPositive,
+        check_in_work(declaring_scripts(), library_and_plain_hook)
+            .expect(verdict(1))
+            .oracle_stderr(PLAIN_HOOK_ORACLE)
+            .rust_stderr(PLAIN_HOOK_WSX),
+    )
+    .control(
+        Role::Clean,
+        check_in_work(declaring_scripts(), executable_hook).expect(verdict(0)),
+    )
+}
+
+/// Fixture step: `core.hooksPath` set to the absolute `<work>/hooks`.
+fn absolute_hooks_path(fixture: &mut Fixture) -> Result<(), String> {
+    let absolute = fixture.checkout(WORK).join("hooks");
+    set_hooks_path(fixture, absolute.as_os_str())
+}
+
+/// DIV-03 hooks path outside the tree, Parity. `core.hooksPath` is an
+/// absolute path: wsx does not check it, says so on stderr, and exits 0, as
+/// the oracle does.
+fn hooks_path_not_in_the_tree() -> Scenario {
+    Scenario::new(
+        "hooks_path_not_in_the_tree",
+        check_in_work(RepoConfig::devflow(), absolute_hooks_path)
+            .expect(verdict(0))
+            .rust_stderr(b"is not checked: it is an absolute path"),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+}
+
 scenarios! {
     self_test: oracle, rust_enabled;
     quoted_personal_names: oracle, rust_enabled;
@@ -711,4 +993,8 @@ scenarios! {
     stale_modified: oracle, rust_enabled;
     redundant_builtin: oracle, rust_enabled;
     feature_worktree: oracle, rust_enabled;
+    hook_mode_from_the_commit: oracle, rust_enabled;
+    hook_symlink_to_an_executable: oracle, rust_enabled;
+    scripts_sh_not_checked: oracle, rust_enabled;
+    hooks_path_not_in_the_tree: oracle, rust_enabled;
 }

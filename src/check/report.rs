@@ -7,7 +7,7 @@
 //! pasting it declares exactly that path. In the JSON payload every byte
 //! value goes through `json::bytes` instead (D-09).
 
-use super::{Problem, ProblemKind, Report};
+use super::{HookStatus, Problem, ProblemKind, Report};
 use crate::git::c_quote;
 use crate::json::{self, Value};
 use crate::model::MANIFEST_NAME;
@@ -164,6 +164,7 @@ mod tests {
                 full_ref: b"refs/remotes/origin/develop".to_vec(),
                 tip: ObjectId::for_test("2222222222222222222222222222222222222222"),
             },
+            hooks: HookStatus::NotSet,
             problems: vec![Problem {
                 kind,
                 path: path.to_vec(),

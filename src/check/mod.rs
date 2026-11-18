@@ -11,6 +11,8 @@
 pub mod hooks;
 pub mod report;
 
+pub use hooks::HookStatus;
+
 use std::collections::BTreeSet;
 
 use crate::git::{ChangeKind, Git, ObjectId, Repo, TreeChange, c_quote};
@@ -29,6 +31,8 @@ pub struct Report {
     pub workspace_tip: ObjectId,
     /// The integration branch and the tip the check compared.
     pub integration: model::Integration,
+    /// What the check made of `core.hooksPath` (D-03).
+    pub hooks: HookStatus,
     /// Every problem found, in D-05's order.
     pub problems: Vec<Problem>,
 }
@@ -119,6 +123,7 @@ pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
         workspace_branch: model.workspace_branch.clone(),
         workspace_tip: model.workspace_tip.clone(),
         integration: model.integration.clone(),
+        hooks: HookStatus::NotSet,
         problems,
     })
 }

@@ -7,6 +7,8 @@
 //! `harness-contract-<name>-` tree under `CARGO_TARGET_TMPDIR`, in the
 //! hermetic environment, and spawns the built `wsx` there.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
 
 use serde_json::{Map, Value, json};
@@ -216,6 +218,97 @@ fn check_json_passes_as_one_object() {
         err.contains(
             "wsx check: every difference between workspace/dev and refs/remotes/origin/develop is declared"
         ),
+        "stderr: {err}"
+    );
+}
+
+/// The hooks object of a run whose stdout is one object.
+fn hooks_object(output: &Output) -> Value {
+    one_object(output)
+        .get("hooks")
+        .cloned()
+        .unwrap_or_else(|| panic!("no hooks key: {}", output.stdout.escape_ascii()))
+}
+
+/// No `core.hooksPath`: exit 0, and the hooks object says it is not set.
+#[test]
+fn check_json_hooks_not_set() {
+    let contract = contract("hooks_not_set");
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        hooks_object(&output),
+        json!({"path": null, "checked": false, "reason": "core.hooksPath is not set"})
+    );
+    assert!(
+        !stderr(&output).contains("core.hooksPath"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+/// `core.hooksPath` naming a directory at the tip, holding a 100755 hook:
+/// exit 0, the hooks object names the directory as checked, and the
+/// object writes `hooks` before `problems`.
+#[test]
+fn check_json_hooks_checked() {
+    let mut contract = contract("hooks_checked");
+    let hook = b".planning/hooks/pre-push";
+    contract
+        .fixture
+        .write(WORK, hook, b"#!/bin/sh\nexit 0\n")
+        .unwrap_or_else(|err| panic!("{err}"));
+    let full = contract
+        .fixture
+        .checkout(WORK)
+        .join(".planning/hooks/pre-push");
+    fs::set_permissions(&full, fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|err| panic!("chmod {}: {err}", full.display()));
+    contract
+        .fixture
+        .commit(WORK, b"chore(ws): add a pre-push hook\n")
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(
+        contract.git(&[
+            "ls-tree",
+            "--format=%(objectmode)",
+            "HEAD",
+            "--",
+            ".planning/hooks/pre-push"
+        ]),
+        b"100755\n"
+    );
+    contract.git(&["config", "core.hooksPath", ".planning/hooks"]);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        hooks_object(&output),
+        json!({"path": ".planning/hooks", "checked": true, "reason": null})
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    let hooks_at = text.find("\"hooks\"").expect("hooks key");
+    let problems_at = text.find("\"problems\"").expect("problems key");
+    assert!(hooks_at < problems_at, "hooks after problems: {text}");
+}
+
+/// `core.hooksPath` relative but naming no directory at the tip: exit 0, the
+/// hooks object gives the value and the reason, and stderr says it.
+#[test]
+fn check_json_hooks_not_in_the_tree() {
+    let contract = contract("hooks_not_in_the_tree");
+    contract.git(&["config", "core.hooksPath", "missing/hooks"]);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let reason = "missing/hooks is not a directory at the tip of workspace/dev";
+    assert_eq!(
+        hooks_object(&output),
+        json!({"path": "missing/hooks", "checked": false, "reason": reason})
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains(&format!(
+            "wsx check: core.hooksPath missing/hooks is not checked: {reason}"
+        )),
         "stderr: {err}"
     );
 }
