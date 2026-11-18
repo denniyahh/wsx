@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-11-18T20:00:48.159Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-11-18T20:20:38.651Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 9d91eac91d3097b3004a12918feb759f74650914
+state_head: 0e24422519a8c69d5b059757cd6c998e8f671aac
 progress:
   total_phases: 16
   completed_phases: 5
   total_plans: 63
-  completed_plans: 55
+  completed_plans: 56
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Phase: 05 (Divergence check and command contract) — READY TO EXECUTE
-Plan: 2 of 9
+Plan: 3 of 9
 Status: Ready to execute
 Last activity: 2026-11-18 — Phase 04 complete, transitioned to Phase 5
 
@@ -114,6 +114,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 04 P17 | 6min | 2 tasks | 3 files |
 | Phase 04 P18 | 1h 34m | 3 tasks | 4 files |
 | Phase 05 P01 | 17 min | 2 tasks | 12 files |
+| Phase 05 P02 | 17 min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -235,6 +236,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-18 review: every git child is killed after 10 s and fails with GitTimedOut (D-29 widened to config and packed-refs fifos), per the operator on 2026-11-18
 - [Phase 05]: 05-01: exit::classify and of_git match every git::Error and model::Error variant with lint-denied wildcards; replacement refusals are class 5 wherever wrapped
 - [Phase 05]: 05-01: ExitClass::name and ProblemKind::name keep cfg_attr(not(test)) dead_code expectations until 05-02 reads them in --json
+- [Phase 05]: 05-02: a failed write of the --json object to stdout exits 6 with a stderr line instead of panicking
+- [Phase 05]: 05-02: ExitClass::name stays test-read only: the failure object carries kind and exit_code, not the class name
 
 ### Pending Todos
 
@@ -276,6 +279,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-18T20:00:21.644Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-11-18T20:20:37.803Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
