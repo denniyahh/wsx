@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-11-18T19:28:01.592Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-11-18T20:00:48.159Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: b95f92ba69f28e149a5f3f745141f92f17ea8193
+state_head: 9d91eac91d3097b3004a12918feb759f74650914
 progress:
   total_phases: 16
   completed_phases: 5
   total_plans: 63
-  completed_plans: 54
+  completed_plans: 55
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-18)
 ## Current Position
 
 Phase: 05 (Divergence check and command contract) — READY TO EXECUTE
-Plan: Not started
+Plan: 2 of 9
 Status: Ready to execute
 Last activity: 2026-11-18 — Phase 04 complete, transitioned to Phase 5
 
@@ -113,6 +113,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 04 P16 | 19 min | 3 tasks | 6 files |
 | Phase 04 P17 | 6min | 2 tasks | 3 files |
 | Phase 04 P18 | 1h 34m | 3 tasks | 4 files |
+| Phase 05 P01 | 17 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -232,6 +233,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-18: git cat-file --batch answers a gitlink whose commit is absent with '<oid> submodule'; parse_batch reads it as BatchAnswer::Submodule and the manifest as a submodule
 - [Phase 04]: 04-18: D-26 holds on one host: resolve p95 10.8 to 14.0 ms over 200 calls in each R3 repo, four git children each
 - [Phase 04]: 04-18 review: every git child is killed after 10 s and fails with GitTimedOut (D-29 widened to config and packed-refs fifos), per the operator on 2026-11-18
+- [Phase 05]: 05-01: exit::classify and of_git match every git::Error and model::Error variant with lint-denied wildcards; replacement refusals are class 5 wherever wrapped
+- [Phase 05]: 05-01: ExitClass::name and ProblemKind::name keep cfg_attr(not(test)) dead_code expectations until 05-02 reads them in --json
 
 ### Pending Todos
 
@@ -273,6 +276,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-18T17:24:57.443Z
-Stopped at: Phase 5 context gathered
-Resume file: /var/home/denniyahh/Github/wsx/.planning/phases/05-divergence-check-and-command-contract/05-CONTEXT.md
+Last session: 2026-11-18T20:00:21.644Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None

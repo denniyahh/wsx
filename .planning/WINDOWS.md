@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 1
+open_count: 2
 waived_count: 0
 fixed_count: 2
-total_count: 3
-last_updated: 2026-11-17T03:09:26.533Z
+total_count: 4
+last_updated: 2026-11-18T20:01:07.385Z
 ---
 
 # Broken Windows Ledger
@@ -18,6 +18,7 @@ last_updated: 2026-11-17T03:09:26.533Z
 | 1 | 2 | lint-warning | tests/harness/main.rs |  | cargo fmt does not reach the scenario modules declared inside harness_modules!, so check.sh fmt passes over unformatted sync.rs, worktree.rs and cut.rs | fixed |  | 2026-10-26T18:59:54.892Z | 2026-10-26T19:04:21.018Z |
 | 2 | 04 | stub | src/model/mod.rs | 296 | resolve with no wsx.sourceBranch returns NotConfigured with an empty candidate list; workspace-branch candidate selection (D-17, D-21) is plan 04-08's | open |  | 2026-11-08T15:28:18.088Z |  |
 | 3 | 04 | deviation | Cargo.lock |  | scripts/check.sh deps fails on RUSTSEC-2026-0486 (rustix 1.1.5); cargo update -p rustix needs the operator, then re-run 04-12's mutation pass | fixed |  | 2026-11-17T02:47:42.137Z | 2026-11-17T03:09:26.533Z |
+| 4 | 05 | stub | src/check/mod.rs |  | evaluate: Modified, Deleted and TypeChanged changes yield no problem until 05-04 judges shared-file changes | open |  | 2026-11-18T20:01:07.385Z |  |
 
 ````json
 [
@@ -58,6 +59,19 @@ last_updated: 2026-11-17T03:09:26.533Z
     "reason": "",
     "recorded_at": "2026-11-17T02:47:42.137Z",
     "resolved_at": "2026-11-17T03:09:26.533Z",
+    "milestone": "v0.1.0"
+  },
+  {
+    "id": 4,
+    "kind": "stub",
+    "phase": "05",
+    "file": "src/check/mod.rs",
+    "line": null,
+    "description": "evaluate: Modified, Deleted and TypeChanged changes yield no problem until 05-04 judges shared-file changes",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-18T20:01:07.385Z",
+    "resolved_at": null,
     "milestone": "v0.1.0"
   }
 ]
