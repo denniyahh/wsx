@@ -202,6 +202,9 @@ Spikes 001 (VALIDATED) and 002 (PARTIAL) answered these; see `.planning/spikes/`
 - **D-37 (Claude's call, 2026-11-17, amends D-27 for one test):** `unsorted_tree_manifest_fails_closed` keeps its
   outer `ManifestUnreadable` and fail-closed result; its inner cause becomes what `cat-file` reports (object
   missing) instead of gix's `TreeNotSorted`.
+  Widened 2026-11-18 (Claude's call, after the phase verifier's ruling) to the same shape in two more tests 04-16
+  changed: `require_passes_a_git_failure_through` now expects git's `ObjectMissing`, and
+  `require_wraps_an_unreadable_manifest_as_not_configured` names `<tip>:.wsx.conf`; both keep their outer behaviour.
 - **Tier A diff review (D-28):** after the last plan's gates pass, the orchestrator runs the external-review diff
   lanes (at least two, in parallel) on the final tip, up to three rounds until no critical finding remains (then the operator decides), before
   the phase is verified.
