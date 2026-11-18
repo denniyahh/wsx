@@ -6,34 +6,42 @@ findings:
   - id: CR-01
     severity: critical
     disposition: open
-    title: "Nested replace refs bypass the D-22 guard; wsx and git read different `.wsx.conf` bytes"
+    title: "A fifo at `.git/config` or `packed-refs` hangs wsx in-process, though D-39 says it is stopped"
   - id: WR-01
     severity: warning
     disposition: open
-    title: "Replace base without a trailing `/` violates `refs_directly_under`'s precondition, so the guard checks nothing"
+    title: "`collect` waits for pipe EOF and kills only the direct child, so a process git leaves behind turns a success into `GitTimedOut` and outlives the kill"
   - id: WR-02
     severity: warning
     disposition: open
-    title: "git-layer messages print ref names raw, so a control byte from config reaches the terminal"
+    title: "The `RefsNamespace` refusal gives a cause that is no longer true"
   - id: WR-03
     severity: warning
     disposition: open
-    title: "`build` resolves the integration branch before the manifest, so a stray candidate reports the wrong failure (D-16)"
+    title: "A repository without `.git/config` fails `resolve` as soon as any global `remote.*` or `wsx.*` key prints"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "Early error returns in `collect` leave the child running with no deadline"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "Impossible-state guard: the 4-answer `try_from` check in `read_tips`"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "The `git` module's doc still says reads go through gix"
+  - id: IN-04
+    severity: info
+    disposition: open
+    title: "The test helpers find the real git only in `/usr/local/bin`, `/usr/bin` or `/bin`"
   - id: WR-04
     severity: warning
     disposition: open
     title: "A symbolic workspace branch is followed, though a symbolic integration rung is refused"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "`NotConfigured` around `ManifestMissing` says \"run wsx init\" twice"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "`WorkspaceBranchMissing` puts C quotes in the middle of a ref name"
-open: 7
-total: 7
-recorded: 2026-11-08T19:40:00.000Z
+open: 9
+total: 9
+recorded: 2026-11-18T05:12:18.204Z
 ---
 
 # Phase 04: Code Review Disposition
@@ -44,9 +52,11 @@ recorded: 2026-11-08T19:40:00.000Z
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
+| IN-03 | info | open | - |
+| IN-04 | info | open | - |
+| WR-04 | warning | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
