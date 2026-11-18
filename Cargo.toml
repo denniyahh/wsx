@@ -54,3 +54,10 @@ serde_json = "1.0.154"
 # the fallback lexer the scan needs outside a proc macro. Dev-only, so nothing
 # ships in the binary; MIT OR Apache-2.0.
 proc-macro2 = { version = "1.0.107", default-features = false }
+# Validates every command's --json output against its schema file under
+# docs/json (D-10a, tests/harness/contract.rs). Dev-only, so nothing ships in
+# the binary. `default-features = false` drops HTTP and file `$ref`
+# resolution, TLS and IDNA, which the schemas do not use: they hold no
+# external `$ref`. MIT; its graph adds MIT-0 to deny.toml. Legitimacy checked
+# in phase 5 research (Package Legitimacy Audit: OK).
+jsonschema = { version = "0.61.2", default-features = false }

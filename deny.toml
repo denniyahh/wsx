@@ -17,7 +17,9 @@ ignore = []
 # Apache-2.0: unicode-bom (and dunce, offered CC0-1.0 OR MIT-0 OR Apache-2.0).
 # Unicode-3.0: unicode-ident and unicode-normalization.
 # Zlib: foldhash and zlib-rs.
-allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
+# MIT-0: borrow-or-share 0.2.4, through the dev-dependency jsonschema
+# (jsonschema -> fluent-uri -> borrow-or-share).
+allow = ["Apache-2.0", "MIT", "MIT-0", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.93
 # cargo-deny 0.20.2 license-checks only normal dependencies by default; without
 # this line the gate never saw tempfile or its transitive crates (verified

@@ -11,6 +11,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Output;
 use std::time::UNIX_EPOCH;
 
@@ -19,7 +20,7 @@ use serde_json::{Map, Value, json};
 use crate::check::{fetch_moved_develop, lose_origin};
 use crate::commands::{COMMANDS, CommandId, CommandSpec};
 use crate::env::{ScenarioDirs, command, hermetic_env, inherited_env};
-use crate::fixture::{Fixture, RepoConfig, WORK};
+use crate::fixture::{Fixture, ManifestKind, RepoConfig, WORK};
 
 /// The `wsx` binary cargo built for this test run.
 const WSX: &str = env!("CARGO_BIN_EXE_wsx");
@@ -33,10 +34,14 @@ struct Contract {
 
 /// The devflow preset in its own `harness-contract-<name>-` tree.
 fn contract(name: &str) -> Contract {
+    contract_with(name, RepoConfig::devflow())
+}
+
+/// `config` in its own `harness-contract-<name>-` tree.
+fn contract_with(name: &str, config: RepoConfig) -> Contract {
     let dirs = ScenarioDirs::new("contract", name).unwrap_or_else(|err| panic!("{err}"));
     let env = hermetic_env(&inherited_env(), &dirs);
-    let fixture =
-        Fixture::new(&dirs, env, RepoConfig::devflow()).unwrap_or_else(|err| panic!("{err}"));
+    let fixture = Fixture::new(&dirs, env, config).unwrap_or_else(|err| panic!("{err}"));
     Contract {
         fixture,
         _dirs: dirs,
@@ -591,16 +596,23 @@ fn check_json_staleness_after_a_fetch() {
     assert_eq!(staleness["fetched_reason"], Value::Null, "fetched_reason");
 }
 
+/// The preset with no remote, and no `wsx.baseRemote` or `wsx.pushRemote`
+/// naming one, so the integration ref is the local `develop` (phase 4 D-07).
+fn local_branch(name: &str) -> Contract {
+    let contract = contract(name);
+    contract.tip("refs/heads/develop");
+    contract.git(&["remote", "remove", "origin"]);
+    contract.git(&["config", "--local", "--unset", "wsx.baseRemote"]);
+    contract.git(&["config", "--local", "--unset", "wsx.pushRemote"]);
+    contract
+}
+
 /// No remote, and no `wsx.baseRemote` or `wsx.pushRemote` naming one, so
 /// the integration ref is the preset's local `develop` (phase 4 D-07):
 /// staleness does not apply and no time is read.
 #[test]
 fn check_json_staleness_does_not_apply_to_a_local_branch() {
-    let contract = contract("staleness_local_branch");
-    contract.tip("refs/heads/develop");
-    contract.git(&["remote", "remove", "origin"]);
-    contract.git(&["config", "--local", "--unset", "wsx.baseRemote"]);
-    contract.git(&["config", "--local", "--unset", "wsx.pushRemote"]);
+    let contract = local_branch("staleness_local_branch");
     let output = contract.wsx(&["check", "--json"]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let object = one_object(&output);
@@ -716,4 +728,248 @@ fn check_json_staleness_read_failure_keeps_the_exit_code() {
         Value::Null,
         "ref_moved_reason"
     );
+}
+
+/// The schema files, as committed.
+const SCHEMA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/json");
+
+/// The schema file of version `version` of command `name`.
+fn schema_file(name: &str, version: u32) -> String {
+    format!("{name}.v{version}.schema.json")
+}
+
+/// The validator for `spec`'s committed schema at its current version.
+fn validator(spec: &CommandSpec) -> jsonschema::Validator {
+    let path = Path::new(SCHEMA_DIR).join(schema_file(spec.name, spec.schema_version));
+    let bytes = fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    let schema: Value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|err| panic!("{} is not JSON: {err}", path.display()));
+    jsonschema::validator_for(&schema)
+        .unwrap_or_else(|err| panic!("{} is not a valid schema: {err}", path.display()))
+}
+
+/// Every error `validator` finds in `instance`, each after the location
+/// it names.
+fn schema_errors(validator: &jsonschema::Validator, instance: &Value) -> Vec<String> {
+    validator
+        .iter_errors(instance)
+        .map(|err| format!("at {:?}: {err}", err.instance_path().as_str()))
+        .collect()
+}
+
+/// The seven problem kinds, by their JSON names.
+const PROBLEM_KINDS: [&str; 7] = [
+    "undeclared_added",
+    "undeclared_modified",
+    "undeclared_deleted",
+    "stale_only",
+    "stale_modified",
+    "redundant_builtin",
+    "hook_not_executable",
+];
+
+/// One fixture with every problem kind: `origin/develop` gains
+/// `src/b.txt` and `shared/x.md`, which `work` fetches and merges, with
+/// `only shared` and `modified src/b.txt` declared (stale); `only
+/// .worktrees/x` (redundant); an undeclared `0xFF.md`, an edited
+/// `README.md` and a deleted `src/a.txt`; and `scripts/hooks/pre-push`
+/// committed 100644 under `core.hooksPath scripts/hooks`, with `only
+/// scripts` declared.
+fn all_kinds(name: &str) -> Contract {
+    let config = RepoConfig::devflow()
+        .with_manifest_entry(ManifestKind::Only, b"shared")
+        .with_manifest_entry(ManifestKind::Modified, b"src/b.txt")
+        .with_manifest_entry(ManifestKind::Only, b".worktrees/x")
+        .with_manifest_entry(ManifestKind::Only, b"scripts");
+    let mut contract = contract_with(name, config);
+    contract
+        .fixture
+        .advance_remote("origin", "develop", |fixture, scratch| {
+            fixture.write(scratch, b"src/b.txt", b"b\n")?;
+            fixture.write(scratch, b"shared/x.md", b"x\n")?;
+            fixture.commit(scratch, b"feat: add two shared files\n")
+        })
+        .unwrap_or_else(|err| panic!("{err}"));
+    contract.git(&["fetch", "--quiet", "origin"]);
+    contract
+        .fixture
+        .git_tick(
+            WORK,
+            ["merge", "--quiet", "--no-ff", "--no-edit", "origin/develop"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+    contract.add_file(b"\xff.md");
+    let hook = b"scripts/hooks/pre-push";
+    for (path, content) in [
+        (&b"README.md"[..], &b"# Fixture, edited\n"[..]),
+        (hook, b"#!/bin/sh\nexit 0\n"),
+    ] {
+        contract
+            .fixture
+            .write(WORK, path, content)
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+    let full = contract
+        .fixture
+        .checkout(WORK)
+        .join("scripts/hooks/pre-push");
+    fs::set_permissions(&full, fs::Permissions::from_mode(0o644))
+        .unwrap_or_else(|err| panic!("chmod {}: {err}", full.display()));
+    contract
+        .fixture
+        .remove(WORK, b"src/a.txt")
+        .unwrap_or_else(|err| panic!("{err}"));
+    contract
+        .fixture
+        .commit(WORK, b"chore(ws): edit, delete and add a hook\n")
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(
+        contract.git(&[
+            "ls-tree",
+            "--format=%(objectmode)",
+            "HEAD",
+            "--",
+            "scripts/hooks/pre-push"
+        ]),
+        b"100644\n"
+    );
+    contract.git(&["config", "core.hooksPath", "scripts/hooks"]);
+    contract
+}
+
+/// The preset with `wsx.baseRemote` naming a remote that does not exist.
+fn bad_base_remote(name: &str) -> Contract {
+    let contract = contract(name);
+    contract.git(&["config", "--local", "wsx.baseRemote", "nowhere"]);
+    contract
+}
+
+/// `object`'s problems hold every kind at least once and its hooks object
+/// says the hooks were checked.
+fn assert_all_kinds(object: &Value) {
+    let kinds: Vec<&Value> = object["problems"]
+        .as_array()
+        .expect("problems is an array")
+        .iter()
+        .map(|problem| &problem["kind"])
+        .collect();
+    for kind in PROBLEM_KINDS {
+        assert!(kinds.contains(&&json!(kind)), "no {kind} in {kinds:?}");
+    }
+    assert_eq!(object["hooks"]["checked"], json!(true), "hooks.checked");
+}
+
+/// One `--json` run for the schema test: its fixture, the arguments after
+/// `<name> --json`, the exit code it stands for and any further check.
+struct SchemaCase {
+    name: &'static str,
+    contract: Contract,
+    extra: &'static [&'static str],
+    exit: i32,
+    also: Option<fn(&Value)>,
+}
+
+impl SchemaCase {
+    fn new(name: &'static str, contract: Contract, exit: i32) -> SchemaCase {
+        SchemaCase {
+            name,
+            contract,
+            extra: &[],
+            exit,
+            also: None,
+        }
+    }
+}
+
+/// D-10a: every command's success and failure cases each print one object
+/// that validates against the command's schema at its current version. For
+/// check: exit 0, exit 1 with every problem kind, exit 2, 3 and 4, and the
+/// local-branch staleness form. The match on `CommandId` is exhaustive, so
+/// a new command needs cases here to compile.
+#[test]
+fn every_command_output_matches_its_schema() {
+    for spec in COMMANDS {
+        let cases = match spec.id {
+            CommandId::Check => vec![
+                SchemaCase::new("passes", contract("schema_passes"), 0),
+                SchemaCase {
+                    also: Some(assert_all_kinds),
+                    ..SchemaCase::new("all_kinds", all_kinds("schema_all_kinds"), 1)
+                },
+                SchemaCase {
+                    extra: &["--bogus"],
+                    ..SchemaCase::new("usage", contract("schema_usage"), 2)
+                },
+                SchemaCase::new("candidates", two_candidates("schema_candidates"), 3),
+                SchemaCase::new(
+                    "bad_base_remote",
+                    bad_base_remote("schema_bad_base_remote"),
+                    4,
+                ),
+                SchemaCase::new("local_branch", local_branch("schema_local_branch"), 0),
+            ],
+        };
+        let validator = validator(spec);
+        for case in &cases {
+            let mut args = vec![spec.name, "--json"];
+            args.extend(case.extra);
+            let output = case.contract.wsx(&args);
+            assert_eq!(
+                output.status.code(),
+                Some(case.exit),
+                "{} {}: stderr: {}",
+                spec.name,
+                case.name,
+                stderr(&output)
+            );
+            let object = Value::Object(one_object(&output));
+            let errors = schema_errors(&validator, &object);
+            assert!(
+                errors.is_empty(),
+                "{} {}: {object} fails {}:\n{}",
+                spec.name,
+                case.name,
+                schema_file(spec.name, spec.schema_version),
+                errors.join("\n")
+            );
+            if let Some(also) = case.also {
+                also(&object);
+            }
+        }
+    }
+}
+
+/// The schema is strict: a real check object with `problems` renamed, a
+/// problem kind unknown, or a hex path of odd length each fails validation;
+/// the unmutated object (control) passes.
+#[test]
+fn schema_rejects_a_renamed_field() {
+    let validator = validator(check_spec());
+    let contract = with_note("schema_rejects");
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    let real = Value::Object(one_object(&output));
+    assert_eq!(
+        schema_errors(&validator, &real),
+        Vec::<String>::new(),
+        "the unmutated object"
+    );
+    let mut renamed = real.clone();
+    let object = renamed.as_object_mut().expect("an object");
+    let problems = object.remove("problems").expect("a problems key");
+    object.insert("problem".to_owned(), problems);
+    let mut unknown_kind = real.clone();
+    unknown_kind["problems"][0]["kind"] = json!("undeclared_renamed");
+    let mut odd_hex = real.clone();
+    odd_hex["problems"][0]["path"] = json!({"hex": "abc"});
+    for (mutation, mutated) in [
+        ("problems renamed problem", renamed),
+        ("kind undeclared_renamed", unknown_kind),
+        ("path hex abc", odd_hex),
+    ] {
+        assert!(
+            !schema_errors(&validator, &mutated).is_empty(),
+            "{mutation}: the schema accepts {mutated}"
+        );
+    }
 }
