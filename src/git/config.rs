@@ -1178,6 +1178,57 @@ mod tests {
         );
     }
 
+    /// A repository with no `.git/config` of its own, which git still works in,
+    /// reads as holding no keys of its own when git prints a global record,
+    /// never fails the read. Control: the same global record with the file
+    /// present reads the same way.
+    #[test]
+    fn config_read_without_an_own_config_file_keeps_no_keys() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("config-read-no-own-file").expect("scratch");
+        let repo = one_commit_repo(&scratch, "repo");
+        let global = scratch.home.join(".gitconfig");
+        let mut config = std::fs::read(&global).expect("read the scratch global config");
+        config.extend_from_slice(
+            b"[wsx]\n\tsourceBranch = workspace/dev\n[remote]\n\tpushDefault = g\n",
+        );
+        write(&global, &config).expect("append the global keys");
+        let found = Repo::discover(&repo)
+            .unwrap_or_else(|err| panic!("discover {}: {err}", repo.display()));
+        let helper = Git::for_repo(scratch.env.clone(), &found);
+        let control = found
+            .read_config(&helper)
+            .unwrap_or_else(|err| panic!("control read_config: {err}"));
+        assert_eq!(
+            control.values(KEY),
+            Vec::<Vec<u8>>::new(),
+            "control: the global key is not read"
+        );
+
+        let own = repo.join(".git/config");
+        std::fs::remove_file(&own).unwrap_or_else(|err| panic!("remove {}: {err}", own.display()));
+        let status = git(&scratch, &repo, &["status", "--porcelain"]);
+        assert_eq!(
+            status.status.code(),
+            Some(0),
+            "git works without its config: {status:?}"
+        );
+        let listed = git(&scratch, &repo, &REGEXP_ARGS);
+        assert_eq!(
+            listed.status.code(),
+            Some(0),
+            "git prints the global records: {listed:?}"
+        );
+
+        let read = found
+            .read_config(&helper)
+            .unwrap_or_else(|err| panic!("read_config without .git/config: {err}"));
+        assert_eq!(read.values(KEY), Vec::<Vec<u8>>::new());
+        assert!(!read.defines_remote(b"g"));
+    }
+
     /// A config file git cannot parse fails the read with git's own failure,
     /// never an empty answer.
     #[test]
