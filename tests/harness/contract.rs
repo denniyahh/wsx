@@ -21,6 +21,7 @@ use crate::check::{fetch_moved_develop, lose_origin};
 use crate::commands::{COMMANDS, CommandId, CommandSpec};
 use crate::env::{Env, ScenarioDirs, command, hermetic_env, inherited_env};
 use crate::fixture::{Fixture, ManifestKind, RepoConfig, WORK};
+use crate::provenance::hash_blob;
 
 /// The `wsx` binary cargo built for this test run.
 const WSX: &str = env!("CARGO_BIN_EXE_wsx");
@@ -981,27 +982,107 @@ fn schema_rejects_a_renamed_field() {
 /// `src/cli/commands.rs`, adds `<command>.v<N+1>.schema.json` and a row
 /// here, and keeps the old file and row (docs/json/README.md).
 const SCHEMA_PINS: [(&str, u32, &str); 1] =
-    [("check", 1, "0000000000000000000000000000000000000000")];
+    [("check", 1, "4dddf8bbb55fbcde054f2946b76105761202bfc1")];
 
 /// Each pinned schema file under `dir` whose blob is not its pin, as a line
-/// saying a change needs a new version.
+/// saying a change needs a new version. A file that cannot be hashed is
+/// reported too, so a missing file never reads as a match. `git
+/// hash-object` runs in the scenario HOME with `env`.
 fn pin_mismatches(
-    _dir: &Path,
-    _pins: &[(&str, u32, &str)],
-    _dirs: &ScenarioDirs,
-    _env: &Env,
+    dir: &Path,
+    pins: &[(&str, u32, &str)],
+    dirs: &ScenarioDirs,
+    env: &Env,
 ) -> Vec<String> {
-    Vec::new()
+    pins.iter()
+        .filter_map(|&(name, version, pinned)| {
+            let file = schema_file(name, version);
+            match hash_blob(&dir.join(&file), dirs, env) {
+                Ok(actual) if actual == pinned => None,
+                Ok(actual) => Some(format!(
+                    "docs/json/{file}: blob {actual}, pinned {pinned} for ({name}, {version}): \
+                     a schema change needs a new version: bump schema_version in \
+                     src/cli/commands.rs, add {} and its pin, and keep the old file and pin",
+                    schema_file(name, version + 1)
+                )),
+                Err(reason) => Some(format!("docs/json/{file}: {reason}")),
+            }
+        })
+        .collect()
+}
+
+/// `file`'s command name and version, when it is named
+/// `<name>.v<N>.schema.json`.
+fn parse_schema_file(file: &str) -> Option<(&str, u32)> {
+    let (name, version) = file.strip_suffix(".schema.json")?.rsplit_once(".v")?;
+    let version = version.parse().ok()?;
+    (!name.is_empty()).then_some((name, version))
+}
+
+/// The names of the `*.schema.json` files in `dir`, sorted, or why `dir`
+/// could not be listed.
+fn schema_files(dir: &Path) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(dir).map_err(|err| format!("list {}: {err}", dir.display()))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("list {}: {err}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".schema.json") {
+            files.push(name);
+        }
+    }
+    files.sort_unstable();
+    Ok(files)
 }
 
 /// What keeps `commands`, `pins` and the schema files in `dir` from
-/// covering each other.
-fn coverage_gaps(
-    _commands: &[CommandSpec],
-    _pins: &[(&str, u32, &str)],
-    _dir: &Path,
-) -> Vec<String> {
-    Vec::new()
+/// covering each other: a command with no file or no pin for its current
+/// version, a schema file that names no version of a command (`N` from 1
+/// to its `schema_version`) or has no pin, and a pin with no file.
+fn coverage_gaps(commands: &[CommandSpec], pins: &[(&str, u32, &str)], dir: &Path) -> Vec<String> {
+    let pinned = |name: &str, version: u32| {
+        pins.iter()
+            .any(|&(pin_name, pin_version, _)| pin_name == name && pin_version == version)
+    };
+    let mut gaps = Vec::new();
+    for spec in commands {
+        let file = schema_file(spec.name, spec.schema_version);
+        if !dir.join(&file).is_file() {
+            gaps.push(format!("command {}: no docs/json/{file}", spec.name));
+        }
+        if !pinned(spec.name, spec.schema_version) {
+            gaps.push(format!(
+                "command {}: no pin for ({}, {}) in SCHEMA_PINS",
+                spec.name, spec.name, spec.schema_version
+            ));
+        }
+    }
+    match schema_files(dir) {
+        Ok(files) => {
+            for file in files {
+                let known = parse_schema_file(&file).filter(|&(name, version)| {
+                    commands.iter().any(|spec| {
+                        spec.name == name && (1..=spec.schema_version).contains(&version)
+                    })
+                });
+                match known {
+                    Some((name, version)) if pinned(name, version) => {}
+                    Some(_) => gaps.push(format!("docs/json/{file}: no pin in SCHEMA_PINS")),
+                    None => gaps.push(format!(
+                        "docs/json/{file}: names no version of a command in COMMANDS"
+                    )),
+                }
+            }
+        }
+        Err(reason) => gaps.push(reason),
+    }
+    for &(name, version, _) in pins {
+        let file = schema_file(name, version);
+        if !dir.join(&file).is_file() {
+            gaps.push(format!("pin ({name}, {version}): no docs/json/{file}"));
+        }
+    }
+    gaps
 }
 
 /// A fresh copy of the committed schema directory at
