@@ -123,8 +123,8 @@ fn blob_mismatches(
 }
 
 /// The blob id git gives `file`'s bytes, with no attribute or line-ending
-/// filter applied.
-fn hash_blob(file: &Path, dirs: &ScenarioDirs, env: &Env) -> Result<String, String> {
+/// filter applied. Also used by contract.rs for the schema pins.
+pub fn hash_blob(file: &Path, dirs: &ScenarioDirs, env: &Env) -> Result<String, String> {
     let output = command("git", &dirs.home, env)
         .args([OsStr::new("hash-object"), OsStr::new("--no-filters")])
         .arg(file)

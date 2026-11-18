@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 
 use crate::check::{fetch_moved_develop, lose_origin};
 use crate::commands::{COMMANDS, CommandId, CommandSpec};
-use crate::env::{ScenarioDirs, command, hermetic_env, inherited_env};
+use crate::env::{Env, ScenarioDirs, command, hermetic_env, inherited_env};
 use crate::fixture::{Fixture, ManifestKind, RepoConfig, WORK};
 
 /// The `wsx` binary cargo built for this test run.
@@ -972,4 +972,133 @@ fn schema_rejects_a_renamed_field() {
             "{mutation}: the schema accepts {mutated}"
         );
     }
+}
+
+/// Every schema file's pinned blob: `(command, schema version, blob)`, the
+/// blob being what `git hash-object --no-filters
+/// docs/json/<command>.v<N>.schema.json` prints. A schema file never changes
+/// once pinned: a change bumps the command's `schema_version` in
+/// `src/cli/commands.rs`, adds `<command>.v<N+1>.schema.json` and a row
+/// here, and keeps the old file and row (docs/json/README.md).
+const SCHEMA_PINS: [(&str, u32, &str); 1] =
+    [("check", 1, "0000000000000000000000000000000000000000")];
+
+/// Each pinned schema file under `dir` whose blob is not its pin, as a line
+/// saying a change needs a new version.
+fn pin_mismatches(
+    _dir: &Path,
+    _pins: &[(&str, u32, &str)],
+    _dirs: &ScenarioDirs,
+    _env: &Env,
+) -> Vec<String> {
+    Vec::new()
+}
+
+/// What keeps `commands`, `pins` and the schema files in `dir` from
+/// covering each other.
+fn coverage_gaps(
+    _commands: &[CommandSpec],
+    _pins: &[(&str, u32, &str)],
+    _dir: &Path,
+) -> Vec<String> {
+    Vec::new()
+}
+
+/// A fresh copy of the committed schema directory at
+/// `CARGO_TARGET_TMPDIR/contract-pins/<name>`.
+fn schema_copy(name: &str) -> std::path::PathBuf {
+    let copy = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("contract-pins")
+        .join(name);
+    if copy.exists() {
+        fs::remove_dir_all(&copy).expect("remove a stale schema copy");
+    }
+    fs::create_dir_all(&copy).expect("create the schema copy");
+    for entry in fs::read_dir(SCHEMA_DIR).expect("read docs/json") {
+        let entry = entry.expect("a docs/json entry");
+        fs::copy(entry.path(), copy.join(entry.file_name())).expect("copy a docs/json file");
+    }
+    copy
+}
+
+/// The hermetic environment of a `harness-contract-<name>-` tree, for git.
+fn scenario(name: &str) -> (ScenarioDirs, Env) {
+    let dirs = ScenarioDirs::new("contract", name).unwrap_or_else(|err| panic!("{err}"));
+    let env = hermetic_env(&inherited_env(), &dirs);
+    (dirs, env)
+}
+
+/// D-10b: every committed schema file hashes to its pin.
+#[test]
+fn schema_files_match_their_pins() {
+    let (dirs, env) = scenario("pins");
+    assert_eq!(
+        pin_mismatches(Path::new(SCHEMA_DIR), &SCHEMA_PINS, &dirs, &env),
+        Vec::<String>::new()
+    );
+}
+
+/// D-10b's control: one field renamed in a scratch copy of check's schema,
+/// with no version bump, is exactly one mismatch naming the file and saying
+/// a change needs a new version.
+#[test]
+fn a_schema_edit_without_a_version_bump_fails() {
+    let (dirs, env) = scenario("pins_edited");
+    let copy = schema_copy("edited");
+    let file = copy.join("check.v1.schema.json");
+    let before = fs::read_to_string(&file).expect("read the copied schema");
+    let after = before.replace("\"problems\"", "\"problem\"");
+    assert_ne!(before, after, "the edit changed nothing");
+    fs::write(&file, after).expect("write the edited schema");
+    let mismatches = pin_mismatches(&copy, &SCHEMA_PINS, &dirs, &env);
+    assert_eq!(mismatches.len(), 1, "mismatches: {mismatches:?}");
+    assert!(
+        mismatches[0].contains("check.v1.schema.json"),
+        "{}",
+        mismatches[0]
+    );
+    assert!(
+        mismatches[0].contains("needs a new version"),
+        "{}",
+        mismatches[0]
+    );
+}
+
+/// D-10c: every `COMMANDS` entry has its schema file and pin, and every
+/// schema file and pin belongs to an entry.
+#[test]
+fn every_command_has_a_pinned_schema() {
+    assert_eq!(
+        coverage_gaps(COMMANDS, &SCHEMA_PINS, Path::new(SCHEMA_DIR)),
+        Vec::<String>::new()
+    );
+}
+
+/// D-10c's control: a table entry with no schema and a stray schema file
+/// are each named; the unmodified inputs give no gap.
+#[test]
+fn a_command_without_a_pinned_schema_is_named() {
+    assert_eq!(
+        coverage_gaps(COMMANDS, &SCHEMA_PINS, Path::new(SCHEMA_DIR)),
+        Vec::<String>::new(),
+        "the unmodified inputs"
+    );
+    let mut extra = COMMANDS.to_vec();
+    extra.push(CommandSpec {
+        id: CommandId::Check,
+        name: "bogus",
+        schema_version: 1,
+    });
+    let gaps = coverage_gaps(&extra, &SCHEMA_PINS, Path::new(SCHEMA_DIR));
+    assert!(
+        !gaps.is_empty() && gaps.iter().all(|gap| gap.contains("bogus")),
+        "gaps: {gaps:?}"
+    );
+    let copy = schema_copy("stray");
+    fs::write(copy.join("stray.v1.schema.json"), "{}\n").expect("write the stray schema");
+    let gaps = coverage_gaps(COMMANDS, &SCHEMA_PINS, &copy);
+    assert!(
+        !gaps.is_empty() && gaps.iter().all(|gap| gap.contains("stray.v1.schema.json")),
+        "gaps: {gaps:?}"
+    );
 }
