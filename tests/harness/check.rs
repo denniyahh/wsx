@@ -1,4 +1,4 @@
-//! Divergence-check scenarios (plans 02-07, 02-13 and 03-02).
+//! Divergence-check scenarios (plans 02-07, 02-13, 03-02 and 05-04).
 //!
 //! Each scenario runs the check that the workspace branch differs from the
 //! integration branch only in the paths its manifests allow, and states the
@@ -27,13 +27,7 @@ fn no_steps(_: &mut Fixture) -> Result<(), String> {
 
 /// The check in `work`: it reads and writes nothing in the repository.
 fn check_in_work(config: RepoConfig, fixture: FixtureFn) -> Case {
-    Case::new(
-        config,
-        fixture,
-        Action::Check {
-            checkout: WORK.to_owned(),
-        },
-    )
+    check_in(WORK, config, fixture)
 }
 
 /// The check's verdict with the repository left as it was.
@@ -432,6 +426,277 @@ fn replace_refs_refused() -> Scenario {
     )
 }
 
+/// The check in `checkout`: it reads and writes nothing in the repository.
+fn check_in(checkout: &str, config: RepoConfig, fixture: FixtureFn) -> Case {
+    Case::new(
+        config,
+        fixture,
+        Action::Check {
+            checkout: checkout.to_owned(),
+        },
+    )
+}
+
+/// Fixture step: the workspace branch edits the shared `README.md` in a
+/// commit of its own.
+fn edit_readme(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.write(WORK, b"README.md", b"# Fixture, edited\n")?;
+    fixture.commit(WORK, b"chore(ws): edit the readme\n")
+}
+
+/// Fixture step: the workspace branch deletes the shared `src/a.txt` in a
+/// commit of its own.
+fn delete_shared(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.remove(WORK, b"src/a.txt")?;
+    fixture.commit(WORK, b"chore(ws): delete a shared file\n")
+}
+
+/// The devflow preset declaring `modified <path>`.
+fn declaring_modified(path: &[u8]) -> RepoConfig {
+    RepoConfig::devflow().with_manifest_entry(ManifestKind::Modified, path)
+}
+
+/// The known-positive control every scenario below shares: an undeclared
+/// `notes/todo.md`, refused on both sides.
+fn undeclared_note_in(checkout: &str, fixture: FixtureFn) -> Case {
+    check_in(checkout, RepoConfig::devflow(), fixture)
+        .expect(verdict(1))
+        .oracle_stderr(UNDECLARED_NOTE)
+        .rust_stderr(UNDECLARED_NOTE_WSX)
+}
+
+/// DIV-01 modified shared file, Parity. The workspace branch edits
+/// `README.md`, which no `modified` entry names: exit 1 on both sides. The
+/// clean control declares `modified README.md` and passes.
+fn undeclared_modified() -> Scenario {
+    Scenario::new(
+        "undeclared_modified",
+        check_in_work(RepoConfig::devflow(), edit_readme)
+            .expect(verdict(1))
+            .oracle_stderr(b"undeclared change to a develop file: README.md")
+            .rust_stderr(
+                b"undeclared change to a shared file: README.md (move it to the integration \
+                  branch, or declare: modified README.md)\n",
+            ),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(declaring_modified(b"README.md"), edit_readme).expect(verdict(0)),
+    )
+}
+
+/// DIV-01 deleted shared file, Parity. The workspace branch deletes
+/// `src/a.txt`, which no `modified` entry names: exit 1 on both sides. The
+/// clean control declares `modified src/a.txt` and passes.
+fn undeclared_deleted() -> Scenario {
+    Scenario::new(
+        "undeclared_deleted",
+        check_in_work(RepoConfig::devflow(), delete_shared)
+            .expect(verdict(1))
+            .oracle_stderr(b"undeclared change to a develop file: src/a.txt")
+            .rust_stderr(
+                b"undeclared deletion of a shared file: src/a.txt (restore it, or declare: \
+                  modified src/a.txt)\n",
+            ),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(declaring_modified(b"src/a.txt"), delete_shared).expect(verdict(0)),
+    )
+}
+
+/// Fixture step: `origin/develop` gains `shared/x.md`, and `work` fetches
+/// it and merges it into the workspace branch, so the file is on both tips
+/// and is no difference between them (05-RESEARCH Pitfall 4). The step then
+/// asks git for the file at `refs/remotes/origin/develop` and for the
+/// workspace tip's parents, and fails unless the file is there and the tip
+/// is a merge.
+fn integration_carries_shared(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.advance_remote("origin", "develop", |fixture, scratch| {
+        fixture.write(scratch, b"shared/x.md", b"x\n")?;
+        fixture.commit(scratch, b"feat: add a shared file\n")
+    })?;
+    fixture.git_ok(WORK, ["fetch", "--quiet", "origin"])?;
+    fixture.git_tick(
+        WORK,
+        ["merge", "--quiet", "--no-ff", "--no-edit", "origin/develop"],
+    )?;
+    fixture
+        .git_ok(
+            WORK,
+            ["cat-file", "-e", "refs/remotes/origin/develop:shared/x.md"],
+        )
+        .map_err(|err| format!("refs/remotes/origin/develop lacks shared/x.md: {err}"))?;
+    let parents = fixture.git_ok(WORK, ["rev-list", "--parents", "-n", "1", "workspace/dev"])?;
+    let count = parents
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|word| !word.is_empty())
+        .count();
+    if count == 3 {
+        Ok(())
+    } else {
+        Err(format!(
+            "the workspace tip is not a two-parent merge: rev-list --parents printed {:?}",
+            String::from_utf8_lossy(&parents)
+        ))
+    }
+}
+
+/// DIV-02 stale `only` entry, Parity. The integration branch carries
+/// `shared/x.md` and the manifests declare `only shared`: exit 1 on both
+/// sides. The clean control is the same history without the declaration.
+fn stale_only() -> Scenario {
+    Scenario::new(
+        "stale_only",
+        check_in_work(
+            RepoConfig::devflow().with_manifest_entry(ManifestKind::Only, b"shared"),
+            integration_carries_shared,
+        )
+        .expect(verdict(1))
+        .oracle_stderr(b"stale declaration: 'only shared' but origin/develop carries it")
+        .rust_stderr(
+            b"stale declaration: only shared, but refs/remotes/origin/develop carries it\n",
+        ),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), integration_carries_shared).expect(verdict(0)),
+    )
+}
+
+/// DIV-02 stale `modified` entry, Parity. The manifests declare `modified
+/// README.md` and the workspace branch leaves it as the integration branch
+/// has it: exit 1 on both sides. The clean control edits it.
+fn stale_modified() -> Scenario {
+    Scenario::new(
+        "stale_modified",
+        check_in_work(declaring_modified(b"README.md"), no_steps)
+            .expect(verdict(1))
+            .oracle_stderr(b"stale declaration: 'modified README.md' but it matches origin/develop")
+            .rust_stderr(
+                b"stale declaration: modified README.md, but it matches \
+                  refs/remotes/origin/develop\n",
+            ),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(declaring_modified(b"README.md"), edit_readme).expect(verdict(0)),
+    )
+}
+
+/// Why wsx refuses a declaration a built-in already covers.
+const REDUNDANT_REASON: &str = "wsx reports an entry under a built-in personal path as redundant \
+     (DIV-02); the oracle has no redundancy rule";
+
+/// DIV-02 redundant declaration, `regression:`. The manifests declare
+/// `only .worktrees/x`, under the built-in worktree directory: wsx exits 1
+/// naming the built-in. The oracle's record is what the vendored check was
+/// observed to do on the same repository.
+fn redundant_builtin() -> Scenario {
+    Scenario::new(
+        "redundant_builtin",
+        check_in_work(
+            RepoConfig::devflow().with_manifest_entry(ManifestKind::Only, b".worktrees/x"),
+            no_steps,
+        )
+        .expect(verdict(1))
+        .rust_stderr(
+            b"redundant declaration: only .worktrees/x is already personal as the built-in \
+              .worktrees\n",
+        )
+        .class(Class::Regression {
+            reason: REDUNDANT_REASON,
+        })
+        .oracle(OracleSide::Recorded(verdict(0))),
+    )
+    .control(Role::KnownPositive, undeclared_note_in(WORK, add_note))
+    .control(
+        Role::Clean,
+        check_in_work(RepoConfig::devflow(), no_steps).expect(verdict(0)),
+    )
+}
+
+/// The feature worktree's checkout, under `work`'s built-in worktree
+/// directory.
+const FEATURE: &str = "work/.worktrees/feat";
+
+/// Fixture step: `work` gains the linked worktree `.worktrees/feat` on a new
+/// branch `feat` at the workspace tip. The step then asks the worktree for
+/// its branch and fails unless it is `feat`.
+fn add_feature_worktree(fixture: &mut Fixture) -> Result<(), String> {
+    fixture.git_ok(
+        WORK,
+        [
+            "worktree",
+            "add",
+            "--quiet",
+            ".worktrees/feat",
+            "-b",
+            "feat",
+        ],
+    )?;
+    let branch = fixture.git_ok(FEATURE, ["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if branch == b"feat\n" {
+        Ok(())
+    } else {
+        Err(format!(
+            "the feature worktree reports branch {:?}, not feat",
+            String::from_utf8_lossy(&branch)
+        ))
+    }
+}
+
+/// Fixture step: the feature worktree, then `feature.txt` committed on
+/// `feat`.
+fn commit_on_feature(fixture: &mut Fixture) -> Result<(), String> {
+    add_feature_worktree(fixture)?;
+    fixture.write(FEATURE, b"feature.txt", b"feature\n")?;
+    fixture.commit(FEATURE, b"feat: add a feature file\n")
+}
+
+/// Fixture step: `notes/todo.md` committed on the workspace branch, then the
+/// feature worktree.
+fn note_then_feature_worktree(fixture: &mut Fixture) -> Result<(), String> {
+    add_note(fixture)?;
+    add_feature_worktree(fixture)
+}
+
+/// What the oracle was observed doing in the feature worktree.
+const FEATURE_WORKTREE_DEFECT: &str = "the oracle judges HEAD, the feature branch, and exits 1 \
+     refusing feature.txt as undeclared";
+
+/// D-02 feature worktree, `fixed:`. Run from a linked worktree whose branch
+/// `feat` adds `feature.txt`, wsx checks the workspace branch the repo
+/// model names, not HEAD, and passes. The oracle judges HEAD and refuses
+/// the feature file. The known-positive control commits an undeclared
+/// `notes/todo.md` on the workspace branch before the worktree is added and
+/// is refused on both sides; the clean control is the worktree with no
+/// commit.
+fn feature_worktree() -> Scenario {
+    Scenario::new(
+        "feature_worktree",
+        check_in(FEATURE, RepoConfig::devflow(), commit_on_feature)
+            .expect(verdict(0))
+            .class(Class::Fixed {
+                defect: FEATURE_WORKTREE_DEFECT,
+            })
+            .oracle(OracleSide::Recorded(verdict(1)))
+            .oracle_stderr(b"undeclared workspace-only path: feature.txt"),
+    )
+    .control(
+        Role::KnownPositive,
+        undeclared_note_in(FEATURE, note_then_feature_worktree),
+    )
+    .control(
+        Role::Clean,
+        check_in(FEATURE, RepoConfig::devflow(), add_feature_worktree).expect(verdict(0)),
+    )
+}
+
 scenarios! {
     self_test: oracle, rust_enabled;
     quoted_personal_names: oracle, rust_enabled;
@@ -440,4 +705,10 @@ scenarios! {
     no_gsd_custom_personal_path: rust_only, rust_enabled;
     reftable_refused: oracle, rust_enabled;
     replace_refs_refused: oracle, rust_enabled;
+    undeclared_modified: oracle, rust_enabled;
+    undeclared_deleted: oracle, rust_enabled;
+    stale_only: oracle, rust_enabled;
+    stale_modified: oracle, rust_enabled;
+    redundant_builtin: oracle, rust_enabled;
+    feature_worktree: oracle, rust_enabled;
 }
