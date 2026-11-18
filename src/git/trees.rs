@@ -63,35 +63,178 @@ const LIST_ARGS: [&str; 6] = [NO_LAZY_FETCH, "ls-tree", "-r", "-t", "-z", "--ful
 const BLOB_ARGS: [&str; 3] = [NO_LAZY_FETCH, "cat-file", BATCH_FORMAT];
 
 impl Repo {
-    /// Stub.
+    /// For each of `paths`, in order, the entry `commit`'s tree holds there,
+    /// or `None` when it holds none, from one
+    /// `git --no-lazy-fetch cat-file --batch-check=... -Z` child fed
+    /// `<commit id>:<path>` NUL requests through `Git::run_with_input`. A
+    /// path is a request on stdin only, never an argument or a pathspec, so
+    /// a newline or pathspec magic in it widens nothing. A gitlink, whose
+    /// commit git usually does not hold, is answered `<id> submodule` and
+    /// read as `MODE_GITLINK`. An empty `paths` spawns no child.
+    ///
+    /// The child's failure is `Error::GitFailed`; an answer count that is
+    /// not one per request, or an answer that does not parse, is
+    /// `Error::GitBadOutput`.
     pub fn lookup_paths(
         &self,
-        _git: &Git,
-        _commit: &ObjectId,
-        _paths: &[&[u8]],
+        git: &Git,
+        commit: &ObjectId,
+        paths: &[&[u8]],
     ) -> Result<Vec<Option<TreeEntry>>, Error> {
-        Ok(Vec::new())
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let requests: Vec<Vec<u8>> = paths
+            .iter()
+            .map(|path| {
+                debug_assert!(!path.contains(&0), "a path holds no NUL");
+                [format!("{commit}:").as_bytes(), path].concat()
+            })
+            .collect();
+        let mut input = Vec::new();
+        for request in &requests {
+            input.extend_from_slice(request);
+            input.push(0);
+        }
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = git.run_with_input(cwd, LOOKUP_ARGS, &input)?;
+        parse_lookup(&stdout, &requests).map_err(|problem| Error::GitBadOutput {
+            argv: LOOKUP_ARGS.iter().map(OsString::from).collect(),
+            problem,
+        })
     }
 
-    /// Stub.
-    pub fn list_tree(&self, _git: &Git, _commit: &ObjectId) -> Result<Vec<ListedEntry>, Error> {
-        Ok(Vec::new())
+    /// Every entry of `commit`'s tree, directories included, in git's tree
+    /// order, from one `git --no-lazy-fetch ls-tree -r -t -z --full-tree
+    /// <commit id>` child. Output that does not parse is
+    /// `Error::GitBadOutput`, never a shorter list.
+    pub fn list_tree(&self, git: &Git, commit: &ObjectId) -> Result<Vec<ListedEntry>, Error> {
+        let mut argv: Vec<OsString> = LIST_ARGS.iter().map(OsString::from).collect();
+        argv.push(OsString::from(commit.to_string()));
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = git.run(cwd, &argv)?;
+        parse_listing(&stdout).map_err(|problem| Error::GitBadOutput { argv, problem })
     }
 
-    /// Stub.
-    pub fn read_blobs(&self, _git: &Git, _ids: &[ObjectId]) -> Result<Vec<Vec<u8>>, Error> {
-        Ok(Vec::new())
+    /// The bytes of each blob in `ids`, in order, from one
+    /// `git --no-lazy-fetch cat-file --batch=...` child fed one hex id per
+    /// line (an id holds no LF). An id git answers `missing` for is
+    /// `Error::ObjectMissing` naming it; an object that is not a blob, or
+    /// output that does not parse, is `Error::GitBadOutput`. An empty `ids`
+    /// spawns no child.
+    pub fn read_blobs(&self, git: &Git, ids: &[ObjectId]) -> Result<Vec<Vec<u8>>, Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut input = Vec::new();
+        for id in ids {
+            input.extend_from_slice(id.to_string().as_bytes());
+            input.push(b'\n');
+        }
+        let cwd = self.worktree().unwrap_or(self.git_dir());
+        let stdout = git.run_with_input(cwd, BLOB_ARGS, &input)?;
+        let bad = |problem: String| Error::GitBadOutput {
+            argv: BLOB_ARGS.iter().map(OsString::from).collect(),
+            problem,
+        };
+        let answers = parse_batch(&stdout, ids.len()).map_err(bad)?;
+        ids.iter()
+            .zip(answers)
+            .enumerate()
+            .map(|(index, (id, answer))| match answer {
+                BatchAnswer::Found { kind, data, .. } if kind == b"blob" => Ok(data),
+                BatchAnswer::Missing => Err(Error::ObjectMissing {
+                    request: id.to_string().into_bytes(),
+                }),
+                BatchAnswer::Found { kind, .. } => Err(bad(format!(
+                    "answer {index}: {id} is a {}, not a blob",
+                    String::from_utf8_lossy(&kind)
+                ))),
+                BatchAnswer::Submodule => {
+                    Err(bad(format!("answer {index}: {id} answered as a submodule")))
+                }
+            })
+            .collect()
     }
 }
 
-/// Stub.
-fn parse_lookup(_stdout: &[u8], _requests: &[Vec<u8>]) -> Result<Vec<Option<TreeEntry>>, String> {
-    Ok(Vec::new())
+/// A mode git printed in octal, or `None` for text that is empty or holds
+/// anything but octal digits.
+fn octal_mode(text: &[u8]) -> Option<u32> {
+    if text.is_empty() || !text.iter().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return None;
+    }
+    u32::from_str_radix(std::str::from_utf8(text).ok()?, 8).ok()
 }
 
-/// Stub.
-fn parse_listing(_stdout: &[u8]) -> Result<Vec<ListedEntry>, String> {
-    Ok(Vec::new())
+/// The lookup's answers in `stdout`, one NUL-terminated answer per request
+/// in `requests`, in order: `<request> missing` is `None`,
+/// `<id> submodule` a gitlink, and `<id> <type> <octal mode>` an entry.
+/// Output not ending in NUL, an answer count that is not one per request,
+/// or any other answer is `Err` naming the problem.
+fn parse_lookup(stdout: &[u8], requests: &[Vec<u8>]) -> Result<Vec<Option<TreeEntry>>, String> {
+    let Some(body) = stdout.strip_suffix(b"\0") else {
+        return Err("the output does not end in NUL, so its last answer is incomplete".to_owned());
+    };
+    let answers: Vec<&[u8]> = body.split(|byte| *byte == 0).collect();
+    if answers.len() != requests.len() {
+        return Err(format!(
+            "{} answers to {} requests",
+            answers.len(),
+            requests.len()
+        ));
+    }
+    answers
+        .iter()
+        .zip(requests)
+        .enumerate()
+        .map(|(index, (answer, request))| {
+            let bad = |problem: &str| format!("answer {index}: {problem}");
+            if answer.strip_suffix(b" missing") == Some(request.as_slice()) {
+                return Ok(None);
+            }
+            let fields: Vec<&[u8]> = answer.split(|byte| *byte == b' ').collect();
+            let (id, mode) = match fields.as_slice() {
+                [id, b"submodule"] => (id, Some(MODE_GITLINK)),
+                [id, _kind, mode] => (id, octal_mode(mode)),
+                _ => return Err(bad("an answer that is not an entry or missing")),
+            };
+            let id = ObjectId::from_hex(id).ok_or_else(|| bad("an id that is not full hex"))?;
+            let mode = mode.ok_or_else(|| bad("a mode that is not octal"))?;
+            Ok(Some(TreeEntry { mode, id }))
+        })
+        .collect()
+}
+
+/// The entries in `git ls-tree -z` output: records
+/// `<octal mode> SP <type> SP <id> TAB <path> NUL`. Output not ending in
+/// NUL, or a record of any other shape, is `Err` naming the problem.
+fn parse_listing(stdout: &[u8]) -> Result<Vec<ListedEntry>, String> {
+    if stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(body) = stdout.strip_suffix(b"\0") else {
+        return Err("the output does not end in NUL, so its last record is incomplete".to_owned());
+    };
+    body.split(|byte| *byte == 0)
+        .enumerate()
+        .map(|(index, record)| {
+            let bad = |problem: &str| format!("record {index}: {problem}");
+            let tab = record
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .ok_or_else(|| bad("no TAB before its path"))?;
+            let fields: Vec<&[u8]> = record[..tab].split(|byte| *byte == b' ').collect();
+            let [mode, _kind, id] = fields.as_slice() else {
+                return Err(bad("a header that is not three fields"));
+            };
+            Ok(ListedEntry {
+                mode: octal_mode(mode).ok_or_else(|| bad("a mode that is not octal"))?,
+                id: ObjectId::from_hex(id).ok_or_else(|| bad("an id that is not full hex"))?,
+                path: record[tab + 1..].to_vec(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
