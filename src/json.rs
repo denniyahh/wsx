@@ -32,15 +32,93 @@ pub enum Value {
 /// `raw` as D-09 writes a byte value: the string when it is UTF-8, else an
 /// object holding its lowercase hex.
 pub fn bytes(raw: &[u8]) -> Value {
-    let _ = raw;
-    Value::Null
+    match std::str::from_utf8(raw) {
+        Ok(text) => Value::Str(text.to_owned()),
+        Err(_) => Value::Object(vec![("hex", Value::Str(hex(raw)))]),
+    }
+}
+
+/// The lowercase hex digits.
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// `raw` in lowercase hex, two digits per byte.
+fn hex(raw: &[u8]) -> String {
+    let mut out = String::with_capacity(raw.len() * 2);
+    for byte in raw {
+        out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 impl Value {
     /// The value as compact JSON, with no trailing newline.
     pub fn render(&self) -> String {
-        String::new()
+        let mut out = String::new();
+        self.write(&mut out);
+        out
     }
+
+    /// Appends the value's JSON to `out`.
+    fn write(&self, out: &mut String) {
+        match self {
+            Value::Null => out.push_str("null"),
+            Value::Bool(true) => out.push_str("true"),
+            Value::Bool(false) => out.push_str("false"),
+            Value::Int(number) => out.push_str(&number.to_string()),
+            Value::Str(text) => write_string(out, text),
+            Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    item.write(out);
+                }
+                out.push(']');
+            }
+            Value::Object(members) => {
+                out.push('{');
+                for (index, (key, value)) in members.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write_string(out, key);
+                    out.push(':');
+                    value.write(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+}
+
+/// The first character JSON lets a string hold raw; every one below it is
+/// escaped (RFC 8259 section 7).
+const FIRST_RAW: char = ' ';
+
+/// Appends `text` as a JSON string: quote and backslash escaped, the short
+/// escapes for backspace, form feed, newline, carriage return and tab, a
+/// six-character lowercase escape for every other control below 0x20, and
+/// every other character as its UTF-8.
+fn write_string(out: &mut String, text: &str) {
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control < FIRST_RAW => {
+                out.push_str(&format!("\\u{:04x}", u32::from(control)));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
 }
 
 #[cfg(test)]
