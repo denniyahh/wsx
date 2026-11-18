@@ -12,8 +12,8 @@ pub mod report;
 
 use std::collections::BTreeSet;
 
-use crate::git::{ChangeKind, Git, ObjectId, Repo, TreeChange};
-use crate::model::manifest::{EntryKind, covers};
+use crate::git::{ChangeKind, Git, ObjectId, Repo, TreeChange, c_quote};
+use crate::model::manifest::{Entry, EntryKind, covers, encode_path};
 use crate::model::{self, Model, RepoModel};
 
 /// What one check found.
@@ -28,7 +28,7 @@ pub struct Report {
     pub workspace_tip: ObjectId,
     /// The integration branch and the tip the check compared.
     pub integration: model::Integration,
-    /// Every problem found, sorted by path bytes (D-05).
+    /// Every problem found, in D-05's order.
     pub problems: Vec<Problem>,
 }
 
@@ -76,6 +76,19 @@ impl ProblemKind {
             ProblemKind::RedundantBuiltin => "redundant_builtin",
         }
     }
+
+    /// The kind's group in D-05's order: undeclared paths, then stale
+    /// declarations.
+    fn group(self) -> u8 {
+        match self {
+            ProblemKind::UndeclaredAdded
+            | ProblemKind::UndeclaredModified
+            | ProblemKind::UndeclaredDeleted => 0,
+            ProblemKind::StaleOnly | ProblemKind::StaleModified | ProblemKind::RedundantBuiltin => {
+                1
+            }
+        }
+    }
 }
 
 /// Runs the check in `repo`: resolves the model, reads the tree diff from
@@ -108,29 +121,109 @@ pub fn evaluate(
     changes: &[TreeChange],
     carried: &BTreeSet<Vec<u8>>,
 ) -> Vec<Problem> {
-    let _ = carried;
     let builtins = model.builtins();
     let mut problems = Vec::new();
     for change in changes {
         if builtins.iter().any(|builtin| covers(builtin, &change.path)) {
             continue;
         }
-        match change.kind {
-            ChangeKind::Added => {
-                if !declared_only(model, &change.path) {
-                    problems.push(Problem {
-                        kind: ProblemKind::UndeclaredAdded,
-                        path: change.path.clone(),
-                        detail: None,
-                    });
-                }
-            }
-            // 05-04 judges changes to shared files.
-            ChangeKind::Modified | ChangeKind::Deleted | ChangeKind::TypeChanged => {}
+        if let Some(kind) = undeclared(model, change) {
+            problems.push(Problem {
+                kind,
+                path: change.path.clone(),
+                detail: None,
+            });
         }
     }
-    problems.sort_by(|a, b| a.path.cmp(&b.path));
+    problems.extend(
+        distinct_entries(&model.manifest.entries)
+            .into_iter()
+            .filter_map(|entry| judge_entry(entry, &builtins, changes, carried)),
+    );
     problems
+        .sort_by(|a, b| (a.kind.group(), &a.path, a.kind).cmp(&(b.kind.group(), &b.path, b.kind)));
+    problems
+}
+
+/// The kind of problem `change` is when the manifest does not declare it:
+/// an added path needs an `only` entry covering it, a modified, retyped or
+/// deleted one a `modified` entry equal to it.
+fn undeclared(model: &Model, change: &TreeChange) -> Option<ProblemKind> {
+    match change.kind {
+        ChangeKind::Added => {
+            (!declared_only(model, &change.path)).then_some(ProblemKind::UndeclaredAdded)
+        }
+        ChangeKind::Modified | ChangeKind::TypeChanged => {
+            (!declared_modified(model, &change.path)).then_some(ProblemKind::UndeclaredModified)
+        }
+        ChangeKind::Deleted => {
+            (!declared_modified(model, &change.path)).then_some(ProblemKind::UndeclaredDeleted)
+        }
+    }
+}
+
+/// `entries` with each exact duplicate (same kind, same path) dropped, the
+/// first kept.
+fn distinct_entries(entries: &[Entry]) -> Vec<&Entry> {
+    let mut seen = BTreeSet::new();
+    entries
+        .iter()
+        .filter(|entry| seen.insert((entry.kind == EntryKind::Only, entry.path.as_slice())))
+        .collect()
+}
+
+/// The problem with `entry`, if any: redundant when a built-in covers it,
+/// and then nothing else; otherwise a stale `only` entry is one whose path
+/// is `carried`, a stale `modified` entry one that covers no change.
+fn judge_entry(
+    entry: &Entry,
+    builtins: &[&[u8]],
+    changes: &[TreeChange],
+    carried: &BTreeSet<Vec<u8>>,
+) -> Option<Problem> {
+    if let Some(builtin) = builtins.iter().find(|builtin| covers(builtin, &entry.path)) {
+        return Some(Problem {
+            kind: ProblemKind::RedundantBuiltin,
+            path: entry.path.clone(),
+            detail: Some(redundant_detail(entry, builtin)),
+        });
+    }
+    let stale = match entry.kind {
+        EntryKind::Only => carried
+            .contains(&entry.path)
+            .then_some(ProblemKind::StaleOnly),
+        EntryKind::Modified => (!changes
+            .iter()
+            .any(|change| covers(&entry.path, &change.path)))
+        .then_some(ProblemKind::StaleModified),
+    };
+    stale.map(|kind| Problem {
+        kind,
+        path: entry.path.clone(),
+        detail: None,
+    })
+}
+
+/// The detail of a redundant `entry` that `builtin` covers.
+fn redundant_detail(entry: &Entry, builtin: &[u8]) -> String {
+    let word = match entry.kind {
+        EntryKind::Only => "only",
+        EntryKind::Modified => "modified",
+    };
+    format!(
+        "{word} {} is already personal as the built-in {}",
+        String::from_utf8_lossy(&encode_path(&entry.path)),
+        String::from_utf8_lossy(&c_quote(builtin))
+    )
+}
+
+/// Whether a `modified` entry of `model`'s manifest names exactly `path`.
+fn declared_modified(model: &Model, path: &[u8]) -> bool {
+    model
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Modified && entry.path == path)
 }
 
 /// Whether an `only` entry of `model`'s manifest covers `path`.
