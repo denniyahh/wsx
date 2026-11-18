@@ -712,6 +712,33 @@ mod tests {
         );
     }
 
+    /// A gitlink whose commit is not in the repository: git's batch answers
+    /// the `<ws>:.wsx.conf` request missing, and the root tree still holds
+    /// the 160000 entry.
+    #[test]
+    fn gitlink_whose_commit_is_absent_is_not_a_blob() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("objects-absent-gitlink").expect("create scratch");
+        let repo_dir = manifest_repo(&scratch);
+        let ok =
+            |args: &[&str]| git_ok(&scratch, &repo_dir, args).unwrap_or_else(|err| panic!("{err}"));
+        let absent = "4444444444444444444444444444444444444444";
+        let cacheinfo = format!("160000,{absent},.wsx.conf");
+        ok(&["update-index", "--add", "--cacheinfo", cacheinfo.as_str()]);
+        ok(&["commit", "-q", "-m", "gitlink to an absent commit"]);
+        assert_head_mode(&scratch, &repo_dir, "160000 commit ");
+        let answer = git_ok(&scratch, &repo_dir, ["cat-file", "-e", absent]);
+        assert!(answer.is_err(), "control: git holds the object {absent}");
+
+        assert_eq!(
+            head_manifest(&scratch, &repo_dir),
+            RootEntry::NotABlob { kind: "submodule" },
+            "the batch's manifest of a gitlink to an absent commit"
+        );
+    }
+
     #[test]
     fn missing_entry_is_absent() {
         if testing::rerun_scrubbed() {
