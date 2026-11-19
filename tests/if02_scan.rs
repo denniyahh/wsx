@@ -17,10 +17,11 @@
 //! the checkout's own `src/`.
 
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 
 const REPO_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const TMP_ROOT: &str = env!("CARGO_TARGET_TMPDIR");
@@ -32,6 +33,27 @@ const MIN_SOURCE_FILES: usize = 20;
 struct Scan {
     files: usize,
     findings: Vec<String>,
+}
+
+/// One literal: its text as written, which findings quote, and its value.
+struct Piece {
+    source: String,
+    value: Vec<u8>,
+}
+
+/// A value built from several literals: its source as findings quote it,
+/// the value, and the pieces it was built from.
+struct Joined {
+    source: String,
+    value: Vec<u8>,
+    covers: Range<usize>,
+}
+
+/// Every literal of one file, and every value joined from them.
+#[derive(Default)]
+struct Literals {
+    pieces: Vec<Piece>,
+    joined: Vec<Joined>,
 }
 
 /// Names whose appearance anywhere in a literal is a finding.
@@ -54,22 +76,20 @@ fn scan(root: &Path) -> Scan {
     paths.sort();
     let mut findings = Vec::new();
     for path in &paths {
-        let relative = path.strip_prefix(root).unwrap_or(path).display();
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         let bytes = fs::read(path).expect("read a source file");
         let tokens = String::from_utf8(bytes)
             .map_err(|error| error.to_string())
             .and_then(|text| TokenStream::from_str(&text).map_err(|error| error.to_string()));
         match tokens {
             Ok(tokens) => {
-                let mut literals = Vec::new();
+                let mut literals = Literals::default();
                 collect_literals(tokens, &mut literals);
-                for literal in literals {
-                    if let Some(name) = forbidden_name(&literal) {
-                        findings.push(format!(
-                            "{relative}: literal {literal} names {name}, a GSD, devflow or agent file wsx must not read (IF-02)"
-                        ));
-                    }
-                }
+                findings.extend(file_findings(&relative, &literals));
             }
             Err(error) => findings.push(format!("cannot tokenize {relative}: {error}")),
         }
@@ -78,6 +98,37 @@ fn scan(root: &Path) -> Scan {
         files: paths.len(),
         findings,
     }
+}
+
+/// One file's findings: each literal whose value is forbidden, then each
+/// joined value that is forbidden while none of the literals it was built
+/// from was reported, inner values first.
+fn file_findings(relative: &str, literals: &Literals) -> Vec<String> {
+    let mut reported = vec![false; literals.pieces.len()];
+    let mut findings = Vec::new();
+    for (index, piece) in literals.pieces.iter().enumerate() {
+        if let Some(name) = forbidden_name(&piece.value) {
+            findings.push(literal_finding(relative, &piece.source, name));
+            reported[index] = true;
+        }
+    }
+    for joined in &literals.joined {
+        if reported[joined.covers.clone()].contains(&true) {
+            continue;
+        }
+        if let Some(name) = forbidden_name(&joined.value) {
+            findings.push(literal_finding(relative, &joined.source, name));
+            reported[joined.covers.clone()].fill(true);
+        }
+    }
+    findings
+}
+
+/// The finding for a literal, or a `concat!` value, written as `source`.
+fn literal_finding(relative: &str, source: &str, name: &str) -> String {
+    format!(
+        "{relative}: literal {source} names {name}, a GSD, devflow or agent file wsx must not read (IF-02)"
+    )
 }
 
 /// Every file under `dir` whose name ends in `.rs`, recursively.
@@ -93,9 +144,9 @@ fn collect_rs_files(dir: &Path, paths: &mut Vec<PathBuf>) {
     }
 }
 
-/// The source text of every literal in `stream`, groups included, except
-/// inside doc attributes.
-fn collect_literals(stream: TokenStream, literals: &mut Vec<String>) {
+/// Every literal in `stream`, groups included, except inside doc attributes;
+/// each `concat!` also adds its joined value, after its own arguments.
+fn collect_literals(stream: TokenStream, literals: &mut Literals) {
     let trees: Vec<TokenTree> = stream.into_iter().collect();
     let mut at = 0;
     while at < trees.len() {
@@ -103,13 +154,145 @@ fn collect_literals(stream: TokenStream, literals: &mut Vec<String>) {
             at = after;
             continue;
         }
+        if let Some((after, group)) = concat_end(&trees, at) {
+            let start = literals.pieces.len();
+            collect_literals(group.stream(), literals);
+            literals.joined.push(Joined {
+                source: format!("concat!{group}"),
+                value: concat_bytes(&group),
+                covers: start..literals.pieces.len(),
+            });
+            at = after;
+            continue;
+        }
         match &trees[at] {
             TokenTree::Group(group) => collect_literals(group.stream(), literals),
-            TokenTree::Literal(literal) => literals.push(literal.to_string()),
+            TokenTree::Literal(literal) => {
+                let source = literal.to_string();
+                if let Some(value) = literal_value(&source) {
+                    literals.pieces.push(Piece { source, value });
+                }
+            }
             TokenTree::Ident(_) | TokenTree::Punct(_) => {}
         }
         at += 1;
     }
+}
+
+/// When `trees[start]` is `concat`, then `!`, then a group of any delimiter,
+/// the index just past the group and the group. A `std::` or `core::` path
+/// before it needs nothing extra: the ident is still `concat`.
+fn concat_end(trees: &[TokenTree], start: usize) -> Option<(usize, Group)> {
+    let (TokenTree::Ident(ident), TokenTree::Punct(bang), TokenTree::Group(group)) = (
+        trees.get(start)?,
+        trees.get(start + 1)?,
+        trees.get(start + 2)?,
+    ) else {
+        return None;
+    };
+    (ident == "concat" && bang.as_char() == '!').then(|| (start + 3, group.clone()))
+}
+
+/// The value `concat!` gives for `group`: each top-level literal's value,
+/// or its text as written when it is a number, and each nested `concat!`'s
+/// value, in order.
+fn concat_bytes(group: &Group) -> Vec<u8> {
+    let trees: Vec<TokenTree> = group.stream().into_iter().collect();
+    let mut value = Vec::new();
+    let mut at = 0;
+    while at < trees.len() {
+        if let Some((after, inner)) = concat_end(&trees, at) {
+            value.extend(concat_bytes(&inner));
+            at = after;
+            continue;
+        }
+        if let TokenTree::Literal(literal) = &trees[at] {
+            let source = literal.to_string();
+            value.extend(literal_value(&source).unwrap_or_else(|| source.into_bytes()));
+        }
+        at += 1;
+    }
+    value
+}
+
+/// The value of the literal written as `source`: a string, byte string, C
+/// string, char or byte char unescaped, a raw string verbatim. A number is
+/// `None`. A suffix after the closing quote is ignored.
+fn literal_value(source: &str) -> Option<Vec<u8>> {
+    let rest = source
+        .strip_prefix('b')
+        .or_else(|| source.strip_prefix('c'))
+        .unwrap_or(source);
+    if let Some(raw) = rest.strip_prefix('r')
+        && raw.starts_with(['#', '"'])
+    {
+        let (open, close) = (raw.find('"')?, raw.rfind('"')?);
+        return Some(raw.as_bytes()[open + 1..close].to_vec());
+    }
+    let quote = rest
+        .chars()
+        .next()
+        .filter(|first| matches!(first, '"' | '\''))?;
+    let (open, close) = (rest.find(quote)?, rest.rfind(quote)?);
+    Some(unescape(&rest[open + 1..close], source))
+}
+
+/// The bytes `body`, the inside of the literal `source`, stands for. The
+/// lexer has already refused every malformed escape, so an escape this does
+/// not know is a decoder defect: it panics naming `source`.
+fn unescape(body: &str, source: &str) -> Vec<u8> {
+    let mut value = Vec::new();
+    let mut chars = body.chars().peekable();
+    while let Some(next) = chars.next() {
+        if next != '\\' {
+            push_char(&mut value, next);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => value.push(b'\n'),
+            Some('r') => value.push(b'\r'),
+            Some('t') => value.push(b'\t'),
+            Some('0') => value.push(0),
+            Some(quoted @ ('\\' | '\'' | '"')) => push_char(&mut value, quoted),
+            Some('x') => {
+                let digits: String = chars.by_ref().take(2).collect();
+                let byte = u8::from_str_radix(&digits, 16)
+                    .unwrap_or_else(|error| panic!("{source}: \\x{digits}: {error}"));
+                value.push(byte);
+            }
+            Some('u') => push_char(&mut value, unicode_escape(&mut chars, source)),
+            Some('\n') => {
+                while chars
+                    .next_if(|next| matches!(next, ' ' | '\t' | '\r' | '\n'))
+                    .is_some()
+                {}
+            }
+            other => panic!("{source}: cannot decode the escape \\{other:?}"),
+        }
+    }
+    value
+}
+
+/// Appends `next`'s UTF-8 bytes to `value`.
+fn push_char(value: &mut Vec<u8>, next: char) {
+    let mut buffer = [0; 4];
+    value.extend_from_slice(next.encode_utf8(&mut buffer).as_bytes());
+}
+
+/// The char of a `\u{...}` escape whose `u` was just read from `chars`:
+/// hex digits of either case, underscores ignored.
+fn unicode_escape(chars: &mut impl Iterator<Item = char>, source: &str) -> char {
+    let braced: String = chars.take_while(|next| *next != '}').collect();
+    let digits: String = braced
+        .strip_prefix('{')
+        .unwrap_or_else(|| panic!("{source}: \\u without a brace"))
+        .chars()
+        .filter(|digit| *digit != '_')
+        .collect();
+    u32::from_str_radix(&digits, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .unwrap_or_else(|| panic!("{source}: \\u{{{digits}}} is not a char"))
 }
 
 /// When `trees[start]` opens a doc attribute (`#` or `# !`, then a bracket
@@ -139,25 +322,33 @@ fn doc_attribute_end(trees: &[TokenTree], start: usize) -> Option<usize> {
     }
 }
 
-/// The forbidden name `literal` holds, if any.
-fn forbidden_name(literal: &str) -> Option<&'static str> {
+/// Whether `needle` appears anywhere in `haystack`.
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// The forbidden name the decoded `value` holds, if any.
+fn forbidden_name(value: &[u8]) -> Option<&'static str> {
     NAMED
         .into_iter()
-        .find(|name| literal.contains(name))
+        .find(|name| contains_bytes(value, name.as_bytes()))
         .or_else(|| {
             COMPONENTS
                 .into_iter()
-                .find(|name| holds_component(literal, name))
+                .find(|name| holds_component(value, name))
         })
 }
 
-/// Whether `name` appears in `literal` with a quote or a slash on both sides.
-fn holds_component(literal: &str, name: &str) -> bool {
-    let bytes = literal.as_bytes();
-    let bounds = |byte: Option<&u8>| matches!(byte, Some(b'"' | b'/'));
-    literal.match_indices(name).any(|(at, _)| {
-        let before = at.checked_sub(1).and_then(|index| bytes.get(index));
-        bounds(before) && bounds(bytes.get(at + name.len()))
+/// Whether `name` appears in `value` with the start or end of the value, or
+/// a `/`, on both sides.
+fn holds_component(value: &[u8], name: &str) -> bool {
+    let name = name.as_bytes();
+    let bounds = |byte: Option<&u8>| byte.is_none_or(|byte| *byte == b'/');
+    value.windows(name.len()).enumerate().any(|(at, window)| {
+        let before = at.checked_sub(1).and_then(|index| value.get(index));
+        window == name && bounds(before) && bounds(value.get(at + name.len()))
     })
 }
 
