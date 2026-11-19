@@ -298,6 +298,26 @@ mod tests {
         found(&evaluate_hooks(HOOKS, &listing, &targets))
     }
 
+    /// The time a judging thread has to answer: far above what judging a
+    /// hand-built tree takes, so only a walk that never ends reaches it.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// `judge(items)`, computed on its own thread that must answer within
+    /// `DEADLINE`, so a walk that never ends fails as an assertion instead
+    /// of hanging the suite.
+    fn judge_within_deadline(items: &[Item<'_>]) -> Vec<(&'static str, String, String)> {
+        let (listing, targets) = tree(items);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sender
+                .send(found(&evaluate_hooks(HOOKS, &listing, &targets)))
+                .expect("the test waits for the answer");
+        });
+        receiver
+            .recv_timeout(DEADLINE)
+            .unwrap_or_else(|err| panic!("judging did not answer within {DEADLINE:?}: {err}"))
+    }
+
     /// The kind, path and detail of each of `problems`.
     fn found(problems: &[Problem]) -> Vec<(&'static str, String, String)> {
         problems
@@ -629,16 +649,16 @@ mod tests {
         judge(&items)
     }
 
-    /// A loop fails with the hop-limit reason on each hook in it; a chain of
-    /// exactly `SYMLINK_HOPS` links passes (control) and one link more
-    /// fails.
+    /// A loop fails with the hop-limit reason on each hook in it, within
+    /// `DEADLINE`; a chain of exactly `SYMLINK_HOPS` links passes (control)
+    /// and one link more fails.
     #[test]
     fn symlink_loop_stops_at_the_hop_limit() {
         let hops = unresolved("it is one of more than 40 symlinks in a row");
         let mut looped = hook_problem("scripts/hooks/a", &hops);
         looped.extend(hook_problem("scripts/hooks/b", &hops));
         assert_eq!(
-            judge(&[
+            judge_within_deadline(&[
                 link(b"scripts/hooks/a", b"b"),
                 link(b"scripts/hooks/b", b"a"),
             ]),
@@ -652,33 +672,10 @@ mod tests {
         );
     }
 
-    /// Judging a symlink loop ends instead of walking it forever: it runs
-    /// on its own thread and must answer within `DEADLINE`, so a broken
-    /// hop count fails here rather than hanging the suite.
-    #[test]
-    fn symlink_loop_is_judged_within_a_deadline() {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-        let (listing, targets) = tree(&[
-            link(b"scripts/hooks/a", b"b"),
-            link(b"scripts/hooks/b", b"a"),
-        ]);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            sender
-                .send(evaluate_hooks(HOOKS, &listing, &targets).len())
-                .expect("the test waits for the answer");
-        });
-        assert_eq!(
-            receiver.recv_timeout(DEADLINE),
-            Ok(2),
-            "judging a two-link loop did not answer within {DEADLINE:?}"
-        );
-    }
-
     #[test]
     fn directory_symlink_loop_fails_naming_the_hook() {
         assert_eq!(
-            judge(&[
+            judge_within_deadline(&[
                 link(b"scripts/hooks/a", b"../loop/a"),
                 link(b"scripts/loop", b"loop"),
             ]),
