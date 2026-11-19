@@ -112,7 +112,9 @@ impl ProblemKind {
 /// the integration tip to the workspace tip and evaluates it, then reads how
 /// stale the integration ref is, which never fails the run (D-13). The model
 /// is resolved before any other read, so its replace-ref guard stands for
-/// the reads by id after it (D-22).
+/// the reads by id after it (D-22): the tree reads' git children also run
+/// with `--no-replace-objects`, so a replace ref made after the guard changes
+/// nothing they read; gix's diff keeps the map it loaded at open.
 pub fn run(repo: &Repo, git: &Git) -> Result<Report, model::Error> {
     // The recorded set stays empty until phase 8 records workspace branches.
     let resolved = model::resolve(repo, git, &BTreeSet::new())?;

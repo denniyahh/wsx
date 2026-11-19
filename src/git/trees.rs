@@ -1,7 +1,8 @@
 //! Tree reads by commit id: what a commit's tree holds at given paths, every
 //! entry it holds, and blob bytes by id. Each read is one git child that runs
 //! with `--no-lazy-fetch`, so a partial clone's missing object is `missing`,
-//! never a fetch (D-13).
+//! never a fetch (D-13), and with `--no-replace-objects`, so a replace ref
+//! made after the model's guard (D-22) changes nothing it reads.
 //!
 //! No path is ever an argument or a pathspec: a lookup sends each request as
 //! `<commit id>:<path>` on stdin, NUL-terminated (`-Z`), so a path holding a
@@ -15,7 +16,7 @@ use std::ffi::OsString;
 
 use super::objects::{BATCH_FORMAT, BatchAnswer, parse_batch};
 use super::repo::Repo;
-use super::{Error, Git, NO_LAZY_FETCH, ObjectId};
+use super::{Error, Git, NO_LAZY_FETCH, NO_REPLACE_OBJECTS, ObjectId};
 
 /// git's tree entry mode of a directory.
 pub const MODE_TREE: u32 = 0o040000;
@@ -57,19 +58,33 @@ pub struct ListedEntry {
 const LOOKUP_FORMAT: &str = "--batch-check=%(objectname) %(objecttype) %(objectmode)";
 
 /// The argv of the lookup child: NUL-terminated requests and answers.
-const LOOKUP_ARGS: [&str; 4] = [NO_LAZY_FETCH, "cat-file", LOOKUP_FORMAT, "-Z"];
+const LOOKUP_ARGS: [&str; 5] = [
+    NO_REPLACE_OBJECTS,
+    NO_LAZY_FETCH,
+    "cat-file",
+    LOOKUP_FORMAT,
+    "-Z",
+];
 
 /// The argv of the listing child, before the commit id: every entry,
 /// directories included, NUL-terminated, from the root tree.
-const LIST_ARGS: [&str; 6] = [NO_LAZY_FETCH, "ls-tree", "-r", "-t", "-z", "--full-tree"];
+const LIST_ARGS: [&str; 7] = [
+    NO_REPLACE_OBJECTS,
+    NO_LAZY_FETCH,
+    "ls-tree",
+    "-r",
+    "-t",
+    "-z",
+    "--full-tree",
+];
 
 /// The argv of the blob read child, by id.
-const BLOB_ARGS: [&str; 3] = [NO_LAZY_FETCH, "cat-file", BATCH_FORMAT];
+const BLOB_ARGS: [&str; 4] = [NO_REPLACE_OBJECTS, NO_LAZY_FETCH, "cat-file", BATCH_FORMAT];
 
 impl Repo {
     /// For each of `paths`, in order, the entry `commit`'s tree holds there,
-    /// or `None` when it holds none, from one
-    /// `git --no-lazy-fetch cat-file --batch-check=... -Z` child fed
+    /// or `None` when it holds none, from one `git --no-replace-objects
+    /// --no-lazy-fetch cat-file --batch-check=... -Z` child fed
     /// `<commit id>:<path>` NUL requests through `Git::run_with_input`. A
     /// path is a request on stdin only, never an argument or a pathspec, so
     /// a newline or pathspec magic in it widens nothing. A gitlink, whose
@@ -109,8 +124,8 @@ impl Repo {
     }
 
     /// Every entry of `commit`'s tree, directories included, in git's tree
-    /// order, from one `git --no-lazy-fetch ls-tree -r -t -z --full-tree
-    /// <commit id>` child. Output that does not parse is
+    /// order, from one `git --no-replace-objects --no-lazy-fetch ls-tree -r -t
+    /// -z --full-tree <commit id>` child. Output that does not parse is
     /// `Error::GitBadOutput`, never a shorter list.
     pub fn list_tree(&self, git: &Git, commit: &ObjectId) -> Result<Vec<ListedEntry>, Error> {
         let mut argv: Vec<OsString> = LIST_ARGS.iter().map(OsString::from).collect();
@@ -121,8 +136,8 @@ impl Repo {
     }
 
     /// The bytes of each blob in `ids`, in order, from one
-    /// `git --no-lazy-fetch cat-file --batch=...` child fed one hex id per
-    /// line (an id holds no LF). An id git answers `missing` for, as a
+    /// `git --no-replace-objects --no-lazy-fetch cat-file --batch=...` child
+    /// fed one hex id per line (an id holds no LF). An id git answers `missing` for, as a
     /// partial clone answers for a blob it never fetched, is `None`, so the
     /// caller decides whether it needed it; an object that is not a blob, or
     /// output that does not parse, is `Error::GitBadOutput`. An empty `ids`
@@ -474,6 +489,93 @@ mod tests {
             .read_blobs(&git, &[absent, link])
             .unwrap_or_else(|err| panic!("read_blobs with an absent id: {err}"));
         assert_eq!(answers, vec![None, Some(b"a.txt".to_vec())]);
+    }
+
+    /// `every_kind` with `HEAD`'s commit replaced, through `git replace`, by a
+    /// commit of the empty tree; returns the repository, the original id and
+    /// git's id of its `a.txt`, read before the replacement.
+    fn replaced_head(scratch: &Scratch) -> (PathBuf, ObjectId, ObjectId) {
+        let (repo, head) = every_kind(scratch);
+        let a = entry_id(scratch, &repo, &head, b"a.txt");
+        let other = git_ok(
+            scratch,
+            &repo,
+            ["commit-tree", EMPTY_TREE, "-m", "replacement"],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let other = String::from_utf8(other).expect("hex");
+        git_ok(
+            scratch,
+            &repo,
+            ["replace", head.0.as_str(), other.trim_end()],
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        (repo, head, a)
+    }
+
+    /// git's id of the empty tree, which every repository has.
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+    /// A replace ref present when the lookup runs does not change what the
+    /// commit's tree holds: the lookup reads the commit's own tree.
+    #[test]
+    fn lookup_paths_ignores_a_replace_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-lookup-replaced").expect("scratch");
+        let (repo, head, a) = replaced_head(&scratch);
+        let (found, git) = open(&scratch, &repo);
+        let answers = found
+            .lookup_paths(&git, &head, &[b"a.txt"])
+            .unwrap_or_else(|err| panic!("lookup_paths: {err}"));
+        assert_eq!(
+            answers,
+            vec![Some(TreeEntry {
+                mode: MODE_BLOB,
+                id: a
+            })]
+        );
+    }
+
+    /// A replace ref present when the listing runs does not change it: the
+    /// listing is of the commit's own tree.
+    #[test]
+    fn list_tree_ignores_a_replace_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-list-replaced").expect("scratch");
+        let (repo, head, _) = replaced_head(&scratch);
+        let (found, git) = open(&scratch, &repo);
+        let listing = found
+            .list_tree(&git, &head)
+            .unwrap_or_else(|err| panic!("list_tree: {err}"));
+        let paths: Vec<&[u8]> = listing.iter().map(|entry| entry.path.as_slice()).collect();
+        assert_eq!(
+            paths,
+            vec![NEWLINE_PATH, b"a.txt", b"d", b"d/f", b"l", b"sub", b"x"]
+        );
+    }
+
+    /// A replace ref present when the blob read runs does not change the
+    /// bytes it returns.
+    #[test]
+    fn read_blobs_ignores_a_replace_ref() {
+        if testing::rerun_scrubbed() {
+            return;
+        }
+        let scratch = Scratch::new("trees-blobs-replaced").expect("scratch");
+        let (repo, head) = every_kind(&scratch);
+        let a = entry_id(&scratch, &repo, &head, b"a.txt");
+        let x = entry_id(&scratch, &repo, &head, b"x");
+        git_ok(&scratch, &repo, ["replace", a.0.as_str(), x.0.as_str()])
+            .unwrap_or_else(|err| panic!("{err}"));
+        let (found, git) = open(&scratch, &repo);
+        let blobs = found
+            .read_blobs(&git, &[a])
+            .unwrap_or_else(|err| panic!("read_blobs: {err}"));
+        assert_eq!(blobs, vec![Some(b"a\n".to_vec())]);
     }
 
     /// A tree asked for as a blob is `Error::GitBadOutput` naming it, not

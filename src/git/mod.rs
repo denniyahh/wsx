@@ -49,6 +49,11 @@ use std::time::Duration;
 /// first (research G3), so a read never reaches the network.
 const NO_LAZY_FETCH: &str = "--no-lazy-fetch";
 
+/// git's global option that turns off replace refs for the child. A read by
+/// id after the model's replace-ref guard (D-22) passes it, so a replace ref
+/// made after the guard ran changes nothing that read returns.
+const NO_REPLACE_OBJECTS: &str = "--no-replace-objects";
+
 /// A git object id as lowercase hex, independent of the hash kind.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObjectId(String);
