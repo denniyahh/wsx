@@ -1,15 +1,38 @@
 //! IF-02 source scan: wsx must not read GSD, devflow or agent files.
 //!
-//! Every `*.rs` file under `src/` is tokenised with proc-macro2 and each
-//! string, byte-string or raw-string literal is tested for `ROADMAP.md`,
-//! `STATE.md`, `.planning/config.json`, `devflow.toml`, or `.claude` or
-//! `.codex` as a whole path component (D-14). Tokens, not text: comments
-//! never become tokens and doc comments become `#[doc]` attributes, which are
-//! skipped whole, so a comment that names one of those files is not a read
-//! while a literal in the same file is. A regex cannot draw that line across
-//! raw strings and nested block comments. A file the lexer refuses is a
-//! finding, never skipped. There is no allowlist: the agent-hook exception of
-//! the 2026-11-15 amendment is not built until its scope is decided.
+//! Every `*.rs` file under `src/` is tokenised with proc-macro2, and values
+//! are tested for `ROADMAP.md`, `STATE.md`, `.planning/config.json`,
+//! `devflow.toml`, or `.claude` or `.codex` as a whole path component (D-14).
+//! What the scan matches:
+//! - each string, byte-string, C-string, raw-string or char literal by its
+//!   decoded value, so escapes (`\x2e`, `\u{2e}`, a line continuation) are seen;
+//! - `concat!` by its joined value, nested, `std::` or `core::` qualified and
+//!   with any delimiter, each argument still checked alone;
+//! - chained `.join` calls whose arguments are each one literal or one
+//!   `concat!`, joined as a path, so `Path::new(".planning").join("config.json")`
+//!   is a finding.
+//!
+//! `.planning` alone is manifest path data to wsx (D-14), not a finding, and
+//! so is `.planning` beside `config.json` in a tuple, an array or unrelated
+//! functions.
+//!
+//! What it leaves: `format!`, consts and statics, `stringify!`, `env!`,
+//! `include_str!`, a renamed `concat!`, arrays or tuples collected into a
+//! path, `push`, a join argument that is not one literal or one `concat!`,
+//! separators or dot components spelled apart (`.planning//config.json`,
+//! `.planning/./config.json`), and anything built at run time. For `wsx check`,
+//! `tests/harness/if02_runtime.rs` covers those reads by comparing its output
+//! across agent-file states.
+//!
+//! Tokens, not text: comments never become tokens and doc comments become
+//! `#[doc]` attributes, which are skipped whole, so a comment that names one
+//! of those files is not a read while a literal in the same file is. A regex
+//! cannot draw that line across raw strings and nested block comments. A file
+//! the lexer refuses is a finding, never skipped; the lexer refuses every
+//! malformed escape, so the decoder panics on an escape it does not know
+//! instead of skipping the literal. There is no allowlist: the agent-hook
+//! exception of the 2026-11-15 amendment is not built until its scope is
+//! decided.
 //!
 //! The real `src/` is the positive case. The controls build their trees,
 //! the planted copy of `src/` included, under CARGO_TARGET_TMPDIR, because
@@ -47,6 +70,16 @@ struct Joined {
     source: String,
     value: Vec<u8>,
     covers: Range<usize>,
+    kind: JoinKind,
+}
+
+/// How a joined value was built, which decides its finding's text.
+#[derive(Clone, Copy)]
+enum JoinKind {
+    /// A `concat!` value, reported like a literal.
+    Concat,
+    /// A chain of `.join` calls, reported as a joined path.
+    Chain,
 }
 
 /// Every literal of one file, and every value joined from them.
@@ -117,7 +150,14 @@ fn file_findings(relative: &str, literals: &Literals) -> Vec<String> {
             continue;
         }
         if let Some(name) = forbidden_name(&joined.value) {
-            findings.push(literal_finding(relative, &joined.source, name));
+            let finding = match joined.kind {
+                JoinKind::Concat => literal_finding(relative, &joined.source, name),
+                JoinKind::Chain => format!(
+                    "{relative}: path joined from {} names {name}, a GSD, devflow or agent file wsx must not read (IF-02)",
+                    joined.source
+                ),
+            };
+            findings.push(finding);
             reported[joined.covers.clone()].fill(true);
         }
     }
@@ -155,13 +195,17 @@ fn collect_literals(stream: TokenStream, literals: &mut Literals) {
             continue;
         }
         if let Some((after, group)) = concat_end(&trees, at) {
-            let start = literals.pieces.len();
-            collect_literals(group.stream(), literals);
-            literals.joined.push(Joined {
-                source: format!("concat!{group}"),
-                value: concat_bytes(&group),
-                covers: start..literals.pieces.len(),
+            let (source, value) = (format!("concat!{group}"), concat_bytes(&group));
+            push_joined(literals, [&group], source, value, JoinKind::Concat);
+            at = after;
+            continue;
+        }
+        if let Some((after, value, sources)) = join_chain_end(&trees, at) {
+            let groups = trees[at..after].iter().filter_map(|tree| match tree {
+                TokenTree::Group(group) => Some(group),
+                _ => None,
             });
+            push_joined(literals, groups, sources.join(", "), value, JoinKind::Chain);
             at = after;
             continue;
         }
@@ -177,6 +221,89 @@ fn collect_literals(stream: TokenStream, literals: &mut Literals) {
         }
         at += 1;
     }
+}
+
+/// Collects the literals of `groups`, then pushes the value of `kind`
+/// joined from them, covering those literals.
+fn push_joined<'a>(
+    literals: &mut Literals,
+    groups: impl IntoIterator<Item = &'a Group>,
+    source: String,
+    value: Vec<u8>,
+    kind: JoinKind,
+) {
+    let start = literals.pieces.len();
+    for group in groups {
+        collect_literals(group.stream(), literals);
+    }
+    literals.joined.push(Joined {
+        source,
+        value,
+        covers: start..literals.pieces.len(),
+        kind,
+    });
+}
+
+/// The value of a call's argument `group` when it is parenthesised and holds
+/// exactly one literal with a value, or exactly one `concat!`, optionally
+/// `std::` or `core::` qualified; anything else is `None`.
+fn argument_value(group: &Group) -> Option<Vec<u8>> {
+    if group.delimiter() != Delimiter::Parenthesis {
+        return None;
+    }
+    let trees: Vec<TokenTree> = group.stream().into_iter().collect();
+    if let [TokenTree::Literal(literal)] = trees.as_slice() {
+        return literal_value(&literal.to_string());
+    }
+    let start = match trees.as_slice() {
+        [
+            TokenTree::Ident(root),
+            TokenTree::Punct(first),
+            TokenTree::Punct(second),
+            ..,
+        ] if (root == "std" || root == "core")
+            && first.as_char() == ':'
+            && second.as_char() == ':' =>
+        {
+            3
+        }
+        _ => 0,
+    };
+    let (end, inner) = concat_end(&trees, start)?;
+    (end == trees.len()).then(|| concat_bytes(&inner))
+}
+
+/// When `trees[start]` begins a chain, a call whose argument has an
+/// `argument_value` followed by one or more `.join` calls of the same kind,
+/// the index past the last call, the path joined from the arguments' values
+/// and their source texts. A single call is not a chain.
+fn join_chain_end(trees: &[TokenTree], start: usize) -> Option<(usize, Vec<u8>, Vec<String>)> {
+    let call = |at: usize| match (trees.get(at)?, trees.get(at + 1)?) {
+        (TokenTree::Ident(_), TokenTree::Group(group)) => {
+            Some((argument_value(group)?, group.stream().to_string()))
+        }
+        _ => None,
+    };
+    let (mut value, source) = call(start)?;
+    let mut sources = vec![source];
+    let mut end = start + 2;
+    while let (Some(TokenTree::Punct(dot)), Some(TokenTree::Ident(join))) =
+        (trees.get(end), trees.get(end + 1))
+        && dot.as_char() == '.'
+        && join == "join"
+    {
+        let Some((next, source)) = call(end + 1) else {
+            break;
+        };
+        while value.last() == Some(&b'/') {
+            value.pop();
+        }
+        value.push(b'/');
+        value.extend(next);
+        sources.push(source);
+        end += 3;
+    }
+    (sources.len() > 1).then_some((end, value, sources))
 }
 
 /// When `trees[start]` is `concat`, then `!`, then a group of any delimiter,
