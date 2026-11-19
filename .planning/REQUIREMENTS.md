@@ -121,10 +121,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Divergence check
 
-- [x] **DIV-01**: `wsx check` fails when the workspace branch differs from `<base-remote>/<integration>` in any way it hasn't declared. An added path must be under a built-in or `only` entry; a modified or deleted shared file must be declared `modified`
-- [x] **DIV-02**: A stale or redundant declaration fails too: an `only` path the integration branch now carries, a `modified` path that no longer differs, or a declaration already covered by a built-in
-- [x] **DIV-03**: When the repo's `core.hooksPath` points at a tracked directory, every tracked file in it must be committed with mode `100755` (or `120000`, a symlink to a tracked executable). The committed mode is what counts, not the working tree's. Other scripts aren't checked: the oracle's `scripts/*.sh` rule is a devflow convention that would fail other repos' sourced libraries
-- [x] **DIV-04**: The check runs against the local ref with no network, and says how stale that ref is relative to its last fetch
+- [ ] **DIV-01**: `wsx check` fails when the workspace branch differs from `<base-remote>/<integration>` in any way it hasn't declared. An added path must be under a built-in or `only` entry; a modified or deleted shared file must be declared `modified`
+- [ ] **DIV-02**: A stale or redundant declaration fails too: an `only` path the integration branch now carries, a `modified` path that no longer differs, or a declaration already covered by a built-in
+- [ ] **DIV-03**: When the repo's `core.hooksPath` points at a tracked directory, every tracked file in it must be committed with mode `100755` (or `120000`, a symlink to a tracked executable). The committed mode is what counts, not the working tree's. Other scripts aren't checked: the oracle's `scripts/*.sh` rule is a devflow convention that would fail other repos' sourced libraries
+- [ ] **DIV-04**: The check runs against the local ref with no network, and says how stale that ref is relative to its last fetch
 
 ### Guards
 
@@ -170,8 +170,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 
 ### Interface and boundary
 
-- [x] **IF-01**: Every command has `--json` output with a versioned, documented schema, plus documented, stable exit codes, so an orchestrator (devflow) can drive wsx without parsing prose. A contract test pins the schema
-- [x] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings (exception pending, see the 2026-11-15 amendment under Boundary: agent hook configuration). A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
+- [ ] **IF-01**: Every command has `--json` output with a versioned, documented schema, plus documented, stable exit codes, so an orchestrator (devflow) can drive wsx without parsing prose. A contract test pins the schema
+- [ ] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings (exception pending, see the 2026-11-15 amendment under Boundary: agent hook configuration). A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
 
 ### Development setup (adopted from devflow, owner decision 2026-10-19)
 
@@ -262,10 +262,10 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | PRCUT-07 | Phase 9 | Pending |
 | PRCUT-08 | Phase 10 | Pending |
 | PRCUT-09 | Phase 10 | Pending |
-| DIV-01 | Phase 5 | Complete |
-| DIV-02 | Phase 5 | Complete |
-| DIV-03 | Phase 5 | Complete |
-| DIV-04 | Phase 5 | Complete |
+| DIV-01 | Phase 5 | Gaps Found |
+| DIV-02 | Phase 5 | Gaps Found |
+| DIV-03 | Phase 5 | Gaps Found |
+| DIV-04 | Phase 5 | Gaps Found |
 | GUARD-01 | Phase 6 | Pending |
 | GUARD-02 | Phase 6 | Pending |
 | GUARD-03 | Phase 6 | Pending |
@@ -284,8 +284,8 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | MIG-04 | Phase 12 | Pending |
 | STAT-01 | Phase 13 | Pending |
 | STAT-02 | Phase 13 | Pending |
-| IF-01 | Phase 5 | Complete |
-| IF-02 | Phase 5 | Complete |
+| IF-01 | Phase 5 | Gaps Found |
+| IF-02 | Phase 5 | Gaps Found |
 | DEV-01 | Phase 1 | Complete |
 | DEV-02 | Phase 1 | Complete |
 | DEV-03 | Phase 1 | Complete |
