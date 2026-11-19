@@ -388,7 +388,7 @@ fn unescape(body: &str, source: &str) -> Vec<u8> {
                 value.push(byte);
             }
             Some('u') => push_char(&mut value, unicode_escape(&mut chars, source)),
-            Some('\n') => {
+            Some('\n' | '\r') => {
                 while chars
                     .next_if(|next| matches!(next, ' ' | '\t' | '\r' | '\n'))
                     .is_some()
