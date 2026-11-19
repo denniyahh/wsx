@@ -671,3 +671,80 @@ fn concat_lookalikes_do_not_trip_the_scan() {
         assert!(findings.is_empty(), "{expression}: {findings:?}");
     }
 }
+
+#[test]
+fn planted_join_read_trips_the_scan() {
+    let src = planted_copy(
+        "planted-join",
+        r#"pub fn planted() -> std::io::Result<Vec<u8>> {
+    std::fs::read(std::path::Path::new(".planning").join("config.json"))
+}
+"#,
+    );
+    let findings = scan(&src).findings;
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    let parts = [
+        "planted.rs",
+        r#"".planning""#,
+        r#""config.json""#,
+        "path joined from",
+        "names .planning/config.json,",
+        "(IF-02)",
+    ];
+    for part in parts {
+        assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+    }
+}
+
+#[test]
+fn join_spellings_trip_the_scan() {
+    let expressions = [
+        r#"std::path::Path::new(".planning").join("config.json")"#,
+        r#"std::path::PathBuf::from(".planning/").join("config.json")"#,
+        r#"root.join(".planning").join("config.json")"#,
+        r#"std::path::Path::new(".").join(".planning").join("config.json")"#,
+        r#"std::path::Path::new(concat!(".plan", "ning")).join("config.json")"#,
+        r#"std::path::Path::new(".planning").join(concat!("config", ".json"))"#,
+    ];
+    for (index, expression) in expressions.into_iter().enumerate() {
+        let src = one_file_tree(&format!("join-{index}"), &using(expression));
+        let findings = scan(&src).findings;
+        assert_eq!(findings.len(), 1, "{expression}: {findings:?}");
+        for part in ["path joined from", "names .planning/config.json,"] {
+            assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+        }
+    }
+}
+
+#[test]
+fn path_data_does_not_trip_the_scan() {
+    let mut files: Vec<String> = [
+        r#"".planning""#,
+        r#"b".planning/x""#,
+        r#"[".wsx.conf", ".worktrees", ".planning"]"#,
+        r#"(b".planning", b"config.json")"#,
+        r#"[".planning", "config.json"]"#,
+        r#"std::path::Path::new(".planning").join("other.json")"#,
+        r#"std::path::Path::new("config.json").join(".planning")"#,
+        r#"std::path::Path::new(".planning").join("x").join("config.json")"#,
+        r#""config.json""#,
+    ]
+    .into_iter()
+    .map(using)
+    .collect();
+    files.push(
+        "pub fn planning() -> &'static str {\n    \".planning\"\n}\n\n\
+         pub fn config() -> &'static str {\n    \"config.json\"\n}\n"
+            .to_owned(),
+    );
+    files.push(
+        "pub fn bound() {\n    let _ = std::path::Path::new(\".planning\");\n    \
+         let _ = std::path::Path::new(\"config.json\");\n}\n"
+            .to_owned(),
+    );
+    for (index, contents) in files.iter().enumerate() {
+        let src = one_file_tree(&format!("path-data-{index}"), contents);
+        let findings = scan(&src).findings;
+        assert!(findings.is_empty(), "{contents}: {findings:?}");
+    }
+}
