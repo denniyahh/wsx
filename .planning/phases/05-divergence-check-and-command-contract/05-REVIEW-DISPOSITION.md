@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Writing the verdict to a closed stdout panics with exit 101, outside the exit-code contract"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "One missing symlink blob anywhere in the tree fails the whole check with exit 6"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The replace-ref guard does not cover the phase's new git children, against the comment's claim"
   - id: WR-04
     severity: warning
@@ -21,7 +21,7 @@ findings:
     title: "Impossible-state guard: classifying a replace-ref refusal inside `ManifestUnreadable`"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: skipped
     title: "The IF-02 scan misses a forbidden path built from separate literals"
   - id: IN-01
     severity: info
@@ -43,20 +43,20 @@ findings:
     severity: info
     disposition: open
     title: "Relative `core.hooksPath` in a bare repository is resolved from the tree root, not `$GIT_DIR`"
-open: 10
+open: 6
 total: 10
-recorded: 2026-11-19T01:08:01.543Z
+recorded: 2026-11-19T10:56:04.006Z
 ---
 
 # Phase 05: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
+| WR-01 | warning | fixed | 05-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 05-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 05-REVIEW-FIX.md |
 | WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
+| WR-05 | warning | skipped | 05-REVIEW-FIX.md |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
