@@ -298,6 +298,12 @@ fn differences(a: &Observation, b: &Observation) -> Vec<String> {
         let (exit_a, exit_b) = (format!("{:?}", a.exit), format!("{:?}", b.exit));
         found.push(difference(&a.command, "exit code", &exit_a, &exit_b));
     }
+    if a.stdout != b.stdout {
+        found.push(difference(&a.command, "stdout", &a.stdout, &b.stdout));
+    }
+    if a.stderr != b.stderr {
+        found.push(difference(&a.command, "stderr", &a.stderr, &b.stderr));
+    }
     found
 }
 
