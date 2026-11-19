@@ -204,6 +204,15 @@ fn using(literal: &str) -> String {
     format!("pub fn literal() {{\n    let _ = {literal};\n}}\n")
 }
 
+/// A copy of the real `src/` under CARGO_TARGET_TMPDIR/if02-scan/`name`, plus
+/// `planted.rs` holding `contents`.
+fn planted_copy(name: &str, contents: &str) -> PathBuf {
+    let src = scratch_src(name);
+    copy_tree(&Path::new(REPO_ROOT).join("src"), &src);
+    fs::write(src.join("planted.rs"), contents).expect("write planted.rs");
+    src
+}
+
 /// Copies the directory tree `from` into `to`.
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("create copy directory");
@@ -234,13 +243,10 @@ fn real_tree_reads_no_agent_file() {
 
 #[test]
 fn planted_read_trips_the_scan() {
-    let src = scratch_src("planted");
-    copy_tree(&Path::new(REPO_ROOT).join("src"), &src);
-    fs::write(
-        src.join("planted.rs"),
+    let src = planted_copy(
+        "planted",
         "pub fn planted() -> std::io::Result<Vec<u8>> {\n    std::fs::read(\".planning/config.json\")\n}\n",
-    )
-    .expect("write planted.rs");
+    );
     let findings = scan(&src).findings;
     assert_eq!(findings.len(), 1, "{findings:?}");
     for part in ["planted.rs", ".planning/config.json", "(IF-02)"] {
@@ -316,4 +322,161 @@ fn unlexable_file_fails_closed() {
         "{:?}",
         findings[0]
     );
+}
+
+#[test]
+fn planted_escaped_read_trips_the_scan() {
+    let src = planted_copy(
+        "planted-escaped",
+        r#"pub fn planted() -> std::io::Result<Vec<u8>> {
+    std::fs::read("STATE\x2emd")
+}
+"#,
+    );
+    let findings = scan(&src).findings;
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    for part in [
+        "planted.rs",
+        r#""STATE\x2emd""#,
+        "names STATE.md,",
+        "(IF-02)",
+    ] {
+        assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+    }
+}
+
+#[test]
+fn escaped_spellings_trip_the_scan() {
+    let cases = [
+        (r#""STATE\x2emd""#, "STATE.md"),
+        (r#""STATE\x2Emd""#, "STATE.md"),
+        (r#""ROADMAP\u{2e}md""#, "ROADMAP.md"),
+        (r#""ROADMAP\u{2E}md""#, "ROADMAP.md"),
+        (r#""ROADMAP\u{2_E}md""#, "ROADMAP.md"),
+        (r#"b"devflow\x2etoml""#, "devflow.toml"),
+        (r#"".planning\x2fconfig.json""#, ".planning/config.json"),
+        (r#"".planning\x2Fconfig.json""#, ".planning/config.json"),
+        (r#"".cl\x61ude/settings.json""#, ".claude"),
+        (r#""\x2ecodex/config.toml""#, ".codex"),
+        (r#"c"STATE\x2emd""#, "STATE.md"),
+    ];
+    for (index, (literal, name)) in cases.into_iter().enumerate() {
+        let src = one_file_tree(&format!("escaped-{index}"), &using(literal));
+        let findings = scan(&src).findings;
+        assert_eq!(findings.len(), 1, "{literal}: {findings:?}");
+        assert!(
+            findings[0].contains(literal) && findings[0].contains(&format!("names {name},")),
+            "{literal}: {:?}",
+            findings[0]
+        );
+    }
+    let continued = "\"STATE\\\n        .md\"";
+    let src = one_file_tree("escaped-continuation", &using(continued));
+    let findings = scan(&src).findings;
+    assert_eq!(findings.len(), 1, "{continued}: {findings:?}");
+    for part in ["\"STATE\\", "names STATE.md,"] {
+        assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+    }
+}
+
+#[test]
+fn escaped_lookalikes_do_not_trip_the_scan() {
+    let literals = [
+        r#""STATE\x2ers""#,
+        r#""ROADMAP\x5fmd""#,
+        r#""x\x2eclaude""#,
+        r#""\x2eclaudex""#,
+        r#""only .planning\n""#,
+    ];
+    for (index, literal) in literals.into_iter().enumerate() {
+        let src = one_file_tree(&format!("escaped-lookalike-{index}"), &using(literal));
+        let findings = scan(&src).findings;
+        assert!(findings.is_empty(), "{literal}: {findings:?}");
+    }
+}
+
+#[test]
+fn malformed_escapes_fail_closed_at_the_lexer() {
+    let literals = [
+        r#""STATE\x2gmd""#,
+        r#""STATE\x80md""#,
+        r#"b"STATE\u{2e}md""#,
+        r#""\u{110000}""#,
+    ];
+    for (index, literal) in literals.into_iter().enumerate() {
+        let src = one_file_tree(&format!("malformed-{index}"), &using(literal));
+        let findings = scan(&src).findings;
+        assert_eq!(findings.len(), 1, "{literal}: {findings:?}");
+        assert!(
+            findings[0].starts_with("cannot tokenize"),
+            "{literal}: {:?}",
+            findings[0]
+        );
+    }
+}
+
+#[test]
+fn concat_spellings_trip_the_scan() {
+    let cases: [(&str, &str, &[&str]); 7] = [
+        (
+            r#"concat!("STATE", ".md")"#,
+            "STATE.md",
+            &[r#""STATE""#, r#"".md""#],
+        ),
+        (
+            r#"concat!(".planning/", "config.json")"#,
+            ".planning/config.json",
+            &[r#"".planning/""#, r#""config.json""#],
+        ),
+        (
+            r#"concat!("devflow", '.', "toml")"#,
+            "devflow.toml",
+            &[r#""devflow""#, "'.'", r#""toml""#],
+        ),
+        (
+            r#"concat!(concat!("ROAD", "MAP"), ".md")"#,
+            "ROADMAP.md",
+            &[r#""ROAD""#, r#""MAP""#, r#"".md""#],
+        ),
+        (
+            r#"std::concat!(".cla", "ude/settings.json")"#,
+            ".claude",
+            &[r#"".cla""#, r#""ude/settings.json""#],
+        ),
+        (
+            r#"core::concat!{".co", "dex/config.toml"}"#,
+            ".codex",
+            &[r#"".co""#, r#""dex/config.toml""#],
+        ),
+        (
+            r#"concat!["STATE", "\x2emd"]"#,
+            "STATE.md",
+            &[r#""STATE""#, r#""\x2emd""#],
+        ),
+    ];
+    for (index, (expression, name, arguments)) in cases.into_iter().enumerate() {
+        let src = one_file_tree(&format!("concat-{index}"), &using(expression));
+        let findings = scan(&src).findings;
+        assert_eq!(findings.len(), 1, "{expression}: {findings:?}");
+        let names = format!("names {name},");
+        for part in ["concat!", names.as_str()].iter().chain(arguments) {
+            assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+        }
+    }
+}
+
+#[test]
+fn concat_lookalikes_do_not_trip_the_scan() {
+    let expressions = [
+        r#"concat!("STATE", ".rs")"#,
+        r#"concat!(".planning", "/other.json")"#,
+        r#"concat!("devflow", ".tom")"#,
+        r#"concat!("ROAD", "MAP")"#,
+        r#"concat!(".plan", "ning")"#,
+    ];
+    for (index, expression) in expressions.into_iter().enumerate() {
+        let src = one_file_tree(&format!("concat-lookalike-{index}"), &using(expression));
+        let findings = scan(&src).findings;
+        assert!(findings.is_empty(), "{expression}: {findings:?}");
+    }
 }
