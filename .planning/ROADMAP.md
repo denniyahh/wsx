@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Git adapter** - Correct repo resolution from any worktree or hook; git binary for writes, gix for reads; reftable and foreign-owner refusal (completed 2026-10-27)
 - [x] **Phase 03.1: Resolve ref names as git does** (INSERTED) - `Repo`'s reads take commit ids; gix's revspec parser is banned from the git layer (completed 2026-11-04)
 - [x] **Phase 4: Repo model** - `.wsx.conf` grammar and one resolved model of branches, remotes and personal paths (completed 2026-11-18)
-- [ ] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins
+- [x] **Phase 5: Divergence check and command contract** - `wsx check`, plus the versioned JSON and exit-code contract every later command joins (completed 2026-11-18)
 - [ ] **Phase 6: Pre-push guard** - Fail-closed push guard over the real pushed refs, every commit in the range and the tip tree
 - [ ] **Phase 7: Workspace sync** - `wsx sync` by real merge from any worktree, with integration-rewrite detection
 - [ ] **Phase 8: Worktree lifecycle** - `wsx new`, `update`, `land` and `rm`, with origin records under `refs/wsx/`
@@ -247,7 +247,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. `wsx check --json` matches a versioned, documented schema, and its exit codes are documented. A contract test enumerates the command tree and fails for any command without a pinned schema or whose output drifts from it (control: a field change without a version bump fails), so every later command must join the contract
   5. A source-scan test fails on any read of `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml` or `.claude`/`.codex` settings (control: a planted read trips it), and every command runs in a repo that has none of those files
 
-**Plans**: 11/11 plans executed
+**Plans**: 11/11 plans complete
 - [x] 05-11-PLAN.md
 **Wave 1**
 - [x] 05-01-PLAN.md — Tracer: `wsx check` end to end for added paths (command table, read order, five scenarios); every error's D-06 class and kind; `docs/exit-codes.md`; reftable and replace refs exit 5
@@ -421,7 +421,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 �
 | 3. Git adapter | 10/10 | Complete    | 2026-10-27 |
 | 03.1. Resolve ref names as git does | 4/4 | Complete    | 2026-11-04 |
 | 4. Repo model | 18/18 | Complete    | 2026-11-18 |
-| 5. Divergence check and command contract | 11/11 | In Progress | - |
+| 5. Divergence check and command contract | 11/11 | Complete    | 2026-11-18 |
 | 6. Pre-push guard | 0/TBD | Not started | - |
 | 7. Workspace sync | 0/TBD | Not started | - |
 | 8. Worktree lifecycle | 0/TBD | Not started | - |
