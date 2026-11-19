@@ -29,6 +29,7 @@ mod coverage;
 mod env;
 mod fixture;
 mod hermeticity;
+mod if02_runtime;
 mod oracle;
 mod outcome;
 mod provenance;
