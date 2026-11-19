@@ -34,8 +34,10 @@ const JSON_FLAG: &str = "--json";
 pub fn run(args: Vec<OsString>) -> ExitCode {
     match parse(&args) {
         Ok(Parsed::Version) => {
-            println!("wsx {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            match stdout_line("the version", &format!("wsx {}", env!("CARGO_PKG_VERSION"))) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(code) => code,
+            }
         }
         Ok(Parsed::Command { spec, json }) => {
             let sinks = Sinks { json };
@@ -114,10 +116,10 @@ fn parse(args: &[OsString]) -> Result<Parsed, Usage> {
 /// Reports `usage`: the problem and the usage lines on stderr, then, when
 /// `--json` was asked for after a command, its failure object; exit 2.
 fn usage_error(usage: &Usage) -> ExitCode {
-    eprintln!("wsx: {}", usage.problem);
-    eprintln!("usage: wsx --version");
+    stderr_line(&format!("wsx: {}", usage.problem));
+    stderr_line("usage: wsx --version");
     for spec in COMMANDS {
-        eprintln!("usage: wsx {} [{JSON_FLAG}]", spec.name);
+        stderr_line(&format!("usage: wsx {} [{JSON_FLAG}]", spec.name));
     }
     let class = ExitClass::Usage;
     match usage.json_for {
@@ -126,6 +128,28 @@ fn usage_error(usage: &Usage) -> ExitCode {
         }),
         None => ExitCode::from(class.code()),
     }
+}
+
+/// Writes `line` and a newline to stdout in one write and flushes it. A
+/// failed write, such as to a closed pipe, is reported on stderr naming
+/// `what` was written, and is the exit code of the operating-system failure
+/// it is, never a panic.
+fn stdout_line(what: &str, line: &str) -> Result<(), ExitCode> {
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(format!("{line}\n").as_bytes())
+        .and_then(|()| stdout.flush())
+        .map_err(|err| {
+            stderr_line(&format!("wsx: cannot write {what} to stdout: {err}"));
+            ExitCode::from(ExitClass::GitFailed.code())
+        })
+}
+
+/// Writes `line` and a newline to stderr. A failed write is dropped, never a
+/// panic: stderr is where it would be reported, and the exit code still
+/// says how the run ended.
+fn stderr_line(line: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
 
 /// Where each line of a run goes (D-08).
@@ -137,15 +161,17 @@ struct Sinks {
 impl Sinks {
     /// A diagnostic line: stderr.
     fn diagnostic(&self, line: &str) {
-        eprintln!("{line}");
+        stderr_line(line);
     }
 
     /// The verdict line: stdout, or stderr when stdout carries the object.
-    fn verdict(&self, line: &str) {
+    /// A failed write to stdout is the exit code `stdout_line` gives.
+    fn verdict(&self, line: &str) -> Result<(), ExitCode> {
         if self.json {
-            eprintln!("{line}");
+            stderr_line(line);
+            Ok(())
         } else {
-            println!("{line}");
+            stdout_line("the verdict", line)
         }
     }
 
@@ -153,17 +179,10 @@ impl Sinks {
     /// rendering and a newline to stdout in one write. A failed write is
     /// reported on stderr and exits as the operating-system failure it is.
     fn finish(&self, class: ExitClass, object: impl FnOnce() -> Value) -> ExitCode {
-        if self.json {
-            let mut rendered = object().render();
-            rendered.push('\n');
-            let mut stdout = std::io::stdout().lock();
-            if let Err(err) = stdout
-                .write_all(rendered.as_bytes())
-                .and_then(|()| stdout.flush())
-            {
-                eprintln!("wsx: cannot write the JSON object to stdout: {err}");
-                return ExitCode::from(ExitClass::GitFailed.code());
-            }
+        if self.json
+            && let Err(code) = stdout_line("the JSON object", &object().render())
+        {
+            return code;
         }
         ExitCode::from(class.code())
     }
@@ -206,7 +225,9 @@ fn run_check(spec: &CommandSpec, sinks: &Sinks) -> ExitCode {
             for line in &human.diagnostics {
                 sinks.diagnostic(line);
             }
-            sinks.verdict(&human.verdict);
+            if let Err(code) = sinks.verdict(&human.verdict) {
+                return code;
+            }
             let class = if report.problems.is_empty() {
                 ExitClass::Success
             } else {

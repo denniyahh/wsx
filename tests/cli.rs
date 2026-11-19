@@ -138,3 +138,27 @@ fn duplicate_json_flag_is_a_usage_error() {
     );
     assert_usage_object(&one_object(&output));
 }
+
+/// `command` run with its stdout a pipe whose read end is already closed,
+/// so its first write to stdout fails with EPIPE.
+fn run_with_closed_stdout(command: &mut Command) -> Output {
+    let (reader, writer) = std::io::pipe().expect("create a pipe");
+    drop(reader);
+    command
+        .stdout(writer)
+        .output()
+        .expect("spawn the wsx binary")
+}
+
+#[test]
+fn version_to_a_closed_stdout_exits_git_failed() {
+    let output = run_with_closed_stdout(Command::new(wsx_bin()).arg("--version"));
+
+    let stderr = String::from_utf8(output.stderr).expect("wsx stderr is UTF-8");
+    assert!(
+        stderr.contains("wsx: cannot write the version to stdout: "),
+        "the failed write is reported on stderr, got {stderr:?}"
+    );
+    assert!(!stderr.contains("panicked"), "wsx panicked: {stderr:?}");
+    assert_eq!(output.status.code(), Some(6), "exit code, stderr: {stderr}");
+}

@@ -232,6 +232,28 @@ fn check_json_passes_as_one_object() {
     );
 }
 
+/// Without `--json` the verdict goes to stdout: to a pipe whose read end is
+/// already closed, the failed write is reported on stderr and exits 6, the
+/// operating-system failure it is, never a panic.
+#[test]
+fn check_verdict_to_a_closed_stdout_exits_git_failed() {
+    let contract = contract("closed-stdout");
+    let (reader, writer) = std::io::pipe().expect("create a pipe");
+    drop(reader);
+    let output = command(WSX, &contract.fixture.checkout(WORK), &contract.fixture.env)
+        .arg("check")
+        .stdout(writer)
+        .output()
+        .expect("spawn the wsx binary");
+    let err = stderr(&output);
+    assert!(
+        err.contains("wsx: cannot write the verdict to stdout: "),
+        "the failed write is reported on stderr, got {err:?}"
+    );
+    assert!(!err.contains("panicked"), "wsx panicked: {err:?}");
+    assert_eq!(output.status.code(), Some(6), "stderr: {err}");
+}
+
 /// The hooks object of a run whose stdout is one object.
 fn hooks_object(output: &Output) -> Value {
     one_object(output)
