@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: verifying
-stopped_at: Completed 05-09-PLAN.md
-last_updated: "2026-11-19T00:59:30.501Z"
+stopped_at: Completed 05-10-PLAN.md
+last_updated: "2026-11-19T02:13:21.414Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 701425acd9a5538ec71b8697577ddc0e49bd46b1
+state_head: 1805a0bd1f2f4bf6e15c1cb2c97259e652b68f94
 progress:
   total_phases: 16
   completed_phases: 5
-  total_plans: 63
-  completed_plans: 63
+  total_plans: 64
+  completed_plans: 64
 ---
 
 # Project State
@@ -122,6 +122,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 05 P07 | 13 min | 2 tasks | 7 files |
 | Phase 05 P08 | 15min | 2 tasks | 7 files |
 | Phase 05 P09 | 2h 40m | 2 tasks | 10 files |
+| Phase 05 P10 | 13min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -259,6 +260,7 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-08: a pinned schema file never changes; any change is a new <name>.v<N+1>.schema.json with its own pin in SCHEMA_PINS, old file and pin kept
 - [Phase 05]: 05-09: each item no command reaches yet carries cfg_attr(not(test), expect(dead_code)) naming its first caller's ROADMAP phase; the phase's first caller removes it
 - [Phase 05]: 05-09: three equivalent mutants allowlisted (distinct_entries key negation, hooks below > vs >=, resolve last-guard fallback); a test that could hang on a mutant runs under a deadline
+- [Phase 05]: 05-10: IF-02 scan names the dot-component gap as .planning/./config.json; wsx check covered by the runtime state comparison
 
 ### Pending Todos
 
@@ -300,6 +302,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T00:59:29.710Z
-Stopped at: Completed 05-09-PLAN.md
+Last session: 2026-11-19T02:13:20.713Z
+Stopped at: Completed 05-10-PLAN.md
 Resume file: None
