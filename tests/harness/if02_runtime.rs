@@ -121,6 +121,13 @@ enum Read {
     Object(&'static str),
     /// A file under HOME.
     Home(&'static str),
+    /// The work checkout's `dir`/`file`, through a path built from those fields, parsed as
+    /// JSON for `git.branching_strategy`, with `default` on any failure.
+    Lenient {
+        dir: &'static str,
+        file: &'static str,
+        default: &'static str,
+    },
 }
 
 impl Read {
@@ -129,6 +136,9 @@ impl Read {
             Read::Worktree(path) => format!("worktree {path}"),
             Read::Object(path) => format!("object {path}"),
             Read::Home(path) => format!("home {path}"),
+            Read::Lenient { dir, file, default } => {
+                format!("lenient {dir}/{file} default {default}")
+            }
         }
     }
 
@@ -138,8 +148,28 @@ impl Read {
             Read::Worktree(path) => file_or_absent(&runtime.fixture.checkout(WORK).join(path)),
             Read::Object(path) => runtime.git(&["cat-file", "blob", &format!("{tip}:{path}")]),
             Read::Home(path) => file_or_absent(&runtime.home.join(path)),
+            Read::Lenient { dir, file, default } => {
+                let path = runtime.fixture.checkout(WORK).join(dir).join(file);
+                lenient_branching_strategy(&path, default).into_bytes()
+            }
         }
     }
+}
+
+/// "git.branching_strategy={value}" for the JSON file at `path`, with `default` when the read,
+/// the parse or the key fails: the unwrap_or_default shape of a lenient settings reader.
+fn lenient_branching_strategy(path: &Path, default: &str) -> String {
+    let value = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|config| {
+            config
+                .pointer("/git/branching_strategy")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| default.to_owned());
+    format!("git.branching_strategy={value}")
 }
 
 /// One run of `wsx`, with each run's own workspace tip masked.
@@ -333,16 +363,16 @@ fn all_differences(pairs: &[(Observation, Observation)]) -> String {
         .join("\n")
 }
 
-/// With `read` added, the states differ and the difference carries both `expected`
-/// texts.
-fn assert_read_differs(name: &str, read: Read, what: &str, expected: [&str; 2]) {
+/// With `read` added, the states differ and the difference carries every `expected`
+/// text.
+fn assert_read_differs(name: &str, read: Read, what: &str, expected: &[&str]) {
     let found = all_differences(&run_states(name, Some(read)));
     assert!(
         !found.is_empty(),
         "a read of {what} made no difference between the states"
     );
     for text in expected {
-        assert!(found.contains(text), "{text} is missing from: {found}");
+        assert!(found.contains(*text), "{text} is missing from: {found}");
     }
 }
 
@@ -384,7 +414,7 @@ fn tracked_file_read_makes_the_states_differ() {
         "tracked_file_read_makes_the_states_differ",
         Read::Worktree(".planning/config.json"),
         "the worktree's .planning/config.json",
-        ["sentinel-A", "sentinel-B"],
+        &["sentinel-A", "sentinel-B"],
     );
 }
 
@@ -395,7 +425,7 @@ fn ignored_file_read_makes_the_states_differ() {
         "ignored_file_read_makes_the_states_differ",
         Read::Worktree(IGNORED),
         "the worktree's .claude/settings.local.json",
-        ["sentinel-A", "absent"],
+        &["sentinel-A", "absent"],
     );
 }
 
@@ -406,7 +436,7 @@ fn object_read_makes_the_states_differ() {
         "object_read_makes_the_states_differ",
         Read::Object(".planning/STATE.md"),
         "the workspace tip's .planning/STATE.md",
-        ["sentinel-A", "sentinel-B"],
+        &["sentinel-A", "sentinel-B"],
     );
 }
 
@@ -417,6 +447,51 @@ fn home_read_makes_the_states_differ() {
         "home_read_makes_the_states_differ",
         Read::Home(".codex/config.toml"),
         "HOME's .codex/config.toml",
-        ["sentinel-A", "absent"],
+        &["sentinel-A", "absent"],
     );
+}
+
+/// A lenient read of .planning/config.json through a variable-built path, falling back to
+/// "none", makes the states differ.
+#[test]
+fn lenient_config_read_makes_the_states_differ() {
+    assert_read_differs(
+        "lenient_config_read_makes_the_states_differ",
+        Read::Lenient {
+            dir: ".planning",
+            file: "config.json",
+            default: "none",
+        },
+        "the worktree's .planning/config.json, parsed leniently through a variable-built path",
+        &[
+            "git.branching_strategy=phase",
+            "git.branching_strategy=none",
+            "git.branching_strategy=milestone",
+        ],
+    );
+}
+
+/// The same lenient read falling back to state A's value differs only against state C.
+#[test]
+fn lenient_read_with_state_a_default_differs_in_state_c() {
+    let read = Read::Lenient {
+        dir: ".planning",
+        file: "config.json",
+        default: "phase",
+    };
+    let label = read.label();
+    let found = all_differences(&run_states(
+        "lenient_read_with_state_a_default_differs_in_state_c",
+        Some(read),
+    ));
+    assert!(
+        !found.is_empty(),
+        "a read {label} made no difference between the states"
+    );
+    assert!(found.contains("between state A and state C"), "{found}");
+    assert!(
+        found.contains("git.branching_strategy=milestone"),
+        "{found}"
+    );
+    assert!(!found.contains("between state A and state B"), "{found}");
 }
