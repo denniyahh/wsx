@@ -122,11 +122,12 @@ impl Repo {
 
     /// The bytes of each blob in `ids`, in order, from one
     /// `git --no-lazy-fetch cat-file --batch=...` child fed one hex id per
-    /// line (an id holds no LF). An id git answers `missing` for is
-    /// `Error::ObjectMissing` naming it; an object that is not a blob, or
+    /// line (an id holds no LF). An id git answers `missing` for, as a
+    /// partial clone answers for a blob it never fetched, is `None`, so the
+    /// caller decides whether it needed it; an object that is not a blob, or
     /// output that does not parse, is `Error::GitBadOutput`. An empty `ids`
     /// spawns no child.
-    pub fn read_blobs(&self, git: &Git, ids: &[ObjectId]) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn read_blobs(&self, git: &Git, ids: &[ObjectId]) -> Result<Vec<Option<Vec<u8>>>, Error> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -146,10 +147,8 @@ impl Repo {
             .zip(answers)
             .enumerate()
             .map(|(index, (id, answer))| match answer {
-                BatchAnswer::Found { kind, data, .. } if kind == b"blob" => Ok(data),
-                BatchAnswer::Missing => Err(Error::ObjectMissing {
-                    request: id.to_string().into_bytes(),
-                }),
+                BatchAnswer::Found { kind, data, .. } if kind == b"blob" => Ok(Some(data)),
+                BatchAnswer::Missing => Ok(None),
                 BatchAnswer::Found { kind, .. } => Err(bad(format!(
                     "answer {index}: {id} is a {}, not a blob",
                     String::from_utf8_lossy(&kind)
@@ -466,17 +465,15 @@ mod tests {
         let file = entry_id(&scratch, &repo, &head, b"a.txt");
         let (found, git) = open(&scratch, &repo);
         let blobs = found
-            .read_blobs(&git, &[link, file])
+            .read_blobs(&git, &[link.clone(), file])
             .unwrap_or_else(|err| panic!("read_blobs: {err}"));
-        assert_eq!(blobs, vec![b"a.txt".to_vec(), b"a\n".to_vec()]);
+        assert_eq!(blobs, vec![Some(b"a.txt".to_vec()), Some(b"a\n".to_vec())]);
 
         let absent = ObjectId("0123456789012345678901234567890123456789".to_owned());
-        match found.read_blobs(&git, std::slice::from_ref(&absent)) {
-            Err(Error::ObjectMissing { request }) => {
-                assert_eq!(request, absent.to_string().into_bytes());
-            }
-            other => panic!("expected ObjectMissing for {absent}, got {other:?}"),
-        }
+        let answers = found
+            .read_blobs(&git, &[absent, link])
+            .unwrap_or_else(|err| panic!("read_blobs with an absent id: {err}"));
+        assert_eq!(answers, vec![None, Some(b"a.txt".to_vec())]);
     }
 
     /// A tree asked for as a blob is `Error::GitBadOutput` naming it, not

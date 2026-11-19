@@ -323,6 +323,98 @@ fn check_json_hooks_checked() {
     assert!(hooks_at < problems_at, "hooks after problems: {text}");
 }
 
+/// Deletes the loose object `id` from the fixture's object store, as a
+/// partial clone lacks a blob it never checked out, and checks git no longer
+/// has it.
+fn lose_object(contract: &Contract, id: &str) {
+    let objects = contract.git(&["rev-parse", "--git-path", "objects"]);
+    let objects = String::from_utf8(objects).expect("a UTF-8 path");
+    let loose = contract
+        .fixture
+        .checkout(WORK)
+        .join(objects.trim_end())
+        .join(&id[..2])
+        .join(&id[2..]);
+    fs::remove_file(&loose).unwrap_or_else(|err| panic!("remove {}: {err}", loose.display()));
+    let probe = contract
+        .fixture
+        .git(WORK, ["cat-file", "-e", id])
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_ne!(probe.status.code(), Some(0), "git still has {id}");
+}
+
+/// `.planning/hooks` as `core.hooksPath` holding a 100755 `pre-push`, the
+/// 100755 file `.planning/run`, and the symlink `link` whose link text is
+/// `text`, all committed; returns the id of `link`'s blob.
+fn hooks_and_a_symlink(contract: &mut Contract, link: &str, text: &str) -> String {
+    for path in [".planning/hooks/pre-push", ".planning/run"] {
+        contract
+            .fixture
+            .write(WORK, path.as_bytes(), b"#!/bin/sh\nexit 0\n")
+            .unwrap_or_else(|err| panic!("{err}"));
+        let full = contract.fixture.checkout(WORK).join(path);
+        fs::set_permissions(&full, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|err| panic!("chmod {}: {err}", full.display()));
+    }
+    let full = contract.fixture.checkout(WORK).join(link);
+    std::os::unix::fs::symlink(text, &full)
+        .unwrap_or_else(|err| panic!("symlink {}: {err}", full.display()));
+    contract
+        .fixture
+        .commit(WORK, b"chore(ws): add hooks and a symlink\n")
+        .unwrap_or_else(|err| panic!("{err}"));
+    contract.git(&["config", "core.hooksPath", ".planning/hooks"]);
+    let id = contract.git(&["rev-parse", "--verify", &format!("HEAD:{link}")]);
+    String::from_utf8(id).expect("hex").trim_end().to_owned()
+}
+
+/// A symlink outside the hooks directory whose blob the object store lacks,
+/// as in a partial clone: no hook needs its link text, so the check passes
+/// with the hooks checked, never `object_missing`.
+#[test]
+fn check_passes_with_a_missing_symlink_blob_outside_the_hooks() {
+    let mut contract = contract("missing_symlink_blob");
+    let id = hooks_and_a_symlink(&mut contract, ".planning/link", "run");
+    lose_object(&contract, &id);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        hooks_object(&output),
+        json!({"path": ".planning/hooks", "checked": true, "reason": null})
+    );
+}
+
+/// A hook that is a symlink whose blob the object store lacks: that hook is
+/// a `hook_not_executable` problem saying its link text was not read, exit 1.
+#[test]
+fn check_reports_a_hook_symlink_whose_blob_is_missing() {
+    let mut contract = contract("missing_hook_symlink_blob");
+    let id = hooks_and_a_symlink(&mut contract, ".planning/hooks/pre-commit", "../run");
+    lose_object(&contract, &id);
+    let output = contract.wsx(&["check", "--json"]);
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    let problems = one_object(&output)
+        .get("problems")
+        .cloned()
+        .expect("a problems key");
+    assert_eq!(
+        problems[0]["kind"],
+        json!("hook_not_executable"),
+        "{problems}"
+    );
+    assert_eq!(
+        problems[0]["path"],
+        json!(".planning/hooks/pre-commit"),
+        "{problems}"
+    );
+    let detail = problems[0]["detail"].as_str().expect("a detail");
+    assert!(
+        detail.contains("the link text of .planning/hooks/pre-commit was not read"),
+        "{detail}"
+    );
+    assert_eq!(problems.as_array().map(Vec::len), Some(1), "{problems}");
+}
+
 /// `core.hooksPath` relative but naming no directory at the tip: exit 0, the
 /// hooks object gives the value and the reason, and stderr says it.
 #[test]

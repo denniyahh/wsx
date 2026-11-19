@@ -172,7 +172,9 @@ fn carried_only_paths(
 /// problems under it, sorted by path (D-03). An unset value or one that does
 /// not normalise reads nothing more; otherwise one listing of the workspace
 /// tip's tree, and one blob read for the link text of every symlink in it
-/// when the directory is there and the listing holds one.
+/// when the directory is there and the listing holds one. A link text the
+/// object store lacks is left out, so only a hook whose resolution needs it
+/// is a problem.
 fn check_hooks(
     repo: &Repo,
     git: &Git,
@@ -198,7 +200,11 @@ fn check_hooks(
         .into_iter()
         .collect();
     let texts = repo.read_blobs(git, &links)?;
-    let targets = links.into_iter().zip(texts).collect();
+    let targets = links
+        .into_iter()
+        .zip(texts)
+        .filter_map(|(id, text)| text.map(|text| (id, text)))
+        .collect();
     let problems = hooks::evaluate_hooks(dir, &listing, &targets);
     Ok((status, problems))
 }
