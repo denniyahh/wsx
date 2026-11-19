@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: 05
 current_phase_name: Divergence check and command contract
 status: verifying
-stopped_at: Completed 05-10-PLAN.md
-last_updated: "2026-11-19T02:13:21.414Z"
+stopped_at: Completed 05-11-PLAN.md
+last_updated: "2026-11-19T02:35:04.405Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 1805a0bd1f2f4bf6e15c1cb2c97259e652b68f94
+state_head: f67d3cfbe512865845067ec2b6fa2bd75fdc1d0a
 progress:
   total_phases: 16
   completed_phases: 5
-  total_plans: 64
-  completed_plans: 64
+  total_plans: 65
+  completed_plans: 65
 ---
 
 # Project State
@@ -123,6 +123,7 @@ Progress: [███░░░░░░░] 31%
 | Phase 05 P08 | 15min | 2 tasks | 7 files |
 | Phase 05 P09 | 2h 40m | 2 tasks | 10 files |
 | Phase 05 P10 | 13min | 3 tasks | 3 files |
+| Phase 05 P11 | 6min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -261,6 +262,7 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-09: each item no command reaches yet carries cfg_attr(not(test), expect(dead_code)) naming its first caller's ROADMAP phase; the phase's first caller removes it
 - [Phase 05]: 05-09: three equivalent mutants allowlisted (distinct_entries key negation, hooks below > vs >=, resolve last-guard fallback); a test that could hang on a mutant runs under a deadline
 - [Phase 05]: 05-10: IF-02 scan names the dot-component gap as .planning/./config.json; wsx check covered by the runtime state comparison
+- [Phase 05]: IF-02 runtime test: Observation carries its State and observe takes it explicitly, so differences name both states
 
 ### Pending Todos
 
@@ -302,6 +304,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T02:13:20.713Z
-Stopped at: Completed 05-10-PLAN.md
+Last session: 2026-11-19T02:35:03.690Z
+Stopped at: Completed 05-11-PLAN.md
 Resume file: None

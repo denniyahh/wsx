@@ -171,7 +171,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 ### Interface and boundary
 
 - [ ] **IF-01**: Every command has `--json` output with a versioned, documented schema, plus documented, stable exit codes, so an orchestrator (devflow) can drive wsx without parsing prose. A contract test pins the schema
-- [ ] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings (exception pending, see the 2026-11-15 amendment under Boundary: agent hook configuration). A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
+- [x] **IF-02**: wsx reads no GSD, devflow or agent-runtime files or config: no `ROADMAP.md`/`STATE.md` contents, `.planning/config.json`, `devflow.toml`, or `.claude`/`.codex` settings (exception pending, see the 2026-11-15 amendment under Boundary: agent hook configuration). A personal path is only a path to wsx. This is enforced two ways: a source-scan test, and a scenario running every command in a repo with none of those files
 
 ### Development setup (adopted from devflow, owner decision 2026-10-19)
 
@@ -285,7 +285,7 @@ STACK/PITFALLS research still applies to the git adapter and the harness.
 | STAT-01 | Phase 13 | Pending |
 | STAT-02 | Phase 13 | Pending |
 | IF-01 | Phase 5 | Gaps Found |
-| IF-02 | Phase 5 | Gaps Found |
+| IF-02 | Phase 5 | Complete |
 | DEV-01 | Phase 1 | Complete |
 | DEV-02 | Phase 1 | Complete |
 | DEV-03 | Phase 1 | Complete |
