@@ -698,6 +698,17 @@ fn escaped_spellings_trip_the_scan() {
 }
 
 #[test]
+fn crlf_line_continuation_trips_the_scan() {
+    let continued = "\"STATE\\\r\n        .md\"";
+    let src = one_file_tree("escaped-crlf-continuation", &using(continued));
+    let findings = scan(&src).findings;
+    assert_eq!(findings.len(), 1, "{continued:?}: {findings:?}");
+    for part in ["\"STATE\\", "names STATE.md,"] {
+        assert!(findings[0].contains(part), "{part:?} in {:?}", findings[0]);
+    }
+}
+
+#[test]
 fn escaped_lookalikes_do_not_trip_the_scan() {
     let literals = [
         r#""STATE\x2ers""#,
